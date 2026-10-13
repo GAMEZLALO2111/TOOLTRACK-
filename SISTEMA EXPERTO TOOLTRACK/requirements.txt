@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+SQLAlchemy
+requests
+python-barcode
+pillow
