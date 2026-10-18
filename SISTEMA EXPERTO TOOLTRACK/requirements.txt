@@ -4,3 +4,4 @@ SQLAlchemy
 requests
 python-barcode
 pillow
+qrcode

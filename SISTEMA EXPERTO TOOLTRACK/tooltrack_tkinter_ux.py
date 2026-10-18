@@ -4,6 +4,7 @@ import requests
 from export_csv import export_inventory_to_csv
 from import_csv import import_inventory_from_csv
 from audit_log import log_audit
+from tool_types import ACCESSORY_TYPES, HOLDER_TYPES, PUNCH_DIE_TYPES
 import os
 import csv
 import threading
@@ -11,6 +12,11 @@ import time
 import uuid
 import random
 import re
+from workflow_ui import SetupWorkflowWindow, fetch_rack_codes
+from tool_locations_ui import ToolLocationWindow
+from machines_ui import MachineWindow
+from programs_ui import ProgramWindow
+from ui_theme import BG, CARD, NAVY, NAVY_LIGHT, ACCENT, ACCENT_DARK, TEXT, MUTED, BORDER, apply_theme, center_window
 
 API_URL = "http://127.0.0.1:8000/herramientas/"
 
@@ -23,55 +29,142 @@ class HerramientaApp:
         self.show_login()
 
     def show_login(self):
+        self.root.withdraw()
         login_win = tk.Toplevel(self.root)
-        login_win.title("Login - TOOLTRACK")
-        login_win.geometry("320x220")
-        login_win.grab_set()
-        tk.Label(login_win, text="Usuario:", font=("Segoe UI", 12)).pack(pady=10)
+        login_win.title("TOOLTRACK - Inicio de sesión")
+        login_win.configure(bg=BG)
+        login_win.resizable(False, False)
+        login_win.protocol("WM_DELETE_WINDOW", self.root.destroy)
+        center_window(login_win, 440, 500)
+
+        header = tk.Frame(login_win, bg=NAVY)
+        header.pack(fill=tk.X)
+        tk.Label(header, text="TOOLTRACK", font=("Segoe UI", 26, "bold"), bg=NAVY, fg="white").pack(pady=(26, 0))
+        tk.Label(
+            header, text="CONTROL DE HERRAMENTAL", font=("Segoe UI", 9, "bold"), bg=NAVY, fg=ACCENT
+        ).pack(pady=(0, 20))
+        tk.Frame(login_win, bg=ACCENT, height=4).pack(fill=tk.X)
+
+        body = tk.Frame(login_win, bg=BG)
+        body.pack(fill=tk.BOTH, expand=True, padx=40, pady=22)
+        tk.Label(body, text="Usuario", font=("Segoe UI", 10, "bold"), bg=BG, fg=MUTED).pack(anchor="w")
         user_var = tk.StringVar()
-        tk.Entry(login_win, textvariable=user_var, font=("Segoe UI", 12)).pack(pady=2)
-        tk.Label(login_win, text="Contraseña:", font=("Segoe UI", 12)).pack(pady=10)
+        user_entry = tk.Entry(body, textvariable=user_var, font=("Segoe UI", 13), relief="solid", bd=1)
+        user_entry.pack(fill=tk.X, ipady=6, pady=(2, 14))
+        tk.Label(body, text="Contraseña", font=("Segoe UI", 10, "bold"), bg=BG, fg=MUTED).pack(anchor="w")
         pass_var = tk.StringVar()
-        tk.Entry(login_win, textvariable=pass_var, font=("Segoe UI", 12), show="*").pack(pady=2)
+        pass_entry = tk.Entry(body, textvariable=pass_var, font=("Segoe UI", 13), show="•", relief="solid", bd=1)
+        pass_entry.pack(fill=tk.X, ipady=6, pady=(2, 8))
         msg_var = tk.StringVar()
-        tk.Label(login_win, textvariable=msg_var, fg="red").pack(pady=5)
-        def do_login():
+        tk.Label(body, textvariable=msg_var, fg="#c62828", bg=BG, font=("Segoe UI", 10, "bold")).pack(pady=4)
+
+        def do_login(_event=None):
             username = user_var.get().strip()
             password = pass_var.get().strip()
             if not username or not password:
                 msg_var.set("Ingresa usuario y contraseña.")
+                (user_entry if not username else pass_entry).focus_set()
                 return
             try:
-                import requests
-                r = requests.post("http://127.0.0.1:8000/login", json={"username": username, "password": password})
+                r = requests.post(
+                    "http://127.0.0.1:8000/login",
+                    json={"username": username, "password": password},
+                    timeout=10,
+                )
                 if r.status_code == 200:
                     data = r.json()
                     self.user = {"username": data["username"], "is_admin": data["is_admin"]}
-                    msg_var.set("")
                     login_win.destroy()
                     self.show_main_menu()
                 else:
                     msg_var.set("Credenciales incorrectas.")
+                    pass_var.set("")
+                    pass_entry.focus_set()
             except Exception as e:
-                msg_var.set(f"Error de conexión: {e}")
-        tk.Button(login_win, text="Iniciar sesión", command=do_login, font=("Segoe UI", 12)).pack(pady=15)
+                msg_var.set(f"No se pudo conectar con el servidor: {e}")
+
+        login_button = tk.Button(
+            body, text="INICIAR SESIÓN", command=do_login, font=("Segoe UI", 12, "bold"),
+            bg=ACCENT, fg="white", activebackground=ACCENT_DARK, activeforeground="white",
+            relief="flat", cursor="hand2", pady=8,
+        )
+        login_button.pack(fill=tk.X, pady=(8, 0))
+        user_entry.bind("<Return>", lambda _e: pass_entry.focus_set())
+        pass_entry.bind("<Return>", do_login)
+        login_win.bind("<Return>", do_login)
+        login_win.after(150, lambda: (login_win.lift(), login_win.focus_force(), user_entry.focus_set()))
 
     def show_main_menu(self):
-        # Encabezado llamativo
-        header = tk.Label(self.root, text="TOOLTRACK", font=("Segoe UI", 24, "bold"), bg="#0078D7", fg="white", pady=18)
-        header.pack(fill=tk.X)
-        # Menú principal llamativo
-        menu_frame = tk.Frame(self.root, bg="#f4f6fa")
-        menu_frame.pack(pady=60)
-        ttk.Button(menu_frame, text="Inventory", command=self.abrir_inventario, style='TButton', width=20).pack(pady=15)
-        ttk.Button(menu_frame, text="Add Tool", command=self.menu_alta, style='TButton', width=20).pack(pady=15)
-        ttk.Button(menu_frame, text="Tool Dispensing", command=self.tool_dispensing_flow, style='TButton', width=20).pack(pady=15)
-        ttk.Button(menu_frame, text="View Audit Log", command=self.ver_auditoria, style='TButton', width=20).pack(pady=15)
-        if self.user.get("is_admin", False):
-            ttk.Button(menu_frame, text="Administrar Usuarios", command=self.admin_usuarios, style='TButton', width=20).pack(pady=15)
-        else:
-            ttk.Label(menu_frame, text="Operator mode: view only", font=("Segoe UI", 10), bg="#f4f6fa", fg="#666").pack(pady=10)
+        root = self.root
+        for child in root.winfo_children():
+            child.destroy()
+        root.title("TOOLTRACK")
+        root.configure(bg=BG)
+        root.deiconify()
+        center_window(root, 1000, 680)
+        root.minsize(900, 620)
 
+        header = tk.Frame(root, bg=NAVY)
+        header.pack(fill=tk.X)
+        tk.Label(header, text="TOOLTRACK", font=("Segoe UI", 24, "bold"), bg=NAVY, fg="white").pack(
+            side=tk.LEFT, padx=28, pady=18
+        )
+        role = "Administrador" if self.user.get("is_admin", False) else "Operador"
+        tk.Label(
+            header, text=f"{self.user['username']}  ·  {role}", font=("Segoe UI", 11),
+            bg=NAVY, fg="#c9d3df",
+        ).pack(side=tk.RIGHT, padx=28)
+        tk.Frame(root, bg=ACCENT, height=4).pack(fill=tk.X)
+
+        tk.Label(
+            root, text="¿Qué quieres hacer?", font=("Segoe UI", 18, "bold"), bg=BG, fg=TEXT
+        ).pack(pady=(34, 4))
+        tk.Label(
+            root, text="Selecciona un módulo para continuar", font=("Segoe UI", 10), bg=BG, fg=MUTED
+        ).pack(pady=(0, 22))
+
+        grid = tk.Frame(root, bg=BG)
+        grid.pack()
+        cards = [
+            ("📦", "Inventory", "Registro y consulta de herramientas", self.gestion_catalogo),
+            ("🛒", "Tool Dispensing", "Comparar setups y surtir al carro", self.tool_dispensing_flow),
+                        ("📍", "Tool Tracking", "Localización, retornos y pendientes", self.tool_location_flow),
+                        ("🏭", "Máquinas", "Fichas, estaciones y capacidad", self.machines_flow),
+                        ("🧾", "Números de parte", "Programas 4I, 2I y 45 STA", self.programs_flow),
+                        ("📋", "View Audit Log", "Historial de acciones del sistema", self.ver_auditoria),
+        ]
+        if self.user.get("is_admin", False):
+            cards.append(("👤", "Administrar Usuarios", "Altas y bajas de usuarios", self.admin_usuarios))
+        for index, (icon, title, subtitle, command) in enumerate(cards):
+            self._menu_card(grid, icon, title, subtitle, command).grid(
+                row=index // 2, column=index % 2, padx=14, pady=14
+            )
+
+    def _menu_card(self, parent, icon, title, subtitle, command):
+        card = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1, cursor="hand2")
+        card.configure(width=380, height=130)
+        card.pack_propagate(False)
+        stripe = tk.Frame(card, bg=ACCENT, width=6)
+        stripe.pack(side=tk.LEFT, fill=tk.Y)
+        icon_label = tk.Label(card, text=icon, font=("Segoe UI Emoji", 30), bg=CARD)
+        icon_label.pack(side=tk.LEFT, padx=18)
+        text = tk.Frame(card, bg=CARD)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=26)
+        title_label = tk.Label(text, text=title, font=("Segoe UI", 14, "bold"), bg=CARD, fg=NAVY, anchor="w")
+        title_label.pack(fill=tk.X)
+        sub_label = tk.Label(text, text=subtitle, font=("Segoe UI", 9), bg=CARD, fg=MUTED, anchor="w", wraplength=220, justify="left")
+        sub_label.pack(fill=tk.X, pady=(4, 0))
+        widgets = (card, icon_label, text, title_label, sub_label)
+
+        def set_bg(color):
+            for widget in widgets:
+                widget.configure(bg=color)
+
+        for widget in widgets:
+            widget.bind("<Button-1>", lambda _e: command())
+            widget.bind("<Enter>", lambda _e: set_bg("#fff4e0"))
+            widget.bind("<Leave>", lambda _e: set_bg(CARD))
+        return card
     def admin_usuarios(self):
         win = tk.Toplevel(self.root)
         win.title("Administrar Usuarios")
@@ -99,7 +192,7 @@ class HerramientaApp:
                 password = pass_var.get().strip()
                 is_admin = rol_var.get() == "Admin"
                 if not username or not password:
-                    messagebox.showerror("Error", "Usuario y contraseña requeridos")
+                    messagebox.showerror("Error", "Usuario y contraseÃ±a requeridos")
                     return
                 try:
                     import requests
@@ -117,7 +210,7 @@ class HerramientaApp:
             tk.Label(top, text="Usuario:").pack()
             user_var = tk.StringVar()
             tk.Entry(top, textvariable=user_var).pack()
-            tk.Label(top, text="Contraseña:").pack()
+            tk.Label(top, text="ContraseÃ±a:").pack()
             pass_var = tk.StringVar()
             tk.Entry(top, textvariable=pass_var, show="*").pack()
             tk.Label(top, text="Rol:").pack()
@@ -133,7 +226,7 @@ class HerramientaApp:
             if username == self.user["username"]:
                 messagebox.showwarning("No permitido", "No puedes eliminarte a ti mismo")
                 return
-            if messagebox.askyesno("Confirmar", f"¿Eliminar usuario {username}?"):
+            if messagebox.askyesno("Confirmar", f"Â¿Eliminar usuario {username}?"):
                 try:
                     import requests
                     r = requests.delete(f"http://127.0.0.1:8000/users/{username}")
@@ -153,7 +246,7 @@ class HerramientaApp:
                 password = pass_var.get().strip()
                 is_admin = rol_var.get() == "Admin"
                 if not password:
-                    messagebox.showerror("Error", "Contraseña requerida")
+                    messagebox.showerror("Error", "ContraseÃ±a requerida")
                     return
                 try:
                     import requests
@@ -169,7 +262,7 @@ class HerramientaApp:
             top = tk.Toplevel(win)
             top.title(f"Editar Usuario: {username}")
             tk.Label(top, text=f"Usuario: {username}").pack()
-            tk.Label(top, text="Nueva Contraseña:").pack()
+            tk.Label(top, text="Nueva ContraseÃ±a:").pack()
             pass_var = tk.StringVar()
             tk.Entry(top, textvariable=pass_var, show="*").pack()
             tk.Label(top, text="Rol:").pack()
@@ -215,13 +308,13 @@ class HerramientaApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         btn_frame = tk.Frame(win, bg="#f4f6fa")
         btn_frame.pack(pady=5)
-        # Paginación
+        # PaginaciÃ³n
         page_var = tk.IntVar(value=1)
         page_size = 15
         total_pages = [1]
         def update_pagination(total):
             total_pages[0] = max(1, (total + page_size - 1) // page_size)
-            page_label.config(text=f"Página {page_var.get()} de {total_pages[0]}")
+            page_label.config(text=f"PÃ¡gina {page_var.get()} de {total_pages[0]}")
             prev_btn.config(state=tk.NORMAL if page_var.get() > 1 else tk.DISABLED)
             next_btn.config(state=tk.NORMAL if page_var.get() < total_pages[0] else tk.DISABLED)
         def buscar():
@@ -238,7 +331,7 @@ class HerramientaApp:
                     cat = h.get('categoria','')
                     cat_map = {'punzon':'punch','matriz':'die','holder':'holder','accesorio':'accessory'}
                     cat_eng = cat_map.get(cat,cat)
-                    # Filtro por tipo/categoría
+                    # Filtro por tipo/categorÃ­a
                     if tipo_filtro != "all" and cat_eng != tipo_filtro:
                         continue
                     # Filtro parcial por cualquier campo visible
@@ -266,7 +359,7 @@ class HerramientaApp:
             if page_var.get() < total_pages[0]:
                 page_var.set(page_var.get()+1)
                 buscar()
-        page_label = tk.Label(btn_frame, text="Página 1 de 1", bg="#f4f6fa", font=("Segoe UI", 10))
+        page_label = tk.Label(btn_frame, text="PÃ¡gina 1 de 1", bg="#f4f6fa", font=("Segoe UI", 10))
         page_label.pack(side=tk.LEFT, padx=10)
         prev_btn = ttk.Button(btn_frame, text="Anterior", command=prev_page, style='TButton')
         prev_btn.pack(side=tk.LEFT, padx=5)
@@ -288,6 +381,775 @@ class HerramientaApp:
         ttk.Button(win, text="Search", command=buscar, style='TButton').pack(pady=5)
         search_entry.bind('<KeyRelease>', lambda event: buscar())
         buscar()  # Ejecutar siempre al abrir la ventana
+        win.focus()
+
+    def gestion_catalogo_legacy(self):
+        win = tk.Toplevel(self.root)
+        win.title("TOOLTRACK Inventory")
+        win.geometry("1320x650")
+        win.configure(bg="#f4f6fa")
+
+        notebook = ttk.Notebook(win)
+        catalog_tab = tk.Frame(notebook, bg="#f4f6fa")
+        tools_tab = tk.Frame(notebook, bg="#f4f6fa")
+        notebook.add(tools_tab, text="Inventory")
+        notebook.add(catalog_tab, text="Tool Number Catalog")
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        catalog_tree = ttk.Treeview(
+            catalog_tab,
+            columns=("TN", "SIZE", "TYPE", "VARIANTS"),
+            show="headings",
+            height=16,
+        )
+        for column, width in (("TN", 180), ("SIZE", 100), ("TYPE", 180), ("VARIANTS", 450)):
+            catalog_tree.heading(column, text=column)
+            catalog_tree.column(column, width=width, anchor=tk.CENTER)
+        catalog_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        inventory_summary = tk.StringVar()
+        tk.Label(
+            tools_tab,
+            textvariable=inventory_summary,
+            bg="#f4f6fa",
+            anchor=tk.W,
+        ).pack(fill=tk.X, padx=8, pady=(6, 0))
+        tk.Label(
+            tools_tab,
+            text="All registered physical tools are shown. Catalog Link identifies records not yet associated with the normalized TN catalog.",
+            bg="#f4f6fa",
+            fg="#555",
+            anchor=tk.W,
+        ).pack(fill=tk.X, padx=8, pady=(2, 4))
+        inventory_frame = tk.Frame(tools_tab, bg="#f4f6fa")
+        inventory_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        tool_tree = ttk.Treeview(
+            inventory_frame,
+            columns=("ID", "TN", "SIZE", "TYPE", "CATEGORY", "CLEARANCE", "LIFE", "SO", "LOCATION", "CATALOG LINK"),
+            show="headings",
+            height=16,
+        )
+        for column, width in (
+            ("ID", 150), ("TN", 120), ("SIZE", 65), ("TYPE", 140),
+            ("CATEGORY", 110), ("CLEARANCE", 95), ("LIFE", 100),
+            ("SO", 120), ("LOCATION", 160), ("CATALOG LINK", 150),
+        ):
+            tool_tree.heading(column, text=column)
+            tool_tree.column(
+                column,
+                width=width,
+                anchor=tk.W if column in ("ID", "TYPE", "SO", "LOCATION", "CATALOG LINK") else tk.CENTER,
+            )
+        inventory_y_scroll = ttk.Scrollbar(inventory_frame, orient="vertical", command=tool_tree.yview)
+        inventory_x_scroll = ttk.Scrollbar(inventory_frame, orient="horizontal", command=tool_tree.xview)
+        tool_tree.configure(
+            yscrollcommand=inventory_y_scroll.set,
+            xscrollcommand=inventory_x_scroll.set,
+        )
+        tool_tree.grid(row=0, column=0, sticky="nsew")
+        inventory_y_scroll.grid(row=0, column=1, sticky="ns")
+        inventory_x_scroll.grid(row=1, column=0, sticky="ew")
+        inventory_frame.grid_rowconfigure(0, weight=1)
+        inventory_frame.grid_columnconfigure(0, weight=1)
+
+        is_admin = self.user.get("is_admin", False)
+        configs = []
+        variants = []
+
+        def request_error(response):
+            try:
+                detail = response.json().get("detail")
+            except (ValueError, AttributeError):
+                detail = None
+            return detail or f"API error {response.status_code}: {response.text}"
+
+        def refresh_catalog():
+            nonlocal configs, variants
+            try:
+                config_response = requests.get("http://127.0.0.1:8000/catalogo/configuraciones", timeout=10)
+                if config_response.status_code != 200:
+                    raise RuntimeError(request_error(config_response))
+                tn_response = requests.get("http://127.0.0.1:8000/catalogo/tn", timeout=10)
+                if tn_response.status_code != 200:
+                    raise RuntimeError(request_error(tn_response))
+                variant_response = requests.get("http://127.0.0.1:8000/catalogo/variantes", timeout=10)
+                if variant_response.status_code != 200:
+                    raise RuntimeError(request_error(variant_response))
+                configs = config_response.json()
+                variants = variant_response.json()
+                tool_numbers = [item["tn"] for item in tn_response.json()]
+                for row in catalog_tree.get_children():
+                    catalog_tree.delete(row)
+                for tn in tool_numbers:
+                    tn_configs = [config for config in configs if config["tn"] == tn]
+                    if not tn_configs:
+                        catalog_tree.insert(
+                            "",
+                            tk.END,
+                            values=(tn, "-", "-", "No configurations"),
+                        )
+                        continue
+                    for config in tn_configs:
+                        variant_text = ", ".join(
+                            "Punch" if variant["categoria"] == "punzon"
+                            else f"Die clearance {variant['clearance']}"
+                            for variant in config["variantes"]
+                        )
+                        catalog_tree.insert(
+                            "",
+                            tk.END,
+                            values=(config["tn"], config["size"], config["type"], variant_text),
+                        )
+            except (requests.RequestException, RuntimeError, ValueError) as error:
+                messagebox.showerror("Catalog Error", f"Could not load catalog: {error}", parent=win)
+
+        def refresh_tools():
+            try:
+                inventory_response = requests.get("http://127.0.0.1:8000/herramientas/", timeout=10)
+                if inventory_response.status_code != 200:
+                    raise RuntimeError(request_error(inventory_response))
+                catalog_response = requests.get("http://127.0.0.1:8000/catalogo/herramientas", timeout=10)
+                if catalog_response.status_code != 200:
+                    raise RuntimeError(request_error(catalog_response))
+                cataloged_by_id = {
+                    str(tool.get("id")): tool
+                    for tool in catalog_response.json()
+                }
+                for row in tool_tree.get_children():
+                    tool_tree.delete(row)
+                inventory = inventory_response.json()
+                linked_count = 0
+                for tool in inventory:
+                    catalog_record = cataloged_by_id.get(str(tool.get("id")))
+                    catalog_link = "Linked" if catalog_record else "Not linked"
+                    if catalog_record:
+                        linked_count += 1
+                    tool_tree.insert(
+                        "",
+                        tk.END,
+                        values=(
+                            tool.get("id", ""),
+                            tool.get("tn", ""),
+                            tool.get("size", ""),
+                            tool.get("type", ""),
+                            tool.get("categoria", ""),
+                            tool.get("clearance", "") or "",
+                            tool.get("life", "") or "",
+                            tool.get("so", "") or "",
+                            tool.get("ubicacion", "") or "",
+                            catalog_link,
+                        ),
+                    )
+                inventory_summary.set(
+                    f"Physical tools: {len(inventory)} | Linked to catalog: {linked_count} | Not linked: {len(inventory) - linked_count}"
+                )
+            except (requests.RequestException, RuntimeError, ValueError) as error:
+                messagebox.showerror("Inventory Error", f"Could not load inventory: {error}", parent=win)
+
+        def submit_catalog_request(response, action, record_id, details, form):
+            if response.status_code not in (200, 201):
+                messagebox.showerror("Catalog Error", request_error(response), parent=form)
+                return False
+            log_audit(action, self.user["username"], record_id, details)
+            form.destroy()
+            refresh_catalog()
+            refresh_tools()
+            return True
+
+        def add_tn():
+            tn = simpledialog.askstring("New Tool Number", "Tool Number:", parent=win)
+            if tn is None:
+                return
+            tn = tn.strip()
+            if not tn:
+                messagebox.showerror("Validation", "Tool Number is required.", parent=win)
+                return
+            try:
+                response = requests.post(
+                    "http://127.0.0.1:8000/catalogo/tn",
+                    json={"tn": tn},
+                    timeout=10,
+                )
+                if response.status_code not in (200, 201):
+                    messagebox.showerror("Catalog Error", request_error(response), parent=win)
+                    return
+                log_audit("catalog_tn_create", self.user["username"], tn, response.json())
+                refresh_catalog()
+            except requests.RequestException as error:
+                messagebox.showerror("Catalog Error", f"Could not create Tool Number: {error}", parent=win)
+
+        def add_configuration():
+            tn_values = load_tn_options()
+            if not tn_values:
+                return
+            form = tk.Toplevel(win)
+            form.title("Add TN Configuration")
+            form.configure(bg="#f4f6fa")
+            tn_var = tk.StringVar(value=tn_values[0] if tn_values else "")
+            size_var = tk.StringVar()
+            type_var = tk.StringVar()
+            fields = (
+                ("Tool Number", ttk.Combobox(form, textvariable=tn_var, values=tn_values, state="readonly")),
+                ("SIZE", ttk.Combobox(form, textvariable=size_var, values=["A", "B", "C", "D", "E"], state="readonly")),
+                ("TYPE", ttk.Combobox(
+                    form,
+                    textvariable=type_var,
+                    values=["ROUND", "SQUARE", "RECTANGULAR", "OVAL", "HEXAGONAL", "SPECIAL", "FORMED", "1 RADIUS", "2 RADII", "4 RADII"],
+                    state="readonly",
+                )),
+            )
+            for row, (label, widget) in enumerate(fields):
+                tk.Label(form, text=label, bg="#f4f6fa").grid(row=row, column=0, sticky=tk.W, padx=8, pady=6)
+                widget.grid(row=row, column=1, padx=8, pady=6)
+
+            def save():
+                payload = {"tn": tn_var.get(), "size": size_var.get(), "type": type_var.get()}
+                if not all(payload.values()):
+                    messagebox.showerror("Validation", "Tool Number, SIZE and TYPE are required.", parent=form)
+                    return
+                try:
+                    response = requests.post(
+                        "http://127.0.0.1:8000/catalogo/configuraciones",
+                        json=payload,
+                        timeout=10,
+                    )
+                    submit_catalog_request(response, "catalog_configuration_create", payload["tn"], payload, form)
+                except requests.RequestException as error:
+                    messagebox.showerror("Catalog Error", f"Could not create configuration: {error}", parent=form)
+
+            ttk.Button(form, text="Save", command=save).grid(row=len(fields), column=0, columnspan=2, pady=10)
+
+        def load_tn_options():
+            try:
+                response = requests.get("http://127.0.0.1:8000/catalogo/tn", timeout=10)
+                if response.status_code != 200:
+                    raise RuntimeError(request_error(response))
+                return [item["tn"] for item in response.json()]
+            except (requests.RequestException, RuntimeError, ValueError, KeyError) as error:
+                messagebox.showerror("Catalog Error", f"Could not load Tool Numbers: {error}", parent=win)
+                return []
+
+        def add_variant():
+            if not configs:
+                messagebox.showwarning("Catalog", "Create a TN configuration before adding variants.", parent=win)
+                return
+            form = tk.Toplevel(win)
+            form.title("Add Tool Variant")
+            form.configure(bg="#f4f6fa")
+            config_options = [
+                f"{config['tn']} | {config['size']} | {config['type']}"
+                for config in configs
+            ]
+            config_lookup = dict(zip(config_options, configs))
+            config_var = tk.StringVar(value=config_options[0])
+            category_var = tk.StringVar(value="punzon")
+            clearance_var = tk.StringVar()
+            tk.Label(form, text="TN / SIZE / TYPE", bg="#f4f6fa").grid(row=0, column=0, sticky=tk.W, padx=8, pady=6)
+            ttk.Combobox(form, textvariable=config_var, values=config_options, state="readonly", width=35).grid(row=0, column=1, padx=8, pady=6)
+            tk.Label(form, text="Category", bg="#f4f6fa").grid(row=1, column=0, sticky=tk.W, padx=8, pady=6)
+            category_widget = ttk.Combobox(form, textvariable=category_var, values=["punzon", "matriz"], state="readonly")
+            category_widget.grid(row=1, column=1, padx=8, pady=6)
+            tk.Label(form, text="CLEARANCE (dies only)", bg="#f4f6fa").grid(row=2, column=0, sticky=tk.W, padx=8, pady=6)
+            clearance_entry = tk.Entry(form, textvariable=clearance_var)
+            clearance_entry.grid(row=2, column=1, padx=8, pady=6)
+
+            def toggle_clearance(_event=None):
+                clearance_entry.config(state=tk.NORMAL if category_var.get() == "matriz" else tk.DISABLED)
+                if category_var.get() == "punzon":
+                    clearance_var.set("")
+
+            category_widget.bind("<<ComboboxSelected>>", toggle_clearance)
+            toggle_clearance()
+
+            def save():
+                config = config_lookup[config_var.get()]
+                payload = {"categoria": category_var.get()}
+                if category_var.get() == "matriz":
+                    payload["clearance"] = clearance_var.get().strip()
+                if category_var.get() == "matriz" and not payload["clearance"]:
+                    messagebox.showerror("Validation", "CLEARANCE is required for a die.", parent=form)
+                    return
+                try:
+                    from urllib.parse import quote
+                    path = f"{quote(config['tn'], safe='')}/{quote(config['size'], safe='')}"
+                    response = requests.post(
+                        f"http://127.0.0.1:8000/catalogo/configuraciones/{path}/variantes",
+                        json=payload,
+                        timeout=10,
+                    )
+                    record_id = f"{config['tn']}/{config['size']}/{payload['categoria']}/{payload.get('clearance', '')}"
+                    submit_catalog_request(response, "catalog_variant_create", record_id, payload, form)
+                except requests.RequestException as error:
+                    messagebox.showerror("Catalog Error", f"Could not create variant: {error}", parent=form)
+
+            ttk.Button(form, text="Save", command=save).grid(row=3, column=0, columnspan=2, pady=10)
+
+        def add_physical_tool():
+            if not variants:
+                messagebox.showwarning("Catalog", "Create a tool variant before registering a physical tool.", parent=win)
+                return
+            form = tk.Toplevel(win)
+            form.title("Register Physical Tool")
+            form.configure(bg="#f4f6fa")
+            variant_options = [
+                f"{variant['tn']} | {variant['size']} | {variant['categoria']} | "
+                f"{variant['clearance'] or '-'} | {variant['type']}"
+                for variant in variants
+            ]
+            variant_lookup = dict(zip(variant_options, variants))
+            variant_var = tk.StringVar(value=variant_options[0])
+            fields = {}
+            tk.Label(form, text="Catalog variant", bg="#f4f6fa").grid(row=0, column=0, sticky=tk.W, padx=8, pady=6)
+            ttk.Combobox(
+                form,
+                textvariable=variant_var,
+                values=variant_options,
+                state="readonly",
+                width=48,
+            ).grid(row=0, column=1, padx=8, pady=6)
+            for row, label in enumerate(("Physical ID", "LIFE", "SO", "Location"), start=1):
+                tk.Label(form, text=label, bg="#f4f6fa").grid(row=row, column=0, sticky=tk.W, padx=8, pady=6)
+                if label == "Location":
+                    entry = ttk.Combobox(form, values=["", *fetch_rack_codes(form)], state="readonly", width=17)
+                else:
+                    entry = tk.Entry(form)
+                entry.grid(row=row, column=1, padx=8, pady=6)
+                fields[label] = entry
+
+            def save():
+                physical_id = fields["Physical ID"].get().strip()
+                life = fields["LIFE"].get().strip()
+                if not physical_id or not life:
+                    messagebox.showerror("Validation", "Physical ID and LIFE are required.", parent=form)
+                    return
+                variant = variant_lookup[variant_var.get()]
+                payload = {
+                    "id": physical_id,
+                    "variante_id": variant["id"],
+                    "life": life,
+                    "so": fields["SO"].get().strip() or None,
+                    "ubicacion": fields["Location"].get().strip() or None,
+                }
+                try:
+                    response = requests.post(
+                        "http://127.0.0.1:8000/catalogo/herramientas",
+                        json=payload,
+                        timeout=10,
+                    )
+                    submit_catalog_request(response, "catalog_physical_tool_create", physical_id, payload, form)
+                except requests.RequestException as error:
+                    messagebox.showerror("Catalog Error", f"Could not register physical tool: {error}", parent=form)
+
+            ttk.Button(form, text="Save", command=save).grid(row=5, column=0, columnspan=2, pady=10)
+
+        catalog_buttons = tk.Frame(catalog_tab, bg="#f4f6fa")
+        catalog_buttons.pack(pady=6)
+        ttk.Button(catalog_buttons, text="Refresh", command=refresh_catalog).pack(side=tk.LEFT, padx=4)
+        tool_buttons = tk.Frame(tools_tab, bg="#f4f6fa")
+        tool_buttons.pack(pady=6)
+        ttk.Button(tool_buttons, text="Refresh", command=refresh_tools).pack(side=tk.LEFT, padx=4)
+        if is_admin:
+            ttk.Button(catalog_buttons, text="Add Tool Number", command=add_tn).pack(side=tk.LEFT, padx=4)
+            ttk.Button(catalog_buttons, text="Add Configuration", command=add_configuration).pack(side=tk.LEFT, padx=4)
+            ttk.Button(catalog_buttons, text="Add Variant", command=add_variant).pack(side=tk.LEFT, padx=4)
+            ttk.Button(tool_buttons, text="Register Physical Tool", command=add_physical_tool).pack(side=tk.LEFT, padx=4)
+        else:
+            tk.Label(
+                win,
+                text="View only. Catalog and tool registration require administrator access.",
+                bg="#f4f6fa",
+                fg="#666",
+            ).pack(pady=(0, 8))
+
+        refresh_catalog()
+        refresh_tools()
+        win.focus()
+
+    def gestion_catalogo(self):
+        win = tk.Toplevel(self.root)
+        win.title("TOOLTRACK - Inventory")
+        win.geometry("1320x680")
+        win.configure(bg="#f4f6fa")
+
+        tk.Label(
+            win,
+            text="Physical Tool Inventory",
+            font=("Segoe UI", 16, "bold"),
+            bg="#f4f6fa",
+        ).pack(anchor=tk.W, padx=14, pady=(12, 2))
+        tk.Label(
+            win,
+            text="Register and view every tool from this screen. Catalog records are created automatically during registration.",
+            bg="#f4f6fa",
+            fg="#555",
+        ).pack(anchor=tk.W, padx=14, pady=(0, 8))
+
+        inventory_summary = tk.StringVar()
+        tk.Label(
+            win,
+            textvariable=inventory_summary,
+            bg="#f4f6fa",
+            anchor=tk.W,
+        ).pack(fill=tk.X, padx=14, pady=(2, 6))
+
+        columns = (
+            "ID", "TN", "SIZE", "TYPE", "CATEGORY", "CLEARANCE",
+            "LIFE", "SO", "LOCATION", "CATALOG",
+        )
+        table_frame = tk.Frame(win, bg="#f4f6fa")
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=5)
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings")
+        widths = (150, 120, 65, 150, 110, 95, 100, 120, 170, 130)
+        for column, width in zip(columns, widths):
+            tree.heading(column, text=column)
+            tree.column(
+                column,
+                width=width,
+                anchor=tk.W if column in {"ID", "TYPE", "SO", "LOCATION", "CATALOG"} else tk.CENTER,
+            )
+        y_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=tree.yview)
+        x_scroll = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        table_frame.grid_rowconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(0, weight=1)
+
+        def api_error(response):
+            try:
+                detail = response.json().get("detail")
+            except (ValueError, AttributeError):
+                detail = None
+            return detail or f"API error {response.status_code}: {response.text}"
+
+        def refresh_inventory():
+            try:
+                inventory_response = requests.get(API_URL, timeout=10)
+                if inventory_response.status_code != 200:
+                    raise RuntimeError(api_error(inventory_response))
+                catalog_response = requests.get(
+                    "http://127.0.0.1:8000/catalogo/herramientas",
+                    timeout=10,
+                )
+                if catalog_response.status_code != 200:
+                    raise RuntimeError(api_error(catalog_response))
+                catalog_ids = {
+                    str(tool.get("id"))
+                    for tool in catalog_response.json()
+                }
+                inventory = inventory_response.json()
+                for row in tree.get_children():
+                    tree.delete(row)
+                linked_count = 0
+                for tool in inventory:
+                    linked = str(tool.get("id")) in catalog_ids
+                    linked_count += int(linked)
+                    tree.insert(
+                        "",
+                        tk.END,
+                        values=(
+                            tool.get("id") or "",
+                            tool.get("tn") or "",
+                            tool.get("size") or "",
+                            tool.get("type") or "",
+                            tool.get("categoria") or "",
+                            tool.get("clearance") or "",
+                            tool.get("life") or "",
+                            tool.get("so") or "",
+                            tool.get("ubicacion") or "",
+                            "Linked" if linked else "Not linked",
+                        ),
+                    )
+                inventory_summary.set(
+                    f"Tools: {len(inventory)}  |  Catalog linked: {linked_count}  |  Legacy/unlinked: {len(inventory) - linked_count}"
+                )
+            except (requests.RequestException, RuntimeError, ValueError) as error:
+                messagebox.showerror(
+                    "Inventory Error",
+                    f"Could not load inventory: {error}",
+                    parent=win,
+                )
+
+        def register_tool(existing=None):
+            if not self.user.get("is_admin", False):
+                messagebox.showwarning(
+                    "Permission denied",
+                    "Only administrators can register tools.",
+                    parent=win,
+                )
+                return
+
+            form = tk.Toplevel(win)
+            form.title("Edit Physical Tool" if existing else "Register Physical Tool")
+            form.configure(bg="#f4f6fa")
+            form.transient(win)
+            form.grab_set()
+
+            fields = {}
+            current_category = (existing.get("categoria") or "punzon").lower() if existing else "punzon"
+            current_category = {"punch": "punzon", "die": "matriz", "accessory": "accesorio"}.get(
+                current_category,
+                current_category,
+            )
+            category_var = tk.StringVar(value=current_category)
+            labels = (
+                "Physical ID", "Category", "TN", "SIZE", "TYPE",
+                "CLEARANCE", "LIFE", "SO", "Location",
+            )
+            label_widgets = {}
+            for row, label in enumerate(labels):
+                label_widget = tk.Label(form, text=label, bg="#f4f6fa")
+                label_widget.grid(
+                    row=row,
+                    column=0,
+                    sticky=tk.W,
+                    padx=10,
+                    pady=5,
+                )
+                label_widgets[label] = label_widget
+                if label == "Category":
+                    widget = ttk.Combobox(
+                        form,
+                        textvariable=category_var,
+                        values=["punzon", "matriz", "holder", "accesorio"],
+                        state="readonly",
+                        width=30,
+                    )
+                elif label == "SIZE":
+                    widget = ttk.Combobox(
+                        form,
+                        values=["A", "B", "C", "D", "E"],
+                        state="readonly",
+                        width=30,
+                    )
+                elif label == "TYPE":
+                    widget = ttk.Combobox(
+                        form,
+                        values=PUNCH_DIE_TYPES,
+                        state="readonly",
+                        width=30,
+                    )
+                elif label == "Location":
+                    widget = ttk.Combobox(
+                        form,
+                        values=["", *fetch_rack_codes(form)],
+                        state="readonly",
+                        width=30,
+                    )
+                else:
+                    widget = tk.Entry(form, width=33)
+                widget.grid(row=row, column=1, sticky=tk.W, padx=10, pady=5)
+                fields[label] = widget
+
+            if existing:
+                fields["Physical ID"].insert(0, existing.get("id") or "")
+                fields["Physical ID"].configure(state=tk.DISABLED)
+                fields["TN"].insert(0, existing.get("tn") or "")
+                fields["SIZE"].set(existing.get("size") or "")
+                fields["CLEARANCE"].insert(0, existing.get("clearance") or "")
+                fields["LIFE"].insert(0, existing.get("life") or "")
+                fields["SO"].insert(0, existing.get("so") or "")
+                fields["Location"].set(existing.get("ubicacion") or "")
+
+            def type_values_for_category(category):
+                if category in {"punzon", "matriz"}:
+                    allowed = PUNCH_DIE_TYPES
+                elif category == "holder":
+                    allowed = HOLDER_TYPES
+                else:
+                    allowed = ACCESSORY_TYPES
+                current_type = fields["TYPE"].get().strip().upper()
+                all_standard_types = set(PUNCH_DIE_TYPES + HOLDER_TYPES + ACCESSORY_TYPES)
+                if (
+                    category == current_category
+                    and current_type
+                    and current_type not in allowed
+                    and current_type not in all_standard_types
+                ):
+                    return [*allowed, current_type]
+                return allowed
+
+            if existing:
+                current_type = (existing.get("type") or "").upper()
+                category_types = {
+                    "punzon": PUNCH_DIE_TYPES,
+                    "matriz": PUNCH_DIE_TYPES,
+                    "holder": HOLDER_TYPES,
+                    "accesorio": ACCESSORY_TYPES,
+                }
+                valid_types = category_types.get(current_category, [])
+                all_standard_types = set(PUNCH_DIE_TYPES + HOLDER_TYPES + ACCESSORY_TYPES)
+                fields["TYPE"].set(
+                    current_type
+                    if current_type in valid_types or current_type not in all_standard_types
+                    else ""
+                )
+                values = type_values_for_category(current_category)
+                fields["TYPE"]["values"] = values
+
+            def toggle_tn_fields(_event=None):
+                is_tn_tool = category_var.get() in {"punzon", "matriz"}
+                for label in ("TN", "SIZE", "CLEARANCE", "LIFE"):
+                    visible = is_tn_tool
+                    widget = fields[label]
+                    if visible:
+                        widget.grid()
+                        label_widgets[label].grid()
+                    else:
+                        widget.grid_remove()
+                        label_widgets[label].grid_remove()
+                fields["CLEARANCE"].configure(state=tk.NORMAL if category_var.get() == "matriz" else tk.DISABLED)
+                if category_var.get() != "matriz":
+                    fields["CLEARANCE"].delete(0, tk.END)
+                if not is_tn_tool:
+                    for label in ("TN", "SIZE", "LIFE"):
+                        fields[label].delete(0, tk.END)
+                fields["TYPE"]["values"] = type_values_for_category(category_var.get())
+
+            previous_category = [current_category]
+
+            def category_changed(*_args):
+                toggle_tn_fields()
+                new_category = category_var.get()
+                if new_category != previous_category[0]:
+                    values = type_values_for_category(new_category)
+                    if values:
+                        fields["TYPE"].set(values[0])
+                    previous_category[0] = new_category
+
+            category_var.trace_add("write", category_changed)
+            toggle_tn_fields()
+
+            def save():
+                category = category_var.get()
+                physical_id = fields["Physical ID"].get().strip()
+                type_ = fields["TYPE"].get().strip()
+                if not physical_id or not type_:
+                    messagebox.showerror(
+                        "Validation",
+                        "Physical ID and TYPE are required.",
+                        parent=form,
+                    )
+                    return
+                payload = {
+                    "id": physical_id,
+                    "categoria": category,
+                    "type": type_,
+                    "so": fields["SO"].get().strip() or None,
+                    "ubicacion": fields["Location"].get().strip() or None,
+                }
+                if category in {"punzon", "matriz"}:
+                    payload.update({
+                        "tn": fields["TN"].get().strip(),
+                        "size": fields["SIZE"].get().strip(),
+                        "life": fields["LIFE"].get().strip(),
+                    })
+                    if category == "matriz":
+                        payload["clearance"] = fields["CLEARANCE"].get().strip()
+                try:
+                    if existing:
+                        response = requests.put(
+                            f"http://127.0.0.1:8000/inventario/herramientas/{physical_id}",
+                            json=payload,
+                            timeout=15,
+                        )
+                    else:
+                        response = requests.post(
+                            "http://127.0.0.1:8000/inventario/herramientas",
+                            json=payload,
+                            timeout=15,
+                        )
+                    if response.status_code not in (200, 201):
+                        messagebox.showerror("Save Error", api_error(response), parent=form)
+                        return
+                    log_audit(
+                        "inventory_tool_updated" if existing else "inventory_tool_registered",
+                        self.user["username"],
+                        physical_id,
+                        response.json(),
+                    )
+                    form.destroy()
+                    refresh_inventory()
+                    messagebox.showinfo(
+                        "Registered",
+                        f"Tool {physical_id} was {'updated' if existing else 'registered'} in Inventory.",
+                        parent=win,
+                    )
+                except requests.RequestException as error:
+                    messagebox.showerror(
+                        "Save Error",
+                        f"Could not save tool: {error}",
+                        parent=form,
+                    )
+
+            ttk.Button(form, text="Save Changes" if existing else "Register Tool", command=save).grid(
+                row=len(labels),
+                column=0,
+                columnspan=2,
+                pady=12,
+            )
+
+        def selected_inventory_record():
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("Inventory", "Select a tool first.", parent=win)
+                return None
+            values = tree.item(selection[0], "values")
+            return {
+                "id": values[0],
+                "tn": values[1],
+                "size": values[2],
+                "type": values[3],
+                "categoria": values[4],
+                "clearance": values[5],
+                "life": values[6],
+                "so": values[7],
+                "ubicacion": values[8],
+            }
+
+        def edit_tool():
+            record = selected_inventory_record()
+            if record:
+                register_tool(existing=record)
+
+        def delete_tool():
+            record = selected_inventory_record()
+            if not record:
+                return
+            if not messagebox.askyesno(
+                "Delete Tool",
+                f"Delete physical tool {record['id']} from inventory? This cannot be undone.",
+                parent=win,
+            ):
+                return
+            try:
+                from urllib.parse import quote
+                response = requests.delete(
+                    f"{API_URL}{quote(record['id'], safe='')}",
+                    timeout=15,
+                )
+                if response.status_code != 200:
+                    messagebox.showerror("Delete Error", api_error(response), parent=win)
+                    return
+                log_audit(
+                    "inventory_tool_deleted",
+                    self.user["username"],
+                    record["id"],
+                    record,
+                )
+                refresh_inventory()
+            except requests.RequestException as error:
+                messagebox.showerror("Delete Error", f"Could not delete tool: {error}", parent=win)
+
+        controls = tk.Frame(win, bg="#f4f6fa")
+        controls.pack(pady=8)
+        ttk.Button(controls, text="Refresh Inventory", command=refresh_inventory).pack(side=tk.LEFT, padx=5)
+        if self.user.get("is_admin", False):
+            ttk.Button(controls, text="Register Tool", command=register_tool).pack(side=tk.LEFT, padx=5)
+            ttk.Button(controls, text="Edit Selected", command=edit_tool).pack(side=tk.LEFT, padx=5)
+            ttk.Button(controls, text="Delete Selected", command=delete_tool).pack(side=tk.LEFT, padx=5)
+        refresh_inventory()
         win.focus()
 
     def menu_alta(self):
@@ -385,9 +1247,9 @@ class HerramientaApp:
                 return
             alerta = None
             if valor_life < 0.3:
-                alerta = "¡End of life! LIFE < .3"
+                alerta = "Â¡End of life! LIFE < .3"
             elif valor_life > 0.6:
-                alerta = "¡Warning! LIFE > .6 (recommended max .5)"
+                alerta = "Â¡Warning! LIFE > .6 (recommended max .5)"
             data = {
                 "id": codigo_unico,
                 "tn": tn,
@@ -501,9 +1363,9 @@ class HerramientaApp:
             clearance_fmt = f"{valor_clearance:.3f}"
             alerta = None
             if valor_life < 1.15:
-                alerta = "¡Warning! LIFE close to the minimum (1.1)"
+                alerta = "Â¡Warning! LIFE close to the minimum (1.1)"
             elif valor_life > 1.22:
-                alerta = "¡Warning! LIFE close to the maximum (1.25)"
+                alerta = "Â¡Warning! LIFE close to the maximum (1.25)"
             if not tn or not codigo_unico or not size or not type_ or not life or not clearance:
                 self.show_error("All required fields must be filled.")
                 return
@@ -533,7 +1395,7 @@ class HerramientaApp:
         ttk.Button(win, text="Save", command=submit, style='TButton').grid(row=len(labels), column=0, columnspan=2, pady=10)
 
     def generar_id_interno(self):
-        # Busca el mayor ID numérico existente y suma 1, si no hay, inicia en 100000
+        # Busca el mayor ID numÃ©rico existente y suma 1, si no hay, inicia en 100000
         try:
             r = requests.get(API_URL)
             if r.status_code == 200:
@@ -643,12 +1505,12 @@ class HerramientaApp:
         item = self.tree.item(selected[0])
         values = item['values']
         if values[4] == '':
-            messagebox.showinfo("No aplica", "Solo puedes ajustar conteo de herramientas sin ID único.")
+            messagebox.showinfo("No aplica", "Solo puedes ajustar conteo de herramientas sin ID Ãºnico.")
             return
         try:
             nuevo_conteo = int(simpledialog.askstring("Ajuste", "Nuevo conteo:"))
         except:
-            messagebox.showerror("Error", "Cantidad inválida")
+            messagebox.showerror("Error", "Cantidad invÃ¡lida")
             return
         try:
             requests.patch(f"{API_URL}{values[0]}/ajustar_conteo?conteo={nuevo_conteo}")
@@ -735,7 +1597,7 @@ class HerramientaApp:
             return
         item = self.tree.item(selected[0])
         values = item['values']
-        if messagebox.askyesno("Eliminar", f"¿Seguro que deseas eliminar la herramienta ID {values[0]}?"):
+        if messagebox.askyesno("Eliminar", f"Â¿Seguro que deseas eliminar la herramienta ID {values[0]}?"):
             if not self.user.get("is_admin", False):
                 messagebox.showwarning("Permission denied", "Only admin can delete tools.")
                 return
@@ -750,7 +1612,7 @@ class HerramientaApp:
                 messagebox.showerror("Error", f"No se pudo eliminar: {e}")
 
     def eliminar(self):
-        messagebox.showinfo("Delete", "Función eliminar aún no implementada.")
+        messagebox.showinfo("Delete", "FunciÃ³n eliminar aÃºn no implementada.")
 
     def editar(self):
         win = tk.Toplevel(self.root)
@@ -803,7 +1665,7 @@ class HerramientaApp:
         user_var = tk.StringVar()
         user_entry = tk.Entry(filter_frame, textvariable=user_var, font=("Segoe UI", 10), width=12)
         user_entry.pack(side=tk.LEFT, padx=5)
-        tk.Label(filter_frame, text="Acción:", bg="#f4f6fa").pack(side=tk.LEFT)
+        tk.Label(filter_frame, text="AcciÃ³n:", bg="#f4f6fa").pack(side=tk.LEFT)
         action_var = tk.StringVar()
         action_entry = tk.Entry(filter_frame, textvariable=action_var, font=("Segoe UI", 10), width=10)
         action_entry.pack(side=tk.LEFT, padx=5)
@@ -832,9 +1694,9 @@ class HerramientaApp:
                     for row in r.json():
                         tree_audit.insert('', tk.END, values=(row["Timestamp"], row["User"], row["Action"], row["ToolID"], row["Details"]))
                 else:
-                    messagebox.showerror("Auditoría", f"No se pudo obtener la bitácora: {r.text}")
+                    messagebox.showerror("AuditorÃ­a", f"No se pudo obtener la bitÃ¡cora: {r.text}")
             except Exception as e:
-                messagebox.showerror("Auditoría", f"Error: {e}")
+                messagebox.showerror("AuditorÃ­a", f"Error: {e}")
         ttk.Button(filter_frame, text="Buscar", command=buscar_auditoria, style='TButton').pack(side=tk.LEFT, padx=10)
         buscar_auditoria()
 
@@ -844,7 +1706,7 @@ class HerramientaApp:
             field.config(bg="#ffe6e6")
             field.after(2000, lambda: field.config(bg="white"))
     def show_success(self, msg):
-        messagebox.showinfo("Éxito", msg)
+        messagebox.showinfo("Ã‰xito", msg)
 
     def auto_backup_csv(self, interval=3600):
         # Solo guarda UN backup, sobreescribiendo el anterior
@@ -881,24 +1743,20 @@ class HerramientaApp:
             selected_machine = machine_var.get()
             messagebox.showinfo("Machine Selected", f"You selected: {selected_machine}")
             win.destroy()
-            # Aquí se puede continuar con el flujo de selección de set up
+            # AquÃ­ se puede continuar con el flujo de selecciÃ³n de set up
         ttk.Button(win, text="Confirm", command=confirm, style='TButton').pack(pady=10)
 
     def tool_dispensing_flow(self):
-        # Step 1: Select machine
-        win = tk.Toplevel(self.root)
-        win.title("Tool Dispensing Flow")
-        win.configure(bg="#f4f6fa")
-        tk.Label(win, text="Select the machine:", font=("Segoe UI", 12, "bold"), bg="#f4f6fa").pack(pady=10)
-        machine_options = [f"T-{i:03d}" for i in range(101, 118)]
-        machine_var = tk.StringVar(value=machine_options[0])
-        machine_combo = ttk.Combobox(win, textvariable=machine_var, values=machine_options, state="readonly", font=("Segoe UI", 11), width=15)
-        machine_combo.pack(pady=10)
-        def next_step():
-            selected_machine = machine_var.get()
-            win.destroy()
-            self.select_setups_for_comparison(selected_machine)
-        ttk.Button(win, text="Next", command=next_step, style='TButton').pack(pady=10)
+        SetupWorkflowWindow(self.root, self.user).open()
+
+    def tool_location_flow(self):
+        ToolLocationWindow(self.root, self.user).open()
+
+    def machines_flow(self):
+        MachineWindow(self.root, self.user).open()
+
+    def programs_flow(self):
+        ProgramWindow(self.root, self.user).open()
 
     def select_setups_for_comparison(self, machine):
         win = tk.Toplevel(self.root)
@@ -983,13 +1841,13 @@ class HerramientaApp:
                     tn = str(h.get('tn','')).strip()
                     tool_id = str(h.get('id',''))
                     break
-            # Si no se encontró por ID, intentar por TN directo
+            # Si no se encontrÃ³ por ID, intentar por TN directo
             if not tn and code in to_dispense:
                 tn = code
             if not tn:
                 messagebox.showerror("Error", f"Tool ID or TN {code} is not in inventory or required for this setup.")
                 return
-            # Validar si el TN está en la lista a surtir
+            # Validar si el TN estÃ¡ en la lista a surtir
             if tn not in to_dispense:
                 messagebox.showerror("Error", f"Tool TN {tn} is not required for this setup.")
                 return
@@ -999,7 +1857,7 @@ class HerramientaApp:
                     tree.set(iid, "Status", "Dispensed")
                     scanned.add(val)
                     progress_var.set(len(scanned))
-                    # Registrar en bitácora/auditoría
+                    # Registrar en bitÃ¡cora/auditorÃ­a
                     from audit_log import log_audit
                     log_audit(
                         action="surtido",
@@ -1022,11 +1880,11 @@ class HerramientaApp:
                 return
             messagebox.showinfo("Complete", "All tools dispensed! Awaiting admin verification.")
             win.destroy()
-            # Aquí se puede continuar con la verificación admin y generación de código de barras
+            # AquÃ­ se puede continuar con la verificaciÃ³n admin y generaciÃ³n de cÃ³digo de barras
         ttk.Button(win, text="Finish Dispensing", command=finish, style='TButton').pack(pady=10)
 
     def parse_stp_tool_ids(self, stp_file):
-        # Parser ultra-tolerante: detecta cualquier encabezado tipo Tool No/TN y muestra primeras 40 líneas si falla
+        # Parser ultra-tolerante: detecta cualquier encabezado tipo Tool No/TN y muestra primeras 40 lÃ­neas si falla
         import re
         try:
             with open(stp_file, "r", encoding="utf-8", errors="ignore") as f:
@@ -1043,7 +1901,7 @@ class HerramientaApp:
                 if in_tool_list and not header_found and 'tool no' in l:
                     header_found = True
                     continue
-                # Extrae solo el último valor de cada fila de datos como Tool No. (TN)
+                # Extrae solo el Ãºltimo valor de cada fila de datos como Tool No. (TN)
                 if in_tool_list and header_found:
                     if 'extra notes' in l:
                         break
@@ -1055,10 +1913,10 @@ class HerramientaApp:
                     val = row[-1].strip().replace('\u200b','').replace('\ufeff','')
                     tool_numbers.append(val)
                     print(f"[DEBUG] Tool No. (TN) encontrado: {val}")
-            # Fallback: si no encontró nada, muestra primeras 40 líneas para depuración
+            # Fallback: si no encontrÃ³ nada, muestra primeras 40 lÃ­neas para depuraciÃ³n
             if not tool_numbers:
                 print(f"[ERROR] No Tool Numbers found in file: {stp_file}")
-                print("[INFO] Mostrando primeras 40 líneas del archivo para depuración:")
+                print("[INFO] Mostrando primeras 40 lÃ­neas del archivo para depuraciÃ³n:")
                 for i, l in enumerate(lines[:40]):
                     print(f"{i+1:02d}: {l.strip()}")
             return tool_numbers
@@ -1069,5 +1927,6 @@ class HerramientaApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
+    apply_theme(root)
     app = HerramientaApp(root)
     root.mainloop()
