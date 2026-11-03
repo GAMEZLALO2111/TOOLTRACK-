@@ -44,7 +44,7 @@ ACTOR_FIELDS = ("realizado_por", "creado_por", "usuario")
 
 _OPERATOR = {
     "inventory.view", "catalog.view", "locations.view", "setup.view", "kitting.view",
-    "kitting.operate", "tools.move", "tools.status", "returns.operate",
+    "kitting.operate", "tools.move", "tools.status", "tools.store", "returns.operate",
     "demand.view", "demand.progress", "program.view", "machine.view", "maintenance.view",
 }
 _SUPERVISOR = _OPERATOR | {
@@ -56,7 +56,7 @@ ROLE_PERMISSIONS = {
     "TOOLCRIB_SUPERVISOR": frozenset(_SUPERVISOR),
     "MAINTENANCE_TECHNICIAN": frozenset({
         "inventory.view", "catalog.view", "locations.view", "maintenance.view",
-        "maintenance.operate", "tools.move", "tools.status",
+        "maintenance.operate", "tools.move", "tools.status", "tools.store",
     }),
     "PLANNING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "demand.view",
@@ -135,14 +135,14 @@ ROUTE_RULES = {
     ("GET", "/workflow/machines/{machine_code}/active-setup"): "setup.view",
     ("POST", "/workflow/machines/transfer"): "kitting.operate",
     ("GET", "/workflow/pending-pickups"): "kitting.view",
-    ("GET", "/workflow/tools/movable"): "kitting.view",
+    ("GET", "/workflow/tools/movable"): "inventory.view",
     ("POST", "/workflow/tools/{tool_id}/move"): "tools.move",
     ("POST", "/workflow/pending-pickups/{pending_id}/move"): "tools.move",
-    ("GET", "/workflow/movements"): "kitting.view",
+    ("GET", "/workflow/movements"): "inventory.view",
     ("GET", "/workflow/machines/{machine_code}/tools"): "kitting.view",
     ("POST", "/workflow/machines/{machine_code}/return"): "returns.operate",
     ("POST", "/workflow/tools/{tool_id}/status"): "tools.status",
-    ("POST", "/workflow/racks/{rack_code}/store"): "returns.operate",
+    ("POST", "/workflow/racks/{rack_code}/store"): "tools.store",
     ("GET", "/workflow/tools/locate"): "inventory.view",
     ("GET", "/workflow/machine-profiles"): "machine.view",
     ("GET", "/workflow/machine-profiles/{code}"): "machine.view",

@@ -688,6 +688,80 @@ textarea:disabled {
   flex-wrap: wrap;
 }
 
+/* ---------- tool tracking ---------- */
+.grow {
+  flex: 1;
+  min-width: 220px;
+}
+.tabs-inline.wrap {
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.clickable-rows tbody tr {
+  cursor: pointer;
+}
+.clickable-rows tbody tr:hover td {
+  background: #f3f7fc;
+}
+.warn-text {
+  color: #9a5b00;
+  font-weight: 600;
+}
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 20px;
+  margin-bottom: 10px;
+}
+.ts-ok {
+  background: #dcefe3;
+}
+.ts-sharp {
+  background: #ffe699;
+}
+.ts-damaged {
+  background: #f4b183;
+}
+.ts-retired {
+  background: #d9d9d9;
+}
+.two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+.two-col .span-2 {
+  grid-column: 1 / -1;
+}
+.two-col .end {
+  display: flex;
+  align-items: flex-end;
+}
+.log {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.log li {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+.log li.ok {
+  background: #e3f4e9;
+  color: #17562f;
+}
+.log li.bad {
+  background: #fdecea;
+  color: #8e1c12;
+}
+.row-picked td {
+  background: #fff9e6;
+}
+
 /* ---------- kitting ---------- */
 .scan input {
   flex: 1;

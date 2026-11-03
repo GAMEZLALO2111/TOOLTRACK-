@@ -188,3 +188,60 @@ export interface LocationRow {
   activa: boolean;
   estandar: boolean;
 }
+
+export interface ToolRow {
+  tool_id: string;
+  tn: string;
+  category: string | null;
+  type: string | null;
+  size: string | null;
+  clearance: string | null;
+  location: string | null;
+  location_type: string | null;
+  status: string;
+  pending_pickup: boolean;
+  drawing_name: string | null;
+  station: string | null;
+  angle: string | null;
+  last_movement_at: string | null;
+  home_rack: string | null;
+  estado: string;
+  estado_label: string;
+}
+
+export interface Movement {
+  id: number;
+  tool_id: string;
+  from: string | null;
+  to: string | null;
+  type: string;
+  by: string;
+  created_at: string;
+  details: string | null;
+}
+
+export interface MountedTool {
+  tool_id: string;
+  tn: string;
+  category: string;
+  station: string | null;
+  angle: string | null;
+  clearance: string | null;
+  on_machine: boolean;
+}
+
+export interface MachineTools {
+  machine: string;
+  drawing_name: string | null;
+  tools: MountedTool[];
+}
+
+export interface MovableTool {
+  tool_id: string;
+  tn: string;
+  category: string | null;
+  clearance: string | null;
+  location: string;
+  location_type: string;
+  home_rack: string | null;
+}

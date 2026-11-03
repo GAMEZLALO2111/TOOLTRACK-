@@ -200,7 +200,7 @@ class ToolLocationWindow(SetupWorkflowWindow):
         for row in rows:
             tag = ()
             if row["location_type"] == "machine":
-                tag = ("pending",) if row["status"].startswith("Pendiente") else ("machine",)
+                tag = ("pending",) if row.get("pending_pickup") else ("machine",)
             elif row["location_type"] in SERVICE_TYPES:
                 tag = ("service",)
             if row.get("estado") == "baja":

@@ -26,11 +26,11 @@ RETURN_DESTINATION_TYPES = {"rack", "togu", "maintenance", "workshop"}
 OPEN_KIT_STATES = ("preparing", "paused", "ready")
 LOCATION_TYPE_LABELS = {
     "rack": "Rack",
-    "cart": "Carro",
-    "machine": "Máquina",
+    "cart": "Cart",
+    "machine": "Machine",
     "togu": "TOGU",
-    "maintenance": "Mantenimiento",
-    "workshop": "Taller",
+    "maintenance": "Maintenance",
+    "workshop": "Workshop",
 }
 
 
@@ -104,7 +104,7 @@ def return_machine_tools(machine_code: str, item: MachineReturn):
     code = machine_code.strip().upper()
     reason = item.motivo.strip().lower()
     if reason not in RETURN_REASONS:
-        raise HTTPException(status_code=422, detail="Motivo de retorno no válido")
+        raise HTTPException(status_code=422, detail="Invalid return reason")
     db = workflow_api.SessionLocal()
     try:
         workflow_api._location(db, code, {"machine"})
@@ -117,21 +117,21 @@ def return_machine_tools(machine_code: str, item: MachineReturn):
         ).first():
             raise HTTPException(
                 status_code=409,
-                detail="La máquina tiene un surtido abierto; cancélalo o entrégalo antes de registrar retornos.",
+                detail="The machine has an open kit; cancel or deliver it before recording returns.",
             )
         setup = _active_setup(db, code)
         if not setup:
-            raise HTTPException(status_code=409, detail="La máquina no tiene herramientas registradas")
+            raise HTTPException(status_code=409, detail="The machine has no registered tools")
         mounted = _mounted_rows(db, setup)
         mounted_ids = {tool.id for _requirement, _category, tool in mounted}
         requested = mounted_ids if item.todas else {value.strip() for value in item.tool_ids if value.strip()}
         if not requested:
-            raise HTTPException(status_code=422, detail="Selecciona al menos una herramienta")
+            raise HTTPException(status_code=422, detail="Select at least one tool")
         invalid = sorted(requested - mounted_ids)
         if invalid:
             raise HTTPException(
                 status_code=409,
-                detail=f"Estas herramientas no están montadas en {code}: {', '.join(invalid)}",
+                detail=f"These tools are not mounted on {code}: {', '.join(invalid)}",
             )
         if destination.tipo == "rack":
             for _requirement, _category, tool in mounted:
@@ -139,12 +139,12 @@ def return_machine_tools(machine_code: str, item: MachineReturn):
                     workflow_api._require_home_rack(db, tool, destination)
         if destination.tipo == "togu":
             if len(requested) > 1:
-                raise HTTPException(status_code=409, detail="Un TOGU solo puede recibir una herramienta")
+                raise HTTPException(status_code=409, detail="A TOGU can only hold one tool")
             if db.query(Herramienta.id).filter(Herramienta.ubicacion == destination.codigo).first():
-                raise HTTPException(status_code=409, detail=f"El TOGU '{destination.codigo}' está ocupado")
+                raise HTTPException(status_code=409, detail=f"TOGU '{destination.codigo}' is occupied")
 
         movement_type = RETURN_REASONS[reason]
-        detail = f"Retorno desde {code} ({setup.drawing_name or 'sin parte'}): {reason}"
+        detail = f"Return from {code} ({setup.drawing_name or 'no part'}): {reason}"
         if item.nota and item.nota.strip():
             detail += f" - {item.nota.strip()}"
         moved = []
@@ -197,34 +197,34 @@ def change_tool_status(tool_id: str, item: ToolStatusChange):
     """Flag a tool as damaged, clear it after inspection, or retire it (baja)."""
     target = item.estado.strip().lower()
     if target not in {"disponible", "danado", "baja"}:
-        raise HTTPException(status_code=422, detail="Estado no válido (disponible, danado o baja)")
+        raise HTTPException(status_code=422, detail="Invalid status (disponible, danado or baja)")
     db = workflow_api.SessionLocal()
     try:
         tool = db.query(Herramienta).filter(
             Herramienta.id == tool_id.strip()
         ).with_for_update().first()
         if not tool:
-            raise HTTPException(status_code=404, detail="La herramienta no existe en inventario")
+            raise HTTPException(status_code=404, detail="That tool is not in the inventory")
         current = tool.estado or "disponible"
         if current == "baja":
-            raise HTTPException(status_code=409, detail=f"La herramienta {tool.id} ya está dada de baja")
+            raise HTTPException(status_code=409, detail=f"Tool {tool.id} is already retired")
         if current == target:
-            raise HTTPException(status_code=409, detail=f"La herramienta ya está en estado '{target}'")
+            raise HTTPException(status_code=409, detail=f"The tool is already '{target}'")
         location = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
         if not location or location.tipo not in {"rack", "togu", "maintenance", "workshop"}:
             raise HTTPException(
                 status_code=409,
-                detail=f"La herramienta está en {tool.ubicacion or 'ubicación desconocida'}; primero regrésala a un rack, TOGU o taller.",
+                detail=f"The tool is in {tool.ubicacion or 'an unknown location'}; first return it to a rack, TOGU or workshop.",
             )
         if target == "disponible" and location.tipo != "rack":
             raise HTTPException(
                 status_code=409,
-                detail="Para dejarla disponible debe estar en su rack (usa «Guardar en rack» con el resultado).",
+                detail="To make it available it must be in its rack (use «Store in rack» with the result).",
             )
         workflow_api._append_movement(
             db, tool, location.codigo, location.codigo, f"status_{target}",
             item.realizado_por,
-            details=(item.nota or "").strip() or f"Cambio de estado: {current} -> {target}",
+            details=(item.nota or "").strip() or f"Status change: {current} -> {target}",
         )
         tool.estado = target
         db.commit()
@@ -246,13 +246,13 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
             Herramienta.id == item.tool_id.strip()
         ).with_for_update().first()
         if not tool:
-            raise HTTPException(status_code=404, detail=f"La herramienta '{item.tool_id}' no existe en inventario")
+            raise HTTPException(status_code=404, detail=f"Tool '{item.tool_id}' is not in the inventory")
         workflow_api._require_home_rack(db, tool, rack)
         origin = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
         if not origin or origin.tipo not in {"machine", "togu", "maintenance", "workshop"}:
             raise HTTPException(
                 status_code=409,
-                detail=f"La herramienta {tool.id} está en {tool.ubicacion or 'ubicación desconocida'}; no hay nada que guardar.",
+                detail=f"Tool {tool.id} is in {tool.ubicacion or 'an unknown location'}; there is nothing to store.",
             )
         if origin.tipo == "machine":
             pending = db.query(PendienteRecoger).filter(
@@ -262,7 +262,7 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
             if pending:
                 workflow_api._append_movement(
                     db, tool, origin.codigo, rack.codigo, "pending_pickup_to_rack",
-                    item.realizado_por, details=f"Recogida de {origin.codigo} y guardada en su rack",
+                    item.realizado_por, details=f"Picked up from {origin.codigo} and stored in its rack",
                     kit_id=pending.surtido_id, setup_id=pending.setup_origen_id,
                 )
                 pending.estado = "collected"
@@ -275,7 +275,7 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
                 ).first():
                     raise HTTPException(
                         status_code=409,
-                        detail="La máquina tiene un surtido abierto; cancélalo o entrégalo antes de registrar retornos.",
+                        detail="The machine has an open kit; cancel or deliver it before recording returns.",
                     )
                 setup = _active_setup(db, origin.codigo)
                 mounted = [
@@ -286,13 +286,13 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
                 if not mounted:
                     raise HTTPException(
                         status_code=409,
-                        detail=f"La herramienta {tool.id} no está montada en {origin.codigo}",
+                        detail=f"Tool {tool.id} is not mounted on {origin.codigo}",
                     )
                 requirement, category = mounted[0]
                 workflow_api._append_movement(
                     db, tool, origin.codigo, rack.codigo, "machine_return",
                     item.realizado_por,
-                    details=f"Retorno desde {origin.codigo} ({setup.drawing_name or 'sin parte'}): regreso",
+                    details=f"Return from {origin.codigo} ({setup.drawing_name or 'no part'}): regreso",
                     setup_id=setup.id,
                 )
                 if category == "punzon":
@@ -305,20 +305,20 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
             if origin.tipo in {"togu", "maintenance", "workshop"}:
                 current = tool.estado or "disponible"
                 if current == "baja":
-                    raise HTTPException(status_code=409, detail=f"La herramienta {tool.id} está dada de baja; no se guarda en rack.")
+                    raise HTTPException(status_code=409, detail=f"Tool {tool.id} is retired; it is not stored in a rack.")
                 if current != "disponible":
                     if result_choice not in {"disponible", "baja"}:
                         raise HTTPException(
                             status_code=409,
                             detail=(
-                                f"La herramienta {tool.id} viene de '{workflow_api.TOOL_STATUS_LABELS.get(current, current)}'. "
-                                "Indica el resultado: lista para uso o baja."
+                                f"Tool {tool.id} comes from '{workflow_api.TOOL_STATUS_LABELS.get(current, current)}'. "
+                                "Choose the result: ready for use or retired."
                             ),
                         )
                     if result_choice == "baja":
                         workflow_api._append_movement(
                             db, tool, origin.codigo, origin.codigo, "status_baja",
-                            item.realizado_por, details=f"Dada de baja desde {current}",
+                            item.realizado_por, details=f"Retired from {current}",
                         )
                         tool.estado = "baja"
                         db.commit()
@@ -329,7 +329,7 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
                     tool.estado = "disponible"
             workflow_api._append_movement(
                 db, tool, origin.codigo, rack.codigo, f"{origin.tipo}_to_rack",
-                item.realizado_por, details="Guardada en su rack",
+                item.realizado_por, details="Stored in its rack",
             )
             kind = f"{origin.tipo}_to_rack"
         db.commit()
@@ -350,15 +350,17 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
 def _describe_tool(db, tool, location_types, active_setups, pending_by_tool, open_kits):
     code = tool.ubicacion
     kind = location_types.get(code)
-    place = f"{LOCATION_TYPE_LABELS.get(kind, 'Ubicación')} {code}" if code else "Sin ubicación"
+    place = f"{LOCATION_TYPE_LABELS.get(kind, 'Location')} {code}" if code else "No location"
     status = place
     drawing = None
     station = None
     angle = None
+    is_pending = False
     if kind == "machine":
         pending = pending_by_tool.get(tool.id)
         if pending:
-            status = f"Pendiente de recoger en {code}"
+            is_pending = True
+            status = f"Waiting to be picked up at {code}"
             drawing = pending[1]
         else:
             setup = active_setups.get(code)
@@ -371,11 +373,11 @@ def _describe_tool(db, tool, location_types, active_setups, pending_by_tool, ope
                         station = requirement.station
                         angle = requirement.angle
                         break
-            status = f"En máquina {code}"
+            status = f"On machine {code}"
     elif kind == "cart":
         kit = open_kits.get(code)
         if kit:
-            status = f"En carro {code} (surtido para {kit.maquina_codigo})"
+            status = f"On cart {code} (kit for {kit.maquina_codigo})"
     elif kind in {"togu", "maintenance", "workshop"}:
         status = place
     last = db.query(MovimientoHerramienta).filter(
@@ -385,9 +387,9 @@ def _describe_tool(db, tool, location_types, active_setups, pending_by_tool, ope
     estado_label = workflow_api.TOOL_STATUS_LABELS.get(estado, estado)
     if estado == "disponible":
         if kind == "machine":
-            estado_label = "En uso (máquina)"
+            estado_label = "In use (machine)"
         elif kind == "cart":
-            estado_label = "En kit (carro)"
+            estado_label = "In a kit (cart)"
     return {
         "tool_id": tool.id,
         "tn": tool.tn,
@@ -398,6 +400,7 @@ def _describe_tool(db, tool, location_types, active_setups, pending_by_tool, ope
         "location": code,
         "location_type": kind,
         "status": status,
+        "pending_pickup": is_pending,
         "drawing_name": drawing,
         "station": station,
         "angle": angle,
