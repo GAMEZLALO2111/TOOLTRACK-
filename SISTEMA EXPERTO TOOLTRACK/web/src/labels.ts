@@ -78,7 +78,14 @@ export const COMPONENT_STATE_LABEL: Record<string, string> = {
 
 export const ACTION_LABEL: Record<string, string> = { new: "New", replace: "Replace", keep: "Keep" };
 
-export const CATEGORY_LABEL: Record<string, string> = { punch: "Punch", die: "Die", punzon: "Punch", matriz: "Die" };
+export const CATEGORY_LABEL: Record<string, string> = { punch: "Punch", die: "Die", punzon: "Punch", matriz: "Die", holder: "Holder", accesorio: "Accessory" };
+
+export const TOOL_STATE_LABEL: Record<string, string> = {
+  disponible: "Available",
+  afilado: "Being sharpened",
+  danado: "Damaged",
+  baja: "Retired",
+};
 
 export const PICK_ACTION_LABEL: Record<string, string> = {
   supply: "Put on the cart",

@@ -688,6 +688,42 @@ textarea:disabled {
   flex-wrap: wrap;
 }
 
+/* ---------- inventory ---------- */
+.filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 12px;
+}
+.filters input {
+  flex: 1;
+  min-width: 240px;
+}
+.filters select {
+  min-width: 150px;
+}
+.push-right {
+  margin-left: auto;
+}
+.chip-btn {
+  border: 0;
+  cursor: pointer;
+}
+.pager {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 10px 0;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pager .btn + .btn {
+  margin-left: 6px;
+}
+.form-actions.spread {
+  justify-content: space-between;
+}
+
 /* ---------- tool tracking ---------- */
 .grow {
   flex: 1;

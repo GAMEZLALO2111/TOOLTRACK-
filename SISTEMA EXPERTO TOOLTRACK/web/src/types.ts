@@ -236,6 +236,42 @@ export interface MachineTools {
   tools: MountedTool[];
 }
 
+export interface InvRow {
+  id: string;
+  tn: string | null;
+  size: string | null;
+  type: string | null;
+  life: string | null;
+  clearance: string | null;
+  so: string | null;
+  categoria: string;
+  ubicacion: string | null;
+  catalog_linked: boolean;
+  estado: string;
+}
+
+export interface InvPage {
+  total: number;
+  limit: number;
+  offset: number;
+  summary: { total: number; linked: number; unlinked: number };
+  items: InvRow[];
+}
+
+export interface InvOptions {
+  categorias: string[];
+  tipos: Record<string, string[]>;
+  sizes: string[];
+  estados: string[];
+}
+
+export interface CatalogConfig {
+  tn: string;
+  size: string;
+  type: string;
+  variantes: { id: number; categoria: string; clearance: string | null }[];
+}
+
 export interface MovableTool {
   tool_id: string;
   tn: string;

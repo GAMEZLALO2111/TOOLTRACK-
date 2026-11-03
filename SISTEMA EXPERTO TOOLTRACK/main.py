@@ -894,6 +894,70 @@ def inventory_record_read(tool, variant):
     }
 
 
+@app.get("/inventario/opciones")
+def opciones_inventario():
+    """Listas controladas que usan los formularios (categorías, tipos por categoría y tamaños)."""
+    return {
+        "categorias": list(INVENTORY_TYPES_BY_CATEGORY),
+        "tipos": {category: list(types) for category, types in INVENTORY_TYPES_BY_CATEGORY.items()},
+        "sizes": ["A", "B", "C", "D", "E"],
+        "estados": ["disponible", "afilado", "danado", "baja"],
+    }
+
+
+@app.get("/inventario/herramientas")
+def listar_inventario(
+    q: str = "",
+    categoria: Optional[str] = None,
+    estado: Optional[str] = None,
+    ubicacion: Optional[str] = None,
+    vinculo: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Inventario físico paginado, con filtros, estado y vínculo al catálogo."""
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    db = SessionLocal()
+    try:
+        base = db.query(Herramienta, HerramientaCatalogo.variante_id).outerjoin(
+            HerramientaCatalogo, HerramientaCatalogo.herramienta_id == Herramienta.id
+        )
+        text = (q or "").strip()
+        if text:
+            like = f"%{text}%"
+            base = base.filter(
+                Herramienta.id.ilike(like) | Herramienta.tn.ilike(like) | Herramienta.type.ilike(like)
+                | Herramienta.so.ilike(like) | Herramienta.ubicacion.ilike(like)
+            )
+        if categoria:
+            base = base.filter(Herramienta.categoria == categoria.strip().lower())
+        if estado:
+            base = base.filter(Herramienta.estado == estado.strip().lower())
+        if ubicacion:
+            base = base.filter(Herramienta.ubicacion == ubicacion.strip())
+        if vinculo == "linked":
+            base = base.filter(HerramientaCatalogo.variante_id.isnot(None))
+        elif vinculo == "unlinked":
+            base = base.filter(HerramientaCatalogo.variante_id.is_(None))
+        total = base.count()
+        rows = base.order_by(Herramienta.id).limit(limit).offset(offset).all()
+        everything = db.query(Herramienta).count()
+        linked = db.query(HerramientaCatalogo).count()
+        return {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "summary": {"total": everything, "linked": linked, "unlinked": everything - linked},
+            "items": [
+                {**inventory_record_read(tool, variant_id), "estado": tool.estado or "disponible"}
+                for tool, variant_id in rows
+            ],
+        }
+    finally:
+        db.close()
+
+
 @app.post("/inventario/herramientas", status_code=201)
 def registrar_herramienta_inventario(item: RegistroInventarioCreate):
     record = normalize_inventory_item(item)

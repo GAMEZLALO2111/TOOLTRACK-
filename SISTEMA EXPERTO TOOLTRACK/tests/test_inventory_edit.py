@@ -48,6 +48,35 @@ class InventoryEditTests(unittest.TestCase):
             ubicacion="RACK-1",
         ))
 
+    def test_listing_is_paginated_filtered_and_shows_catalog_link(self):
+        for number in range(5):
+            self.create_punch(tool_id=f"PHYS-{number}", tn="TN-100")
+        main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+            id="HOLD-1", categoria="holder", type="HOLDER A", ubicacion="RACK-9"))
+
+        first = main.listar_inventario(limit=4, offset=0)
+        self.assertEqual((first["total"], len(first["items"])), (6, 4))
+        self.assertEqual(first["summary"], {"total": 6, "linked": 5, "unlinked": 1})
+        second = main.listar_inventario(limit=4, offset=4)
+        self.assertEqual(len(second["items"]), 2)
+
+        holders = main.listar_inventario(categoria="holder")
+        self.assertEqual([row["id"] for row in holders["items"]], ["HOLD-1"])
+        self.assertFalse(holders["items"][0]["catalog_linked"])
+        self.assertEqual(main.listar_inventario(vinculo="unlinked")["total"], 1)
+        self.assertEqual(main.listar_inventario(vinculo="linked")["total"], 5)
+        self.assertEqual(main.listar_inventario(q="phys-3")["total"], 1)
+        self.assertEqual(main.listar_inventario(ubicacion="RACK-9")["total"], 1)
+        self.assertEqual(main.listar_inventario(estado="afilado")["total"], 0)
+        self.assertEqual(main.listar_inventario(estado="disponible")["items"][0]["estado"], "disponible")
+        self.assertEqual(len(main.listar_inventario(limit=9999)["items"]), 6)
+
+    def test_options_list_the_controlled_types(self):
+        options = main.opciones_inventario()
+        self.assertIn("ROUND", options["tipos"]["punzon"])
+        self.assertIn("HOLDER A", options["tipos"]["holder"])
+        self.assertEqual(options["sizes"], list("ABCDE"))
+
     def test_edit_updates_fields_and_reassigns_catalog_variant(self):
         self.create_punch()
 

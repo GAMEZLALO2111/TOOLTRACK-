@@ -98,6 +98,8 @@ ROUTE_RULES = {
     ("POST", "/catalogo/configuraciones/{tn}/{size}/variantes"): "catalog.edit",
     ("POST", "/catalogo/herramientas"): "catalog.edit",
     ("POST", "/inventario/herramientas"): "inventory.edit",
+    ("GET", "/inventario/herramientas"): "inventory.view",
+    ("GET", "/inventario/opciones"): "inventory.view",
     ("PUT", "/inventario/herramientas/{herramienta_id}"): "inventory.edit",
     ("POST", "/herramientas/"): "inventory.edit",
     ("GET", "/herramientas/"): "inventory.view",
