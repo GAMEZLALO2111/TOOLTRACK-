@@ -5,6 +5,7 @@ import { KittingPage } from "./pages/Kitting";
 import { LoginPage } from "./pages/Login";
 import { PendingPage } from "./pages/Pending";
 import { InventoryPage } from "./pages/Inventory";
+import { ProgramsPage } from "./pages/Programs";
 import { ToolTrackingPage } from "./pages/ToolTracking";
 import { LabelsPage } from "./pages/Labels";
 import { UsersPage } from "./pages/Users";
@@ -22,14 +23,17 @@ function Shell() {
     { path: "/kitting", label: "Kitting", show: can("kitting.view") },
     { path: "/tracking", label: "Tool Tracking", show: can("inventory.view") },
     { path: "/inventory", label: "Inventory", show: can("inventory.view") },
+    { path: "/programs", label: "Part numbers", show: can("program.view") },
     { path: "/users", label: "Users", show: can("user.manage") },
   ].filter((tab) => tab.show);
 
   const kitMatch = route.path.match(/^\/kitting\/kit\/([^/]+)$/);
   const trackingMatch = route.path.match(/^\/tracking(?:\/([a-z]+))?$/);
   const inventoryMatch = route.path.match(/^\/inventory(?:\/([a-z]+))?$/);
+  const programsMatch = route.path.match(/^\/programs(?:\/([a-z0-9]+))?$/);
   let page;
   if (route.path === "/users" && can("user.manage")) page = <UsersPage />;
+  else if (programsMatch && can("program.view")) page = <ProgramsPage tab={programsMatch[1] ?? ""} />
   else if (kitMatch && can("kitting.view")) page = <KitDetailPage kitId={decodeURIComponent(kitMatch[1])} />;
   else if (route.path === "/kitting/pending" && can("kitting.view")) page = <PendingPage />;
   else if (route.path === "/kitting/labels" && can("kitting.view")) page = <LabelsPage />;

@@ -688,6 +688,30 @@ textarea:disabled {
   flex-wrap: wrap;
 }
 
+/* ---------- programs ---------- */
+.diff {
+  background: #f6f8fa;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  font-size: 13px;
+  margin: 8px 0;
+}
+.pre-line {
+  white-space: pre-line;
+  font-size: 12.5px;
+}
+.link-btn {
+  background: none;
+  border: 0;
+  color: var(--navy);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px 0 0;
+  text-decoration: underline;
+}
+
 /* ---------- inventory ---------- */
 .filters {
   display: flex;

@@ -661,6 +661,19 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertIn("202", log[0]["detalle"])
         self.assertIn("203", log[0]["detalle"])
 
+        preview = programs_api.preview_program("4I", part, programs_api.ProgramPreview(contenido=content))
+        self.assertTrue(preview["exists"])
+        self.assertEqual((preview["revision"], preview["next_revision"]), (2, 3))
+        self.assertIn("203", preview["diff"])
+        self.assertEqual(len(preview["requisitos"]), 2)
+        fresh = programs_api.preview_program("45STA", part, programs_api.ProgramPreview(contenido=content))
+        self.assertFalse(fresh["exists"])
+        self.assertEqual(fresh["next_revision"], 1)
+        self.assertIsNone(fresh["diff"])
+        with self.assertRaises(HTTPException):
+            programs_api.preview_program("4I", part, programs_api.ProgramPreview(contenido="not a setup file"))
+        self.assertEqual(programs_api.get_program("4I", part)["revision"], 2)
+
     def test_machine_transfer_moves_part_and_tools_and_lists_running(self):
         import machines_api
 

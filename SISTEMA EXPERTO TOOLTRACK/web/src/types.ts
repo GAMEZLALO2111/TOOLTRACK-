@@ -272,6 +272,59 @@ export interface CatalogConfig {
   variantes: { id: number; categoria: string; clearance: string | null }[];
 }
 
+export interface Planning {
+  piezas_blank: number | null;
+  cycle_time_s: number | null;
+  cycle_con_lead_s: number | null;
+  uph_teorico: number | null;
+}
+
+export interface Program {
+  numero_parte: string;
+  tipo_maquina: string;
+  cliente: string | null;
+  familia: string | null;
+  tipo_programa: string;
+  revision: number;
+  nombre_archivo: string | null;
+  drawing_name: string | null;
+  material: string | null;
+  thickness: string | null;
+  actualizado_por: string;
+  actualizado_en: string;
+  requisitos: { station: string; tn: string; angle: string | null }[];
+  planeacion: Planning;
+  contenido?: string;
+}
+
+export interface ProgramLogRow {
+  fecha: string;
+  numero_parte: string;
+  tipo_maquina: string;
+  accion: string;
+  revision: number;
+  motivo: string | null;
+  usuario: string;
+  detalle: string | null;
+}
+
+export interface ProgramPreview {
+  exists: boolean;
+  revision: number | null;
+  next_revision: number;
+  drawing_name: string | null;
+  material: string | null;
+  thickness: string;
+  requisitos: { station: string; tn: string; angle: string | null }[];
+  planeacion: Planning;
+  diff: string | null;
+}
+
+export interface Family {
+  nombre: string;
+  cliente: string;
+}
+
 export interface MovableTool {
   tool_id: string;
   tn: string;

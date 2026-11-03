@@ -160,6 +160,7 @@ ROUTE_RULES = {
     ("GET", "/workflow/programs"): "program.view",
     ("GET", "/workflow/programs/{tipo_maquina}/{numero_parte}"): "program.view",
     ("PUT", "/workflow/programs/{tipo_maquina}/{numero_parte}"): "program.manage",
+    ("POST", "/workflow/programs/{tipo_maquina}/{numero_parte}/preview"): "program.manage",
     ("GET", "/workflow/demandas/board"): "demand.view",
     ("GET", "/workflow/kitting/overview"): "kitting.view",
     ("POST", "/workflow/kitting/plan"): "kitting.view",
