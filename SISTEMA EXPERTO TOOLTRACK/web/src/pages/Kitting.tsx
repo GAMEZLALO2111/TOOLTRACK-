@@ -112,6 +112,12 @@ export function KittingPage({ route }: { route: Route }) {
       <div className="board-bar">
         <h1>Kitting</h1>
         <div className="bar-right">
+          <button className="btn" onClick={() => go("/kitting/pending")}>
+            Pending pickups
+          </button>
+          <button className="btn" onClick={() => go("/kitting/labels")}>
+            QR labels
+          </button>
           <button className="btn" onClick={() => void reload()}>
             Refresh
           </button>

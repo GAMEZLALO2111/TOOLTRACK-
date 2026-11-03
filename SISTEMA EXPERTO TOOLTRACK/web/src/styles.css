@@ -689,6 +689,136 @@ textarea:disabled {
 }
 
 /* ---------- kitting ---------- */
+.scan input {
+  flex: 1;
+  min-width: 220px;
+  font-size: 20px;
+  min-height: 52px;
+}
+.scan-result {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+.scan-result.ok {
+  background: #e3f4e9;
+  color: #17562f;
+}
+.scan-result.bad {
+  background: #fdecea;
+  color: #8e1c12;
+}
+.kit-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.delivery,
+.delivered {
+  border-left: 5px solid var(--green);
+}
+.delivery-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 24px;
+  align-items: start;
+}
+.label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px;
+  border: 1px dashed #b9c0c9;
+  border-radius: 8px;
+  background: #fff;
+  text-align: center;
+  break-inside: avoid;
+}
+.label-title {
+  font-size: 22px;
+  font-weight: 800;
+}
+.label-sub {
+  color: var(--muted);
+  font-size: 13px;
+}
+.label-code {
+  font-size: 10px;
+  color: #444;
+  word-break: break-all;
+  max-width: 220px;
+}
+.label-sheet {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.qr-empty {
+  background: #eef1f5;
+}
+.tabs-inline {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.pick-chips {
+  margin: 8px 0 12px;
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+.check input {
+  min-height: 0;
+}
+.row-overdue td {
+  background: #fdecea;
+}
+@media (max-width: 760px) {
+  .delivery-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media print {
+  body {
+    background: #fff;
+  }
+  .topbar,
+  .no-print,
+  .note,
+  .overlay {
+    display: none !important;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+  }
+  .label-sheet {
+    position: static;
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .content {
+    padding: 0;
+  }
+}
 .steps {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));

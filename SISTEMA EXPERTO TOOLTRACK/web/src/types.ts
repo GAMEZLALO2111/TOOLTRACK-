@@ -139,3 +139,52 @@ export interface Kit {
   components: KitComponent[];
   warnings?: string[];
 }
+
+export interface Candidate {
+  id: string;
+  tn: string;
+  type: string | null;
+  size: string | null;
+  clearance: string | null;
+  life: string | null;
+  location: string;
+}
+
+export interface KitQr {
+  kit_id: string;
+  machine: string;
+  qr_token: string;
+  scan_value: string;
+}
+
+export interface DeliveryResult {
+  kit_id: string;
+  machine: string;
+  active_setup_id: number;
+  active_drawing: string | null;
+  pending_pickups_created: number;
+  delivered_tools: number;
+}
+
+export interface Pending {
+  pending_id: number;
+  tool_id: string;
+  tn: string;
+  category: string;
+  clearance: string | null;
+  machine: string;
+  drawing_name: string | null;
+  created_at: string;
+  age_hours: number;
+  standard_machine: boolean;
+  overdue: boolean;
+  home_rack: string | null;
+}
+
+export interface LocationRow {
+  codigo: string;
+  nombre: string;
+  tipo: string;
+  activa: boolean;
+  estandar: boolean;
+}

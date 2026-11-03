@@ -168,17 +168,17 @@ def _require_home_rack(db, tool, destination):
         raise HTTPException(
             status_code=409,
             detail=(
-                f"La herramienta {tool.id} (TN {tool.tn}) no pertenece al rack "
-                f"'{destination.codigo}'. Su lugar es '{home}'."
+                f"Tool {tool.id} (TN {tool.tn}) does not belong in rack "
+                f"'{destination.codigo}'. Its place is '{home}'."
             ),
         )
 
 
 TOOL_STATUS_LABELS = {
-    "disponible": "Disponible",
-    "afilado": "En afilado",
-    "danado": "Dañada (en revisión)",
-    "baja": "Dada de baja",
+    "disponible": "Available",
+    "afilado": "Being sharpened",
+    "danado": "Damaged (under review)",
+    "baja": "Retired",
 }
 SERVICE_STATUS_BY_LOCATION = {"togu": "afilado", "workshop": "afilado", "maintenance": "danado"}
 
@@ -188,7 +188,7 @@ def _require_available(tool):
     if status != "disponible":
         raise HTTPException(
             status_code=409,
-            detail=f"La herramienta {tool.id} no está disponible: {TOOL_STATUS_LABELS.get(status, status)}",
+            detail=f"Tool {tool.id} is not available: {TOOL_STATUS_LABELS.get(status, status)}",
         )
 
 
@@ -202,8 +202,8 @@ def _status_on_move(tool, origin_type, destination_type):
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"La herramienta {tool.id} está '{TOOL_STATUS_LABELS.get(tool.estado, tool.estado)}'. "
-                    "Usa la pestaña «Guardar en rack» e indica el resultado (lista para uso o baja)."
+                    f"Tool {tool.id} is '{TOOL_STATUS_LABELS.get(tool.estado, tool.estado)}'. "
+                    "Use «Store in rack» and record the result (ready for use or retired)."
                 ),
             )
 
@@ -1194,9 +1194,9 @@ def list_component_candidates(kit_id: str, component_id: int):
 
 def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None):
     if kit.estado not in {"preparing", "paused"}:
-        raise HTTPException(status_code=409, detail="El surtido no está aceptando escaneos de herramientas")
+        raise HTTPException(status_code=409, detail="This kit is not accepting tool scans")
     if component.accion == "keep":
-        raise HTTPException(status_code=409, detail="Este componente se conserva del setup activo")
+        raise HTTPException(status_code=409, detail="This component stays from the active setup")
     requirement = db.query(RequisitoSetup).filter(
         RequisitoSetup.id == component.requisito_id
     ).one()
@@ -1207,9 +1207,9 @@ def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None):
             Herramienta.id == normalized_tool_id
         ).with_for_update().first()
     if not tool:
-        raise HTTPException(status_code=404, detail="El ID físico no está registrado en el inventario")
+        raise HTTPException(status_code=404, detail="That tool ID is not in the inventory")
     if tool.tn != requirement.tn or _category(tool) != component.categoria:
-        raise HTTPException(status_code=409, detail="El ID físico no coincide con el TN y tipo requeridos")
+        raise HTTPException(status_code=409, detail="That tool ID does not match the required TN and type")
     if tool.ubicacion == kit.carro_codigo and component.herramienta_nueva_id == normalized_tool_id:
         return _kit_read(db, kit)
     _require_available(tool)
@@ -1219,19 +1219,19 @@ def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None):
         Ubicacion.activa.is_(True),
     ).first()
     if not rack:
-        raise HTTPException(status_code=409, detail="La herramienta no está disponible en un rack activo")
+        raise HTTPException(status_code=409, detail="The tool is not available in an active rack")
     clearance_range = clearance_range_for_thickness(Decimal(
         db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one().thickness
     ))
     if component.categoria == "matriz" and clearance_range and not _clearance_in_range(tool, clearance_range):
-        raise HTTPException(status_code=409, detail="El CLEARANCE de la matriz está fuera del rango permitido")
+        raise HTTPException(status_code=409, detail="The die CLEARANCE is outside the allowed range")
 
     reserved = db.query(ReservaHerramienta).filter(
         ReservaHerramienta.herramienta_id == tool.id,
         ReservaHerramienta.surtido_id != kit.id,
     ).first()
     if reserved:
-        raise HTTPException(status_code=409, detail="La herramienta está reservada por otro surtido activo")
+        raise HTTPException(status_code=409, detail="The tool is reserved by another open kit")
     active_assignment = db.query(RequisitoSetup.id).join(
         EstadoMaquina,
         EstadoMaquina.setup_activo_id == RequisitoSetup.setup_id,
@@ -1243,7 +1243,7 @@ def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None):
         ),
     ).first()
     if active_assignment:
-        raise HTTPException(status_code=409, detail="La herramienta está asignada al setup activo de otra máquina")
+        raise HTTPException(status_code=409, detail="The tool is assigned to the active setup of another machine")
 
     if component.herramienta_nueva_id:
         old_selected = db.query(Herramienta).filter(
@@ -1303,14 +1303,14 @@ def scan_kit_tool(kit_id: str, item: SurtidoToolSelect):
             raise HTTPException(status_code=404, detail="Kit not found")
         tool_id = item.herramienta_id.strip()
         if not tool_id:
-            raise HTTPException(status_code=422, detail="Escanea un ID físico de herramienta")
+            raise HTTPException(status_code=422, detail="Scan or type a physical tool ID")
         tool = db.query(Herramienta).filter(
             Herramienta.id == tool_id
         ).with_for_update().first()
         if not tool:
-            raise HTTPException(status_code=404, detail="El ID físico no está registrado en el inventario")
+            raise HTTPException(status_code=404, detail="That tool ID is not in the inventory")
         if kit.estado not in {"preparing", "paused"}:
-            raise HTTPException(status_code=409, detail="El surtido no está aceptando escaneos de herramientas")
+            raise HTTPException(status_code=409, detail="This kit is not accepting tool scans")
 
         component = db.query(ComponenteSurtido).join(
             RequisitoSetup,
@@ -1330,8 +1330,8 @@ def scan_kit_tool(kit_id: str, item: SurtidoToolSelect):
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"El ID físico {tool.id} (TN {tool.tn}, tipo "
-                    f"{_category(tool) or 'desconocido'}) no coincide con ninguna herramienta pendiente del surtido"
+                    f"Tool {tool.id} (TN {tool.tn}, type "
+                    f"{_category(tool) or 'unknown'}) does not match any pending tool in this kit"
                 ),
             )
         return _assign_kit_tool(
@@ -1347,7 +1347,7 @@ def scan_kit_tool(kit_id: str, item: SurtidoToolSelect):
         raise
     except IntegrityError as error:
         db.rollback()
-        raise HTTPException(status_code=409, detail="No se pudo reservar la herramienta escaneada") from error
+        raise HTTPException(status_code=409, detail="The scanned tool could not be reserved") from error
     finally:
         db.close()
 
@@ -1467,22 +1467,22 @@ def _kit_blockers(db, kit, components):
         by_requirement.setdefault(component.requisito_id, {})[component.categoria] = component
     for requisito_id, parts in by_requirement.items():
         requirement = db.query(RequisitoSetup).filter(RequisitoSetup.id == requisito_id).first()
-        label = f"{requirement.tn} (estacion {requirement.station})" if requirement else str(requisito_id)
+        label = f"{requirement.tn} (station {requirement.station})" if requirement else str(requisito_id)
         for category in COMPONENT_CATEGORIES:
             component = parts.get(category)
-            name = "punzon" if category == "punzon" else "matriz"
+            name = "punch" if category == "punzon" else "die"
             if component is None:
-                blockers.append(f"{label}: falta {name}")
+                blockers.append(f"{label}: {name} is missing")
                 continue
             tool_id = component.herramienta_nueva_id
             if component.estado != "ready" or not tool_id:
-                blockers.append(f"{label}: falta escanear {name}")
+                blockers.append(f"{label}: {name} still to scan")
                 continue
             if component.accion == "keep":
                 tool = db.query(Herramienta).filter(Herramienta.id == tool_id).first()
                 if not tool or tool.ubicacion != kit.maquina_codigo or tool.estado != "disponible":
                     blockers.append(
-                        f"{label}: el {name} {tool_id} ya no esta montado en {kit.maquina_codigo}"
+                        f"{label}: {name} {tool_id} is no longer mounted on {kit.maquina_codigo}"
                     )
     return blockers
 
@@ -1509,7 +1509,7 @@ def generate_kit_qr_token(kit_id: str):
         if missing or blockers:
             raise HTTPException(
                 status_code=409,
-                detail="Kit incompleto: " + "; ".join(blockers or [f"componentes {missing}"]),
+                detail="Kit incomplete: " + "; ".join(blockers or [f"components {missing}"]),
             )
         if not kit.qr_token:
             kit.qr_token = secrets.token_urlsafe(32)
@@ -1549,11 +1549,11 @@ def confirm_kit_delivery(item: DeliveryScan):
             scanned_machine = scanned_machine[len(machine_prefix):]
         scanned_machine = scanned_machine.strip().upper()
         if not scanned_machine:
-            raise HTTPException(status_code=422, detail="Escanea primero el QR de la máquina donde se entrega el kit")
+            raise HTTPException(status_code=422, detail="Scan the QR on the machine where the kit is delivered first")
         if scanned_machine != kit.maquina_codigo:
             raise HTTPException(
                 status_code=409,
-                detail=f"Este kit es para la máquina {kit.maquina_codigo}, pero se escaneó {scanned_machine}",
+                detail=f"This kit is for machine {kit.maquina_codigo}, but {scanned_machine} was scanned",
             )
         old_setup = db.query(Setup).filter(Setup.id == kit.setup_anterior_id).one()
         new_setup = db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one()
