@@ -3,6 +3,8 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import requests
 
+from pick_list import build_pick_items
+
 API_URL = "http://127.0.0.1:8000/workflow"
 
 
@@ -22,46 +24,28 @@ def fetch_rack_codes(parent=None):
 
 
 def build_operator_pick_list(comparison):
-    new_setup = comparison["new_setup"]
-    clearance_min = new_setup.get("clearance_min")
-    clearance_max = new_setup.get("clearance_max")
-    clearance_spec = (
-        f"{clearance_min}–{clearance_max} in"
-        if clearance_min is not None and clearance_max is not None
-        else "Revisión manual requerida"
-    )
+    """Lista para la interfaz Tkinter (etiquetas en español) sobre la fuente única de pick_list.py."""
+    categories = {"punch": "Punzón", "die": "Matriz"}
+    actions = {
+        "supply": "Surtir al carro",
+        "verify_clearance": "Validar; surtir reemplazo si no cumple",
+        "confirm_with_engineering": "Confirmar matriz con ingeniería",
+    }
     items = []
-
-    for row in comparison["added"]:
-        for category in ("Punzón", "Matriz"):
-            items.append({
-                "kind": "supply",
-                "station": row["station"] or "—",
-                "tn": row["tn"],
-                "angle": row["angle"] or "—",
-                "category": category,
-                "specification": clearance_spec if category == "Matriz" else "—",
-                "action": "Surtir al carro",
-            })
-
-    for row in comparison["unchanged"]:
-        if row["die_action"] not in {"verify_clearance", "manual_die_selection"}:
-            continue
+    for item in build_pick_items(comparison):
+        if item["clearance"]:
+            specification = item["clearance"]
+        else:
+            specification = "—" if item["category"] == "punch" else "Revisión manual requerida"
         items.append({
-            "kind": "verify",
-            "station": row["station"] or "—",
-            "tn": row["tn"],
-            "angle": row["angle"] or "—",
-            "category": "Matriz",
-            "specification": clearance_spec,
-            "action": (
-                "Validar; surtir reemplazo si no cumple"
-                if row["die_action"] == "verify_clearance"
-                else "Confirmar matriz con ingeniería"
-            ),
+            "kind": item["kind"],
+            "station": item["station"],
+            "tn": item["tn"],
+            "angle": item["angle"],
+            "category": categories[item["category"]],
+            "specification": specification,
+            "action": actions[item["action"]],
         })
-
-    items.sort(key=lambda item: (str(item["station"]), item["tn"], item["category"]))
     return items
 
 
@@ -86,7 +70,7 @@ class SetupWorkflowWindow:
         self.kit_components = []
         self.machine_open_kit = None
 
-    def open(self):
+    def open(self, machine=None, part=None):
         self.window = tk.Toplevel(self.parent)
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
         self.window.title("Tool Dispensing - Surtido")
@@ -103,6 +87,12 @@ class SetupWorkflowWindow:
         self._build_setup_tab()
         self._build_kit_tab()
         self.refresh_locations(show_error=True)
+        if machine:
+            self.machine_var.set(machine)
+            self._machine_selected()
+            if part:
+                self.part_new_var.set(part)
+                self._select_stored_program("new")
         return self.window
 
     def _api(self, method, path, payload=None, params=None):

@@ -1,10 +1,16 @@
+import os
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from models.inventory import Base
 
-DATABASE_URL = "sqlite:///./tooltrack.db"
+# Ruta absoluta: arrancar el backend desde otra carpeta no debe crear una base vacía.
+DB_PATH = os.getenv("TOOLTRACK_DB_PATH") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "tooltrack.db"
+)
+DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 15})
 
 
 @event.listens_for(engine, "connect")

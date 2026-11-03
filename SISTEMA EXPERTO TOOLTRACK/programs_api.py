@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 import workflow_api
 from models.inventory import BitacoraPrograma, Cliente, FamiliaParte, ProgramaParte
+from planning import calcular_planeacion
 
 router = APIRouter(prefix="/workflow/programs", tags=["programs"])
 
@@ -93,6 +94,12 @@ def _read(program, with_content=False, clients=None):
         "actualizado_por": program.actualizado_por,
         "actualizado_en": program.actualizado_en.isoformat(),
         "requisitos": json.loads(program.requisitos_json),
+        "planeacion": {
+            "piezas_blank": program.piezas_blank,
+            "cycle_time_s": program.cycle_time_s,
+            "cycle_con_lead_s": program.cycle_con_lead_s,
+            "uph_teorico": program.uph_teorico,
+        },
     }
     if with_content:
         data["contenido"] = program.contenido
@@ -270,6 +277,11 @@ def save_program(tipo_maquina: str, numero_parte: str, item: ProgramSave):
         program.contenido = item.contenido
         program.contenido_hash = hashlib.sha256(item.contenido.encode("utf-8")).hexdigest()
         program.requisitos_json = json.dumps(new_data["requisitos"])
+        planeacion = calcular_planeacion(item.contenido) or {}
+        program.piezas_blank = planeacion.get("piezas_blank")
+        program.cycle_time_s = planeacion.get("cycle_time_s")
+        program.cycle_con_lead_s = planeacion.get("cycle_con_lead_s")
+        program.uph_teorico = planeacion.get("uph_teorico")
         program.actualizado_por = user
         program.actualizado_en = now
         db.flush()

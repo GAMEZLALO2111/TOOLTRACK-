@@ -1,15 +1,20 @@
-import hashlib
-import hmac
 import os
-import secrets
 import sqlite3
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
+
+# Rutas relativas (tooltrack.db, CSV) siempre respecto a esta carpeta, sin importar desde dónde se arranque.
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 from fastapi import FastAPI, HTTPException, Body, Depends, Query
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.exc import IntegrityError
 from catalog_reconciliation import preview_legacy_reconciliation
 from models.inventory import (
+    Auditoria,
     ConfiguracionTN,
     ComponenteSurtido,
     Herramienta,
@@ -29,13 +34,34 @@ from workflow_api import router as workflow_router, seed_default_locations
 from tool_tracking_api import router as tool_tracking_router
 from machines_api import router as machines_router
 from programs_api import router as programs_router
+from demandas_api import router as demandas_router
+from users_api import router as users_router
+from kitting_api import router as kitting_router
+from auth import AuthMiddleware, normalize_role as _canonical_role
+from passwords import hash_password, verify_password, secrets_compare, ensure_password_hash
+from planning import calcular_planeacion
 
-app = FastAPI()
+# Sin /docs ni /openapi.json: el esquema de la API no se publica.
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(AuthMiddleware)
 app.include_router(workflow_router)
 app.include_router(tool_tracking_router)
 app.include_router(machines_router)
 app.include_router(programs_router)
+app.include_router(demandas_router)
+app.include_router(kitting_router)
+# Aplicación web (web/dist). Se compila con build_web.bat; sin compilar, "/" avisa cómo hacerlo.
+WEB_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
+if os.path.isdir(os.path.join(WEB_DIST, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(WEB_DIST, "assets")), name="web-assets")
 
+
+@app.get("/", include_in_schema=False)
+def web_index():
+    index = os.path.join(WEB_DIST, "index.html")
+    if not os.path.isfile(index):
+        return JSONResponse({"detail": "The web app is not built yet. Run build_web.bat"}, status_code=404)
+    return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 @app.on_event("startup")
 def initialize_workflow_locations():
@@ -47,61 +73,31 @@ DEFAULT_ADMIN_PASSWORD = os.getenv("TOOLTRACK_ADMIN_PASSWORD", "")
 
 
 def normalize_role(role: Optional[str]) -> str:
-    if not role:
-        return "operator"
-    normalized = str(role).strip().lower()
-    if normalized in {"admin", "supervisor", "operator"}:
-        return normalized
-    if normalized == "true":
-        return "admin"
-    return "operator"
+    return _canonical_role(role) or "TOOLCRIB_OPERATOR"
 
 
-def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 200_000)
-    return f"pbkdf2_sha256${salt}${digest.hex()}"
-
-
-def verify_password(raw_password: str, stored_password: Optional[str]) -> bool:
-    if not stored_password:
-        return False
-    if stored_password.startswith("pbkdf2_sha256$"):
-        try:
-            _, salt, digest_hex = stored_password.split("$", 2)
-            expected = hashlib.pbkdf2_hmac("sha256", raw_password.encode("utf-8"), salt.encode("utf-8"), 200_000).hex()
-            return secrets_compare(expected, digest_hex)
-        except ValueError:
-            return False
-    return stored_password == raw_password
-
-
-def secrets_compare(a: str, b: str) -> bool:
-    return hmac.compare_digest(a, b)
-
-
-def ensure_password_hash(password: str) -> str:
-    return hash_password(password)
-
-# --- MIGRACIÓN AUTOMÁTICA DE USUARIOS PARA CAMPO 'role' ---
+# --- MIGRACIÓN AUTOMÁTICA DE USUARIOS (campo 'role' y 'activo', roles heredados -> roles nuevos) ---
 def migrate_usuarios_table():
     import sqlite3
     conn = sqlite3.connect('tooltrack.db')
     cur = conn.cursor()
-    # Verificar si existe la columna 'role'
     cur.execute("PRAGMA table_info(usuarios)")
     columns = [col[1] for col in cur.fetchall()]
     if 'role' not in columns:
-        # Agregar columna 'role'
-        cur.execute("ALTER TABLE usuarios ADD COLUMN role TEXT DEFAULT 'operator'")
+        cur.execute("ALTER TABLE usuarios ADD COLUMN role TEXT DEFAULT 'TOOLCRIB_OPERATOR'")
+        if 'is_admin' in columns:
+            # Solo en la primera migración: después la columna is_admin es obsoleta y no debe pisar los roles.
+            cur.execute("UPDATE usuarios SET role='admin' WHERE is_admin=1")
+            cur.execute("UPDATE usuarios SET role='operator' WHERE is_admin=0")
         conn.commit()
-    # Migrar datos de is_admin a role
-    if 'is_admin' in columns:
-        cur.execute("UPDATE usuarios SET role='admin' WHERE is_admin=1")
-        cur.execute("UPDATE usuarios SET role='operator' WHERE is_admin=0")
+    if 'activo' not in columns:
+        cur.execute("ALTER TABLE usuarios ADD COLUMN activo INTEGER NOT NULL DEFAULT 1")
         conn.commit()
-        # Opcional: eliminar columna is_admin (SQLite no soporta DROP COLUMN directo)
-        # Se puede dejar como está, ya no se usará
+    for legacy, canonical in (("admin", "SYSTEM_ADMIN"), ("supervisor", "TOOLCRIB_SUPERVISOR"),
+                              ("operator", "TOOLCRIB_OPERATOR")):
+        cur.execute("UPDATE usuarios SET role=? WHERE lower(role)=?", (canonical, legacy))
+    cur.execute("UPDATE usuarios SET role='TOOLCRIB_OPERATOR' WHERE role IS NULL OR trim(role)=''")
+    conn.commit()
     conn.close()
 migrate_usuarios_table()
 
@@ -109,7 +105,7 @@ migrate_usuarios_table()
 def ensure_admin_user():
     db = SessionLocal()
     try:
-        existing_admin = db.query(Usuario).filter(Usuario.role == "admin").first()
+        existing_admin = db.query(Usuario).filter(Usuario.role == "SYSTEM_ADMIN").first()
         if existing_admin:
             return
         if not DEFAULT_ADMIN_USERNAME or not DEFAULT_ADMIN_PASSWORD:
@@ -120,13 +116,14 @@ def ensure_admin_user():
         username = DEFAULT_ADMIN_USERNAME.lower()
         existing_user = db.query(Usuario).filter(Usuario.username.ilike(username)).first()
         if existing_user:
-            existing_user.role = "admin"
+            existing_user.role = "SYSTEM_ADMIN"
+            existing_user.activo = True
             existing_user.password = hash_password(DEFAULT_ADMIN_PASSWORD)
         else:
             db.add(Usuario(
                 username=username,
                 password=hash_password(DEFAULT_ADMIN_PASSWORD),
-                role="admin",
+                role="SYSTEM_ADMIN",
             ))
         db.commit()
     except Exception:
@@ -248,7 +245,56 @@ def ensure_surtido_columns():
     conn.close()
 
 
+def ensure_planeacion_columns():
+    conn = sqlite3.connect('tooltrack.db')
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(programas_parte)")
+    columns = {row[1] for row in cursor.fetchall()}
+    nuevas = {
+        'piezas_blank': 'INTEGER',
+        'cycle_time_s': 'INTEGER',
+        'cycle_con_lead_s': 'INTEGER',
+        'uph_teorico': 'REAL',
+    }
+    if columns:
+        for nombre, tipo in nuevas.items():
+            if nombre not in columns:
+                cursor.execute(f"ALTER TABLE programas_parte ADD COLUMN {nombre} {tipo}")
+        pendientes = cursor.execute(
+            "SELECT id, contenido FROM programas_parte WHERE cycle_time_s IS NULL"
+        ).fetchall()
+        for program_id, contenido in pendientes:
+            plan = calcular_planeacion(contenido)
+            if plan:
+                cursor.execute(
+                    "UPDATE programas_parte SET piezas_blank=?, cycle_time_s=?, cycle_con_lead_s=?, uph_teorico=? WHERE id=?",
+                    (plan['piezas_blank'], plan['cycle_time_s'], plan['cycle_con_lead_s'], plan['uph_teorico'], program_id),
+                )
+    conn.commit()
+    conn.close()
+
+
+def ensure_unique_open_kits(path='tooltrack.db'):
+    """Un solo surtido abierto por máquina y por carro, garantizado por la base (evita carreras entre operadores)."""
+    conn = sqlite3.connect(path)
+    try:
+        for name, column in (("uq_surtido_abierto_maquina", "maquina_codigo"),
+                             ("uq_surtido_abierto_carro", "carro_codigo")):
+            conn.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON surtidos({column}) "
+                "WHERE estado IN ('preparing', 'paused', 'ready')"
+            )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # Ya existen surtidos abiertos duplicados: no se bloquea el arranque, pero queda sin candado.
+        conn.rollback()
+    finally:
+        conn.close()
+
+
 ensure_surtido_columns()
+ensure_planeacion_columns()
+ensure_unique_open_kits()
 
 class HerramientaCreate(BaseModel):
     id: str
@@ -307,33 +353,6 @@ class RegistroInventarioCreate(BaseModel):
 class RegistroInventarioUpdate(RegistroInventarioCreate):
     pass
 
-class UsuarioCreate(BaseModel):
-    username: str
-    password: str
-    is_admin: bool = False
-    role: Optional[str] = None
-
-    @property
-    def resolved_role(self) -> str:
-        if self.role:
-            return normalize_role(self.role)
-        return 'admin' if self.is_admin else 'operator'
-
-    @property
-    def safe_username(self) -> str:
-        return self.username.strip()
-
-class UsuarioRead(BaseModel):
-    username: str
-    is_admin: bool
-    role: Optional[str] = None
-    class Config:
-        from_attributes = True
-
-class UsuarioLogin(BaseModel):
-    username: str
-    password: str
-
 class BarcodeScan(BaseModel):
     data: str
     tipo: str  # 'punch' o 'die'
@@ -344,78 +363,7 @@ class MantenimientoCreate(BaseModel):
     descripcion: str
     fecha: str
 
-@app.post("/login")
-def login(user: UsuarioLogin):
-    db = SessionLocal()
-    username = user.username.strip().lower()
-    password = user.password.strip()
-    u = db.query(Usuario).filter(Usuario.username.ilike(username)).first()
-    db.close()
-    if not u or not verify_password(password, u.password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    role = normalize_role(u.role)
-    return {"username": u.username, "is_admin": role == "admin", "role": role}
-
-@app.get("/users", response_model=List[UsuarioRead])
-def listar_usuarios():
-    db = SessionLocal()
-    usuarios = []
-    for user in db.query(Usuario).all():
-        role = normalize_role(user.role)
-        usuarios.append({
-            "username": user.username,
-            "is_admin": role == "admin",
-            "role": role,
-        })
-    db.close()
-    return usuarios
-
-@app.post("/users", response_model=UsuarioRead)
-def crear_usuario(usuario: UsuarioCreate):
-    db = SessionLocal()
-    username = usuario.safe_username.lower()
-    if not username or not usuario.password.strip():
-        db.close()
-        raise HTTPException(status_code=400, detail="Username and password are required")
-    if db.query(Usuario).filter(Usuario.username.ilike(username)).first():
-        db.close()
-        raise HTTPException(status_code=400, detail="User already exists")
-    role = normalize_role(usuario.role if usuario.role else ('admin' if usuario.is_admin else 'operator'))
-    db_u = Usuario(username=username, password=hash_password(usuario.password.strip()), role=role)
-    db.add(db_u)
-    db.commit()
-    db.refresh(db_u)
-    db.close()
-    return {"username": db_u.username, "is_admin": role == "admin", "role": role}
-
-@app.patch("/users/{username}", response_model=UsuarioRead)
-def editar_usuario(username: str, usuario: UsuarioCreate = Body(...)):
-    db = SessionLocal()
-    u = db.query(Usuario).filter(Usuario.username.ilike(username)).first()
-    if not u:
-        db.close()
-        raise HTTPException(status_code=404, detail="User not found")
-    if not usuario.password.strip():
-        db.close()
-        raise HTTPException(status_code=400, detail="Password is required")
-    u.password = hash_password(usuario.password.strip())
-    u.role = normalize_role(usuario.role if usuario.role else ('admin' if usuario.is_admin else 'operator'))
-    db.commit()
-    db.refresh(u)
-    db.close()
-    return {"username": u.username, "is_admin": u.role == "admin", "role": u.role}
-
-@app.delete("/users/{username}")
-def eliminar_usuario(username: str):
-    db = SessionLocal()
-    u = db.query(Usuario).filter(Usuario.username == username).first()
-    if not u:
-        db.close()
-        raise HTTPException(status_code=404, detail="User not found")
-    db.delete(u)
-    db.commit()
-    db.close()
-    return {"detail": "User deleted"}
+app.include_router(users_router)
 
 def catalog_variant_read(variant: VarianteHerramienta):
     return {
@@ -1222,18 +1170,43 @@ def scan_barcode(barcode: str):
 
 @app.get("/audit/filter")
 def filtrar_auditoria(user: str = Query(None), action: str = Query(None), fecha: str = Query(None)):
+    """Bitácora unificada: cambios de la base de datos (auditoria) + registro CSV heredado de inventario."""
     import csv
     resultados = []
-    with open("audit_log.csv", mode='r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if user and row["User"] != user:
-                continue
-            if action and row["Action"] != action:
-                continue
-            if fecha and not row["Timestamp"].startswith(fecha):
-                continue
-            resultados.append(row)
+    db = SessionLocal()
+    try:
+        query = db.query(Auditoria).order_by(Auditoria.id.desc())
+        if user:
+            query = query.filter(Auditoria.usuario == user)
+        if action:
+            query = query.filter(Auditoria.accion.like(f"%{action}%"))
+        if fecha:
+            try:
+                since = datetime.fromisoformat(fecha)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date. Use YYYY-MM-DD")
+            query = query.filter(Auditoria.fecha >= since)
+        for row in query.limit(1000).all():
+            detail = row.despues if row.antes is None else f"{row.antes} -> {row.despues}"
+            resultados.append({
+                "Timestamp": row.fecha.strftime("%Y-%m-%d %H:%M:%S"),
+                "User": row.usuario,
+                "Action": row.accion,
+                "ToolID": f"{row.entidad or ''} {row.entidad_id or ''}".strip(),
+                "Details": detail or "",
+            })
+    finally:
+        db.close()
+    if os.path.isfile("audit_log.csv"):
+        with open("audit_log.csv", mode='r', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                if user and row["User"] != user:
+                    continue
+                if action and action not in row["Action"]:
+                    continue
+                if fecha and not row["Timestamp"].startswith(fecha):
+                    continue
+                resultados.append(row)
     return resultados
 
 @app.get("/dashboard/localizacion")

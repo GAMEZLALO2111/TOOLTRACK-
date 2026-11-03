@@ -2,6 +2,18 @@
 
 Sistema de escritorio para inventario y rastreabilidad de herramientas. La interfaz Tkinter consume una API FastAPI y los datos se guardan localmente en SQLite.
 
+## Inicio rápido (sin asistente)
+
+1. Doble clic en `1_Iniciar_Backend.bat` y deja esa ventana abierta (es el servidor).
+2. Doble clic en `3_Abrir_Web.bat` (o abre `http://localhost:8000` en el navegador) e inicia sesión. Para la interfaz de escritorio antigua usa `2_Abrir_Interfaz.bat`.
+3. Modo TV del tablero: `http://localhost:8000/#/tv`.
+
+- Si cambias algo del frontend (`web/`), ejecuta `build_web.bat` y reinicia el backend. Si solo usas el sistema, no hace falta.
+- Si olvidas una contraseña: en PowerShell, dentro de esta carpeta, `python create_admin.py` (crea o restablece un administrador). Otros usuarios se administran en la pestaña Users.
+- Si dice "Cannot reach the TOOLTRACK server", el backend no está corriendo (paso 1). Si dice "Too many failed attempts", espera 5 minutos o reinicia el backend.
+- Pruebas automáticas: `python -m unittest discover -s tests -p "test_*.py"` (deben terminar en OK).
+- Haz copia de `tooltrack.db` antes de actualizar el sistema. El estado del proyecto y la hoja de ruta están en las secciones de abajo.
+
 ## Requisitos
 
 - Windows
@@ -60,7 +72,7 @@ Cada configuración TN + SIZE comparte TYPE; permite una variante de punzón y d
 
 Cuando una herramienta ya está referenciada por setups, kits, pendientes o movimientos del flujo, Inventory conserva la edición de datos físicos como LIFE/SO, pero bloquea cambios de identidad y ubicación manuales. La ubicación debe cambiarse mediante un movimiento registrado; una herramienta con historia de flujo no se puede eliminar desde la corrección de altas.
 
-Al iniciar la API, SQLAlchemy crea las tablas nuevas que falten, pero los registros heredados no se convierten ni se enlazan automáticamente al catálogo. Los registros heredados permanecen visibles en Inventory y se marcan como **Not linked** hasta que exista un proceso de conciliación aprobado. El endpoint técnico `GET /catalogo/conciliacion/preview` es de solo lectura y no forma parte de la navegación normal de la interfaz. Los controles de escritura del catálogo se ocultan a usuarios no administradores en Tkinter; la API todavía no exige autorización por usuario en estos endpoints, por lo que debe seguir ejecutándose solo en localhost. Haz una copia de seguridad antes de iniciar una versión que incluye cambios de esquema.
+Al iniciar la API, SQLAlchemy crea las tablas nuevas que falten, pero los registros heredados no se convierten ni se enlazan automáticamente al catálogo. Los registros heredados permanecen visibles en Inventory y se marcan como **Not linked** hasta que exista un proceso de conciliación aprobado. El endpoint técnico `GET /catalogo/conciliacion/preview` es de solo lectura y no forma parte de la navegación normal de la interfaz. Los controles de escritura del catálogo se ocultan según el rol en Tkinter y la API los exige por permiso. Haz una copia de seguridad antes de iniciar una versión que incluye cambios de esquema.
 
 ## Flujo de setup, surtido y movimientos
 
@@ -77,13 +89,28 @@ La opción **Tool Dispensing** usa el flujo de la API `/workflow` y la misma bas
 
    **Entrega con QR de máquina:** cada máquina lleva pegado su QR (`TOOLTRACK-MACHINE:<código>`, se imprime desde Tool Tracking → Ubicaciones → «QR de la máquina seleccionada»). Para confirmar una entrega se escanea primero la máquina y luego el QR del kit; si el kit es de otra máquina se rechaza.
 
-En el primer inicio se registran las máquinas predeterminadas `T-101` a `T-117` y los carros de surtido `C-01` a `C-03` (sin modificar ubicaciones ya existentes); racks, TOGUs, mantenimiento y taller deben registrarse antes de usarse. La API no proporciona autorización por rol para estas rutas; conserva el servicio en localhost y opera con la cuenta administradora mientras se define el control de permisos.
+En el primer inicio se registran las máquinas predeterminadas `T-101` a `T-117` y los carros de surtido `C-01` a `C-03` (sin modificar ubicaciones ya existentes); racks, TOGUs, mantenimiento y taller deben registrarse antes de usarse. Todas las rutas exigen sesión y permiso por rol (ver Seguridad).
+
+## Aplicación web (en construcción)
+
+Frontend en `web/` (React + TypeScript + Vite). El backend lo sirve en `http://localhost:8000/` y usa la misma API y los mismos roles que la interfaz Tkinter, que se mantiene hasta que cada módulo web esté probado.
+
+- Compilar: `build_web.bat` (usa Node.js portátil en `%LOCALAPPDATA%\TOOLTRACK\node-v26.13.0-win-x64`; `node_modules` vive en `%LOCALAPPDATA%\TOOLTRACK\web_node_modules`, enlazado con una unión, para que OneDrive no lo sincronice). Después reinicia el backend. Desarrollo: `npm.cmd run dev` dentro de `web/` (puerto 5173 con proxy a la API).
+- Módulos listos: Login, Sequence Board (tarjetas con semáforo, cola por máquina, producido, edición, orden, modo TV en `#/tv` con desplazamiento automático), Usuarios y **Kitting (entrega 1 de 3)**: asistente máquina → pieza nueva → comparación automática (programas guardados, comparación y lista de herramientas calculadas en el servidor, `kitting_api.py`: `GET /workflow/kitting/overview`, `POST /plan`, `POST /start`) → carro → iniciar surtido; panel de carros y detalle de un surtido (solo lectura, `#/kitting/kit/<id>`). Pendiente de Kitting: entrega 2 (escanear/seleccionar herramientas, pausar, reanudar, cancelar) y entrega 3 (QR, entrega en máquina y pendientes de recoger). Tool Tracking, Inventory, Máquinas, Números de parte y Audit Log siguen en Tkinter.
+- Interfaz en inglés, adaptable a PC, tablet y celular. La sesión se guarda en `sessionStorage` (se pierde al cerrar la pestaña) y dura 12 h.
+- Los estados y marcas que devuelve el backend siguen en español; `web/src/labels.ts` los traduce para mostrarlos.
 
 ## Seguridad
 
 - No publiques bases de datos reales, exportaciones, archivos `.env` ni credenciales.
-- La API está configurada para escuchar solo en `127.0.0.1`; no la expongas a una red sin implementar autenticación y autorización de API.
-- Las contraseñas nuevas se guardan con PBKDF2-HMAC-SHA256 y sales aleatorias.
+- La API sigue configurada para escuchar solo en `127.0.0.1`. Para abrirla a otras PCs falta resolver con TI dónde vive el servidor y la base de datos (fuera de OneDrive).
+- Las contraseñas se guardan con PBKDF2-HMAC-SHA256 y sales aleatorias (mínimo 6 caracteres al crear o cambiar).
+- **Sesión con token:** `POST /login` devuelve un token (dura 12 h; en la base solo se guarda su hash). Todas las rutas lo exigen (`Authorization: Bearer ...`), `POST /logout` lo revoca y 5 intentos fallidos bloquean 5 minutos. Sin `/docs` ni `/openapi.json`.
+- **Roles** (un rol por usuario; los permisos se aplican en la API, no solo en la interfaz): `SYSTEM_ADMIN`, `ENGINEERING`, `PLANNING`, `TOOLCRIB_SUPERVISOR`, `TOOLCRIB_OPERATOR`, `MAINTENANCE_TECHNICIAN`. La matriz está en `auth.py` (`ROLE_PERMISSIONS`, `ROUTE_RULES`); una ruta que no esté en `ROUTE_RULES` se rechaza y una prueba falla si se agrega una ruta sin regla. El administrador tiene todos los permisos para poder dar soporte; cada acción queda registrada.
+- **Bitácora** (`auditoria`): cada cambio en la base guarda usuario autenticado, rol, acción (ruta), fecha y valores anteriores y nuevos (las contraseñas nunca). También se registran inicios y cierres de sesión, intentos fallidos y accesos denegados. El nombre del actor en los cuerpos (`realizado_por`, `creado_por`, `usuario`) siempre se sustituye por el del token. Se consulta en View Audit Log.
+- Los usuarios no se borran: se desactivan, y siempre debe quedar al menos un `SYSTEM_ADMIN` activo.
+- Migración de roles: `admin`→`SYSTEM_ADMIN`, `supervisor`→`TOOLCRIB_SUPERVISOR`, `operator`→`TOOLCRIB_OPERATOR` (solo la primera vez).
+- La base garantiza un solo surtido abierto por máquina y por carro (índice único parcial).
 
 ## Máquinas
 
@@ -92,6 +119,23 @@ Cada máquina tiene perfil (tipo, línea, capacidad, espesor máximo) y estacion
 ## Números de parte
 
 Menú Números de parte: programas por tipo de máquina (4I, 2I, 45 STA). Formato fijo tipo TYEH-1193217_01-SW, familia (lista administrable) y NPI/Sustaining. Se guardan los datos leídos del .stp y el archivo (hoja de setup). Si el número ya existe se reemplaza, con motivo obligatorio; todo queda en la Bitácora de cambios (qué estaciones cambiaron, quién y cuándo).
+
+Planeación por número de parte (`planning.py`): piezas por blank (`sym`) y run time por blank tomados del .stp. Cycle time = run time; cycle c/lead = cycle + 180 s (lead time por blank); UPH teórico = 3600 ÷ cycle × piezas por blank. Se guardan en `programas_parte` y se muestran en la ventana de programas.
+
+## Tablero de secuencia (B1)
+
+Menú Tablero de secuencia (`demand_board_ui.py`, API `demandas_api.py`, prefijo `/workflow/demandas`). Una tarjeta por máquina con semáforo, ordenadas por las que paran más pronto; clic en la tarjeta abre la cola completa de esa máquina (surtir, producido, editar, subir/bajar, quitar).
+
+- Semáforo según las HR que le faltan a la NP que corre: rojo < 2 h, amarillo 2–4 h, verde > 4 h; azul = paro programado; gris = sin cola. Rojo también si la máquina está vacía, terminó su NP o se acabó la cola; amarillo si corre una NP que no está en la cola o no hay programa para calcular.
+- Si la máquina está en rojo/amarillo y la siguiente NP no está surtida, la tarjeta pide "SURTIR SIGUIENTE YA" y abre Tool Dispensing con máquina y NP preseleccionadas.
+- HR de una demanda = cantidad × cycle c/lead ÷ (piezas por blank × 3600). Pendiente se calcula con la cantidad menos lo producido.
+- TIE TOTAL de la máquina = suma de HR de sus demandas; CUBIERTO = suma de HR de las demandas en TERMINADO.
+- Estado automático: TERMINADO (pendiente 0), CORRIENDO (la máquina tiene montado ese NP; si el NP se repite solo la primera), SURTIENDO (surtido en proceso), FALTA HERRAMIENTAS (surtido pausado), EN MÁQUINA (surtido listo para entregar), NO INICIADO.
+- Marcas manuales con comentario obligatorio: PARO PROGRAMADO, URGENTE, LÁSER, CORTE DE BLANCK (Planning, Engineering y supervisor de toolcrib).
+- Permisos por campo en el PATCH de una demanda: cantidad y orden → `demand.manage` (Planning); producido → `demand.progress` (toolcrib); marca y comentario → `demand.mark`. Límite de 1,000,000 de piezas, NP en mayúsculas, producido no puede superar la cantidad y no se aceptan máquinas desactivadas.
+- Quitar una demanda la desactiva (no se borra).
+- Se actualiza solo cada 30 s; si el backend no responde lo avisa en la barra superior sin mensajes emergentes.
+- Pendiente: el lead time y la integración con MESSPRO quedan para después; la producción se captura a mano.
 
 ## Surtido desde programas guardados y traspaso
 

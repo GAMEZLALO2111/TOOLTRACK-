@@ -3,6 +3,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -117,15 +118,16 @@ class Usuario(Base):
     __tablename__ = 'usuarios'
     username = Column(String, primary_key=True)
     password = Column(String, nullable=False)
-    role = Column(String, default='operator')  # admin, supervisor, operator
+    role = Column(String, default='TOOLCRIB_OPERATOR')
+    activo = Column(Boolean, nullable=False, default=True, server_default="1")
 
     @property
     def is_admin(self):
-        return (self.role or '').lower() == 'admin'
+        return (self.role or '').upper() == 'SYSTEM_ADMIN'
 
     @is_admin.setter
     def is_admin(self, value):
-        self.role = 'admin' if bool(value) else 'operator'
+        self.role = 'SYSTEM_ADMIN' if bool(value) else 'TOOLCRIB_OPERATOR'
 
 
 class Ubicacion(Base):
@@ -314,6 +316,10 @@ class ProgramaParte(Base):
     requisitos_json = Column(Text, nullable=False)
     actualizado_por = Column(String, nullable=False)
     actualizado_en = Column(DateTime, nullable=False)
+    piezas_blank = Column(Integer, nullable=True)
+    cycle_time_s = Column(Integer, nullable=True)
+    cycle_con_lead_s = Column(Integer, nullable=True)
+    uph_teorico = Column(Float, nullable=True)
 
 
 class BitacoraPrograma(Base):
@@ -340,3 +346,48 @@ class EventoMaquina(Base):
     detalle = Column(Text, nullable=False)
     realizado_por = Column(String, nullable=False)
     creado_en = Column(DateTime, nullable=False)
+
+
+class DemandaPlaneacion(Base):
+    """Cantidad planeada de un número de parte en una máquina (tablero de secuencia)."""
+    __tablename__ = "demandas_planeacion"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    maquina_codigo = Column(String, ForeignKey("ubicaciones.codigo"), nullable=False)
+    numero_parte = Column(String, nullable=False)
+    cantidad = Column(Integer, nullable=False)
+    piezas_producidas = Column(Integer, nullable=False, default=0, server_default="0")
+    orden = Column(Integer, nullable=False, default=0, server_default="0")
+    marca = Column(String, nullable=True)
+    comentario = Column(Text, nullable=True)
+    activa = Column(Boolean, nullable=False, default=True, server_default="1")
+    creado_por = Column(String, nullable=False)
+    creado_en = Column(DateTime, nullable=False)
+    actualizado_en = Column(DateTime, nullable=False)
+
+
+class Sesion(Base):
+    """Token de sesión (solo se guarda el hash SHA-256)."""
+    __tablename__ = "sesiones"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    token_hash = Column(String, nullable=False, unique=True)
+    username = Column(String, nullable=False, index=True)
+    creado_en = Column(DateTime, nullable=False)
+    expira_en = Column(DateTime, nullable=False)
+    revocada = Column(Boolean, nullable=False, default=False, server_default="0")
+
+
+class Auditoria(Base):
+    """Bitácora de cambios: quién, cuándo, qué acción y valores anteriores/nuevos."""
+    __tablename__ = "auditoria"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fecha = Column(DateTime, nullable=False, index=True)
+    usuario = Column(String, nullable=False, index=True)
+    rol = Column(String, nullable=True)
+    accion = Column(String, nullable=False)
+    entidad = Column(String, nullable=True)
+    entidad_id = Column(String, nullable=True)
+    antes = Column(Text, nullable=True)
+    despues = Column(Text, nullable=True)

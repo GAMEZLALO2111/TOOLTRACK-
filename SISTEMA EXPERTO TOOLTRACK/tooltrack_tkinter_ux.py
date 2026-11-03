@@ -13,9 +13,12 @@ import uuid
 import random
 import re
 from workflow_ui import SetupWorkflowWindow, fetch_rack_codes
+from demand_board_ui import DemandBoardWindow
 from tool_locations_ui import ToolLocationWindow
 from machines_ui import MachineWindow
 from programs_ui import ProgramWindow
+from users_ui import UsersWindow
+import api_client
 from ui_theme import BG, CARD, NAVY, NAVY_LIGHT, ACCENT, ACCENT_DARK, TEXT, MUTED, BORDER, apply_theme, center_window
 
 API_URL = "http://127.0.0.1:8000/herramientas/"
@@ -25,8 +28,40 @@ class HerramientaApp:
     def __init__(self, root):
         self.root = root
         self.user = None
+        self._single = {}
+        api_client.install()
+        api_client.set_unauthorized_handler(lambda: self.root.after(0, self.session_expired))
         self.auto_backup_csv(interval=3600)  # Backup cada hora
         self.show_login()
+
+    def can(self, permission):
+        return permission in (self.user or {}).get("permissions", ())
+
+    def _close_windows(self):
+        for child in self.root.winfo_children():
+            if isinstance(child, tk.Toplevel):
+                child.destroy()
+
+    def logout(self, notify_server=True):
+        if notify_server and api_client.token():
+            try:
+                requests.post(f"{api_client.API_BASE}/logout", timeout=5)
+            except requests.RequestException:
+                pass
+        api_client.clear_session()
+        self.user = None
+        self._close_windows()
+        for child in self.root.winfo_children():
+            child.destroy()
+        self.show_login()
+
+    def session_expired(self):
+        if self.user is None:
+            return
+        self.user = None
+        api_client.clear_session()
+        messagebox.showwarning("Session expired", "Your session ended. Please sign in again.", parent=self.root)
+        self.logout(notify_server=False)
 
     def show_login(self):
         self.root.withdraw()
@@ -73,9 +108,16 @@ class HerramientaApp:
                 )
                 if r.status_code == 200:
                     data = r.json()
-                    self.user = {"username": data["username"], "is_admin": data["is_admin"]}
+                    api_client.set_session(data["token"], data["permissions"])
+                    self.user = {
+                        "username": data["username"], "is_admin": data["is_admin"],
+                        "role": data["role"], "permissions": frozenset(data["permissions"]),
+                    }
                     login_win.destroy()
                     self.show_main_menu()
+                elif r.status_code == 429:
+                    msg_var.set(api_client.error_detail(r))
+                    pass_var.set("")
                 else:
                     msg_var.set("Credenciales incorrectas.")
                     pass_var.set("")
@@ -109,11 +151,16 @@ class HerramientaApp:
         tk.Label(header, text="TOOLTRACK", font=("Segoe UI", 24, "bold"), bg=NAVY, fg="white").pack(
             side=tk.LEFT, padx=28, pady=18
         )
-        role = "Administrador" if self.user.get("is_admin", False) else "Operador"
+        sign_out = tk.Button(
+            header, text="Sign out", command=self.logout, font=("Segoe UI", 10, "bold"), bg=NAVY_LIGHT,
+            fg="white", activebackground=ACCENT, activeforeground="white", relief="flat", cursor="hand2",
+            padx=14, pady=4,
+        )
+        sign_out.pack(side=tk.RIGHT, padx=(0, 28))
         tk.Label(
-            header, text=f"{self.user['username']}  ·  {role}", font=("Segoe UI", 11),
+            header, text=f"{self.user['username']}  ·  {self.user['role']}", font=("Segoe UI", 11),
             bg=NAVY, fg="#c9d3df",
-        ).pack(side=tk.RIGHT, padx=28)
+        ).pack(side=tk.RIGHT, padx=18)
         tk.Frame(root, bg=ACCENT, height=4).pack(fill=tk.X)
 
         tk.Label(
@@ -125,16 +172,17 @@ class HerramientaApp:
 
         grid = tk.Frame(root, bg=BG)
         grid.pack()
-        cards = [
-            ("📦", "Inventory", "Registro y consulta de herramientas", self.gestion_catalogo),
-            ("🛒", "Tool Dispensing", "Comparar setups y surtir al carro", self.tool_dispensing_flow),
-                        ("📍", "Tool Tracking", "Localización, retornos y pendientes", self.tool_location_flow),
-                        ("🏭", "Máquinas", "Fichas, estaciones y capacidad", self.machines_flow),
-                        ("🧾", "Números de parte", "Programas 4I, 2I y 45 STA", self.programs_flow),
-                        ("📋", "View Audit Log", "Historial de acciones del sistema", self.ver_auditoria),
+        all_cards = [
+            ("inventory.view", "📦", "Inventory", "Registro y consulta de herramientas", self.gestion_catalogo),
+            ("kitting.view", "🛒", "Tool Dispensing", "Comparar setups y surtir al carro", self.tool_dispensing_flow),
+            ("demand.view", "📅", "Tablero de secuencia", "Qué corre, qué falta surtir (B1)", self.demand_board_flow),
+            ("inventory.view", "📍", "Tool Tracking", "Localización, retornos y pendientes", self.tool_location_flow),
+            ("machine.view", "🏭", "Máquinas", "Fichas, estaciones y capacidad", self.machines_flow),
+            ("program.view", "🧾", "Números de parte", "Programas 4I, 2I y 45 STA", self.programs_flow),
+            ("audit.view", "📋", "View Audit Log", "Historial de acciones del sistema", self.ver_auditoria),
+            ("user.manage", "👤", "Administrar Usuarios", "Altas, roles y desactivación", self.admin_usuarios),
         ]
-        if self.user.get("is_admin", False):
-            cards.append(("👤", "Administrar Usuarios", "Altas y bajas de usuarios", self.admin_usuarios))
+        cards = [card[1:] for card in all_cards if self.can(card[0])]
         for index, (icon, title, subtitle, command) in enumerate(cards):
             self._menu_card(grid, icon, title, subtitle, command).grid(
                 row=index // 2, column=index % 2, padx=14, pady=14
@@ -166,119 +214,7 @@ class HerramientaApp:
             widget.bind("<Leave>", lambda _e: set_bg(CARD))
         return card
     def admin_usuarios(self):
-        win = tk.Toplevel(self.root)
-        win.title("Administrar Usuarios")
-        win.configure(bg="#f4f6fa")
-        tree = ttk.Treeview(win, columns=("Username", "Rol"), show="headings", height=10)
-        tree.heading("Username", text="Username")
-        tree.heading("Rol", text="Rol")
-        tree.pack(pady=10)
-        def cargar_usuarios():
-            for row in tree.get_children():
-                tree.delete(row)
-            try:
-                import requests
-                r = requests.get("http://127.0.0.1:8000/users")
-                if r.status_code == 200:
-                    for u in r.json():
-                        rol = "Admin" if u["is_admin"] else "Operador"
-                        tree.insert('', tk.END, values=(u["username"], rol))
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo cargar usuarios: {e}")
-        cargar_usuarios()
-        def crear_usuario():
-            def guardar():
-                username = user_var.get().strip()
-                password = pass_var.get().strip()
-                is_admin = rol_var.get() == "Admin"
-                if not username or not password:
-                    messagebox.showerror("Error", "Usuario y contraseÃ±a requeridos")
-                    return
-                try:
-                    import requests
-                    r = requests.post("http://127.0.0.1:8000/users", json={"username": username, "password": password, "is_admin": is_admin})
-                    if r.status_code == 200:
-                        messagebox.showinfo("OK", "Usuario creado")
-                        top.destroy()
-                        cargar_usuarios()
-                    else:
-                        messagebox.showerror("Error", r.json().get("detail", "No se pudo crear usuario"))
-                except Exception as e:
-                    messagebox.showerror("Error", f"No se pudo crear usuario: {e}")
-            top = tk.Toplevel(win)
-            top.title("Crear Usuario")
-            tk.Label(top, text="Usuario:").pack()
-            user_var = tk.StringVar()
-            tk.Entry(top, textvariable=user_var).pack()
-            tk.Label(top, text="ContraseÃ±a:").pack()
-            pass_var = tk.StringVar()
-            tk.Entry(top, textvariable=pass_var, show="*").pack()
-            tk.Label(top, text="Rol:").pack()
-            rol_var = tk.StringVar(value="Operador")
-            ttk.Combobox(top, textvariable=rol_var, values=["Operador", "Admin"], state="readonly").pack()
-            tk.Button(top, text="Guardar", command=guardar).pack(pady=10)
-        def eliminar_usuario():
-            sel = tree.selection()
-            if not sel:
-                messagebox.showwarning("Selecciona", "Selecciona un usuario para eliminar")
-                return
-            username = tree.item(sel[0])["values"][0]
-            if username == self.user["username"]:
-                messagebox.showwarning("No permitido", "No puedes eliminarte a ti mismo")
-                return
-            if messagebox.askyesno("Confirmar", f"Â¿Eliminar usuario {username}?"):
-                try:
-                    import requests
-                    r = requests.delete(f"http://127.0.0.1:8000/users/{username}")
-                    if r.status_code == 200:
-                        cargar_usuarios()
-                    else:
-                        messagebox.showerror("Error", r.json().get("detail", "No se pudo eliminar usuario"))
-                except Exception as e:
-                    messagebox.showerror("Error", f"No se pudo eliminar usuario: {e}")
-        def editar_usuario():
-            sel = tree.selection()
-            if not sel:
-                messagebox.showwarning("Selecciona", "Selecciona un usuario para editar")
-                return
-            username = tree.item(sel[0])["values"][0]
-            def guardar_edicion():
-                password = pass_var.get().strip()
-                is_admin = rol_var.get() == "Admin"
-                if not password:
-                    messagebox.showerror("Error", "ContraseÃ±a requerida")
-                    return
-                try:
-                    import requests
-                    r = requests.patch(f"http://127.0.0.1:8000/users/{username}", json={"username": username, "password": password, "is_admin": is_admin})
-                    if r.status_code == 200:
-                        messagebox.showinfo("OK", "Usuario actualizado")
-                        top.destroy()
-                        cargar_usuarios()
-                    else:
-                        messagebox.showerror("Error", r.json().get("detail", "No se pudo actualizar usuario"))
-                except Exception as e:
-                    messagebox.showerror("Error", f"No se pudo actualizar usuario: {e}")
-            top = tk.Toplevel(win)
-            top.title(f"Editar Usuario: {username}")
-            tk.Label(top, text=f"Usuario: {username}").pack()
-            tk.Label(top, text="Nueva ContraseÃ±a:").pack()
-            pass_var = tk.StringVar()
-            tk.Entry(top, textvariable=pass_var, show="*").pack()
-            tk.Label(top, text="Rol:").pack()
-            rol_var = tk.StringVar(value="Operador")
-            # Detectar rol actual
-            for row in tree.get_children():
-                if tree.item(row)["values"][0] == username:
-                    rol_actual = tree.item(row)["values"][1]
-                    rol_var.set(rol_actual)
-            ttk.Combobox(top, textvariable=rol_var, values=["Operador", "Admin"], state="readonly").pack()
-            tk.Button(top, text="Guardar", command=guardar_edicion).pack(pady=10)
-        btns = tk.Frame(win, bg="#f4f6fa")
-        btns.pack(pady=10)
-        tk.Button(btns, text="Crear Usuario", command=crear_usuario).pack(side=tk.LEFT, padx=5)
-        tk.Button(btns, text="Editar Usuario", command=editar_usuario).pack(side=tk.LEFT, padx=5)
-        tk.Button(btns, text="Eliminar Usuario", command=eliminar_usuario).pack(side=tk.LEFT, padx=5)
+        UsersWindow(self.root, self.user["username"]).open()
 
     def abrir_inventario(self):
         win = tk.Toplevel(self.root)
@@ -452,7 +388,7 @@ class HerramientaApp:
         inventory_frame.grid_rowconfigure(0, weight=1)
         inventory_frame.grid_columnconfigure(0, weight=1)
 
-        is_admin = self.user.get("is_admin", False)
+        can_edit_catalog = self.can("catalog.edit")
         configs = []
         variants = []
 
@@ -748,7 +684,7 @@ class HerramientaApp:
         tool_buttons = tk.Frame(tools_tab, bg="#f4f6fa")
         tool_buttons.pack(pady=6)
         ttk.Button(tool_buttons, text="Refresh", command=refresh_tools).pack(side=tk.LEFT, padx=4)
-        if is_admin:
+        if can_edit_catalog:
             ttk.Button(catalog_buttons, text="Add Tool Number", command=add_tn).pack(side=tk.LEFT, padx=4)
             ttk.Button(catalog_buttons, text="Add Configuration", command=add_configuration).pack(side=tk.LEFT, padx=4)
             ttk.Button(catalog_buttons, text="Add Variant", command=add_variant).pack(side=tk.LEFT, padx=4)
@@ -872,10 +808,10 @@ class HerramientaApp:
                 )
 
         def register_tool(existing=None):
-            if not self.user.get("is_admin", False):
+            if not self.can("inventory.edit"):
                 messagebox.showwarning(
                     "Permission denied",
-                    "Only administrators can register tools.",
+                    "Your role cannot register tools.",
                     parent=win,
                 )
                 return
@@ -1145,16 +1081,17 @@ class HerramientaApp:
         controls = tk.Frame(win, bg="#f4f6fa")
         controls.pack(pady=8)
         ttk.Button(controls, text="Refresh Inventory", command=refresh_inventory).pack(side=tk.LEFT, padx=5)
-        if self.user.get("is_admin", False):
+        if self.can("inventory.edit"):
             ttk.Button(controls, text="Register Tool", command=register_tool).pack(side=tk.LEFT, padx=5)
             ttk.Button(controls, text="Edit Selected", command=edit_tool).pack(side=tk.LEFT, padx=5)
+        if self.can("inventory.delete"):
             ttk.Button(controls, text="Delete Selected", command=delete_tool).pack(side=tk.LEFT, padx=5)
         refresh_inventory()
         win.focus()
 
     def menu_alta(self):
-        if not self.user.get("is_admin", False):
-            messagebox.showwarning("Permission denied", "Only admin can add tools.")
+        if not self.can("inventory.edit"):
+            messagebox.showwarning("Permission denied", "Your role cannot add tools.")
             return
         win = tk.Toplevel(self.root)
         win.title("Add Tool")
@@ -1166,8 +1103,8 @@ class HerramientaApp:
         ttk.Button(win, text="Accessory", command=lambda:[win.destroy(), self.alta_accesorio()]).pack(pady=5)
 
     def alta_punzon(self):
-        if not self.user.get("is_admin", False):
-            messagebox.showwarning("Permission denied", "Only admin can add tools.")
+        if not self.can("inventory.edit"):
+            messagebox.showwarning("Permission denied", "Your role cannot add tools.")
             return
         win = tk.Toplevel(self.root)
         win.title("Add Punch")
@@ -1275,8 +1212,8 @@ class HerramientaApp:
         ttk.Button(win, text="Save", command=submit, style='TButton').grid(row=len(labels), column=0, columnspan=2, pady=10)
 
     def alta_matriz(self):
-        if not self.user.get("is_admin", False):
-            messagebox.showwarning("Permission denied", "Only admin can add tools.")
+        if not self.can("inventory.edit"):
+            messagebox.showwarning("Permission denied", "Your role cannot add tools.")
             return
         win = tk.Toplevel(self.root)
         win.title("Add Die")
@@ -1408,8 +1345,8 @@ class HerramientaApp:
         return str(random.randint(100000,999999))
 
     def alta_holder(self):
-        if not self.user.get("is_admin", False):
-            messagebox.showwarning("Permission denied", "Only admin can add holders.")
+        if not self.can("inventory.edit"):
+            messagebox.showwarning("Permission denied", "Your role cannot add holders.")
             return
         win = tk.Toplevel(self.root)
         win.title("Add Holder")
@@ -1450,8 +1387,8 @@ class HerramientaApp:
         ttk.Button(win, text="Save", command=submit, style='TButton').grid(row=2, column=0, columnspan=2, pady=10)
 
     def alta_accesorio(self):
-        if not self.user.get("is_admin", False):
-            messagebox.showwarning("Permission denied", "Only admin can add accessories.")
+        if not self.can("inventory.edit"):
+            messagebox.showwarning("Permission denied", "Your role cannot add accessories.")
             return
         win = tk.Toplevel(self.root)
         win.title("Add Accessory")
@@ -1598,8 +1535,8 @@ class HerramientaApp:
         item = self.tree.item(selected[0])
         values = item['values']
         if messagebox.askyesno("Eliminar", f"Â¿Seguro que deseas eliminar la herramienta ID {values[0]}?"):
-            if not self.user.get("is_admin", False):
-                messagebox.showwarning("Permission denied", "Only admin can delete tools.")
+            if not self.can("inventory.delete"):
+                messagebox.showwarning("Permission denied", "Your role cannot delete tools.")
                 return
             try:
                 r = requests.delete(f"{API_URL}{values[0]}")
@@ -1746,17 +1683,50 @@ class HerramientaApp:
             # AquÃ­ se puede continuar con el flujo de selecciÃ³n de set up
         ttk.Button(win, text="Confirm", command=confirm, style='TButton').pack(pady=10)
 
+    def _open_once(self, key, build, on_existing=None):
+        """Abre un módulo una sola vez; si ya está abierto lo trae al frente."""
+        existing = self._single.get(key)
+        if existing is not None and existing.window is not None and existing.window.winfo_exists():
+            existing.window.deiconify()
+            existing.window.lift()
+            existing.window.focus_force()
+            if on_existing:
+                on_existing(existing)
+            return existing
+        instance = build()
+        instance.open()
+        self._single[key] = instance
+        return instance
+
     def tool_dispensing_flow(self):
-        SetupWorkflowWindow(self.root, self.user).open()
+        self._open_once("kitting", lambda: SetupWorkflowWindow(self.root, self.user))
+
+    def demand_board_flow(self):
+        def surtir(machine, part):
+            existing = self._single.get("kitting")
+            if existing is not None and existing.window is not None and existing.window.winfo_exists():
+                existing.window.deiconify()
+                existing.window.lift()
+                messagebox.showinfo(
+                    "Tool Dispensing is already open",
+                    "Finish or close the current Tool Dispensing window first, then choose the part again.",
+                    parent=existing.window,
+                )
+                return
+            instance = SetupWorkflowWindow(self.root, self.user)
+            instance.open(machine=machine, part=part)
+            self._single["kitting"] = instance
+
+        self._open_once("board", lambda: DemandBoardWindow(self.root, self.user, on_surtir=surtir))
 
     def tool_location_flow(self):
-        ToolLocationWindow(self.root, self.user).open()
+        self._open_once("locations", lambda: ToolLocationWindow(self.root, self.user))
 
     def machines_flow(self):
-        MachineWindow(self.root, self.user).open()
+        self._open_once("machines", lambda: MachineWindow(self.root, self.user))
 
     def programs_flow(self):
-        ProgramWindow(self.root, self.user).open()
+        self._open_once("programs", lambda: ProgramWindow(self.root, self.user))
 
     def select_setups_for_comparison(self, machine):
         win = tk.Toplevel(self.root)

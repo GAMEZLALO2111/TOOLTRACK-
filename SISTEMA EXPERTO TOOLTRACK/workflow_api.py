@@ -868,6 +868,11 @@ def create_kit(item: SurtidoCreate):
         raise
     except IntegrityError as error:
         db.rollback()
+        if "uq_surtido_abierto" in str(error):
+            raise HTTPException(
+                status_code=409,
+                detail="Another kit was just started for this machine or cart. Refresh and check the open kits.",
+            ) from error
         raise HTTPException(status_code=409, detail="Kit conflicts with existing setup data") from error
     finally:
         db.close()

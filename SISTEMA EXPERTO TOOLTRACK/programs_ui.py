@@ -7,6 +7,12 @@ from tool_locations_ui import ToolLocationWindow
 TABS = (("4I", "4 Index (4I)"), ("2I", "2 Index (2I)"), ("45STA", "45 Estaciones"))
 
 
+def _fmt(value):
+    if value is None:
+        return "—"
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
 class ProgramWindow(ToolLocationWindow):
     """Part-number programs per machine type, with a change log."""
 
@@ -45,6 +51,8 @@ class ProgramWindow(ToolLocationWindow):
             ("numero", "Número de parte", 190), ("cliente", "Cliente", 100), ("familia", "Familia / FG", 120),
             ("tipo", "Tipo", 90),
             ("rev", "Rev.", 50), ("espesor", "Espesor", 70), ("est", "Estaciones", 80),
+            ("pzas", "Pzas/blank", 80), ("cycle", "Cycle (s)", 80), ("cycle_lead", "Cycle c/lead (s)", 100),
+            ("uph", "UPH teórico", 90),
             ("por", "Actualizó", 110), ("fecha", "Fecha", 140),
         ]
         for key, title in TABS:
@@ -173,7 +181,10 @@ class ProgramWindow(ToolLocationWindow):
                     values=(
                         row["numero_parte"], row["cliente"] or "—", row["familia"] or "—",
                         row["tipo_programa"], row["revision"],
-                        row["thickness"], len(row["requisitos"]), row["actualizado_por"],
+                        row["thickness"], len(row["requisitos"]),
+                        _fmt(row["planeacion"]["piezas_blank"]), _fmt(row["planeacion"]["cycle_time_s"]),
+                        _fmt(row["planeacion"]["cycle_con_lead_s"]), _fmt(row["planeacion"]["uph_teorico"]),
+                        row["actualizado_por"],
                         row["actualizado_en"][:16].replace("T", " "),
                     ),
                 )

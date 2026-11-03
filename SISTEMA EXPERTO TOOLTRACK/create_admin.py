@@ -1,15 +1,8 @@
 import getpass
-import hashlib
-import secrets
 
 from models.inventory import Usuario, Base
 from db import SessionLocal, engine
-
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 200_000)
-    return f"pbkdf2_sha256${salt}${digest.hex()}"
+from passwords import hash_password
 
 
 def create_admin_user():
@@ -23,11 +16,12 @@ def create_admin_user():
         user = db.query(Usuario).filter(Usuario.username.ilike(username)).first()
         if user:
             user.password = hash_password(password)
-            user.role = "admin"
-            print(f"Admin privileges and password updated for '{username}'.")
+            user.role = "SYSTEM_ADMIN"
+            user.activo = True
+            print(f"System admin privileges and password updated for '{username}'.")
         else:
-            db.add(Usuario(username=username, password=hash_password(password), role="admin"))
-            print(f"Admin user '{username}' created.")
+            db.add(Usuario(username=username, password=hash_password(password), role="SYSTEM_ADMIN", activo=True))
+            print(f"System admin user '{username}' created.")
         db.commit()
     except Exception:
         db.rollback()
