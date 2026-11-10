@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 import workflow_api
 from machine_rules import STATION_STATES
-from models.inventory import EstacionMaquina, EstadoMaquina, Maquina, Setup, Ubicacion
+from models.inventory import EstacionMaquina, EstadoMaquina, Maquina, RequisitoSetup, Setup, Ubicacion
 
 router = APIRouter(prefix="/workflow/machine-profiles", tags=["machines"])
 
@@ -229,9 +229,30 @@ def update_station(code: str, number: str, item: StationUpdate):
 def delete_station(code: str, number: str):
     db = workflow_api.SessionLocal()
     try:
-        station = _get_station(db, code, number)
+        machine_code = code.strip().upper()
+        station = _get_station(db, machine_code, number)
+        referenced = (
+            db.query(RequisitoSetup.id)
+            .join(Setup, Setup.id == RequisitoSetup.setup_id)
+            .filter(
+                Setup.maquina_codigo == machine_code,
+                RequisitoSetup.station == station.numero,
+            )
+            .first()
+        )
+        if referenced:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Station {station.numero} is referenced by a setup for {machine_code}; "
+                    "it cannot be deleted because that would affect historical records."
+                ),
+            )
         db.delete(station)
         db.commit()
         return {"deleted": number}
+    except HTTPException:
+        db.rollback()
+        raise
     finally:
         db.close()

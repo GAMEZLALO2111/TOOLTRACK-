@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import tempfile
 import unittest
 
@@ -12,6 +13,7 @@ import auth
 import demandas_api
 import main
 import users_api
+import workflow_api
 from models.inventory import Auditoria, Base, DemandaPlaneacion, Ubicacion, Usuario
 from passwords import hash_password
 
@@ -83,7 +85,7 @@ class TempDbCase(unittest.TestCase):
         self.engine = create_engine(f"sqlite:///{self.path}", connect_args={"check_same_thread": False})
         Base.metadata.create_all(self.engine)
         self.factory = sessionmaker(bind=self.engine, expire_on_commit=False)
-        self.originals = [(m, m.SessionLocal) for m in (auth, users_api, demandas_api)]
+        self.originals = [(m, m.SessionLocal) for m in (auth, users_api, demandas_api, workflow_api)]
         for module, _ in self.originals:
             module.SessionLocal = self.factory
         auth._login_failures.clear()
@@ -181,6 +183,51 @@ class AuthFlowTests(TempDbCase):
 
 
 class UserManagementTests(TempDbCase):
+    def test_user_profile_migration_adds_columns_and_unique_employee_index(self):
+        handle, path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        try:
+            connection = sqlite3.connect(path)
+            connection.execute(
+                "CREATE TABLE usuarios (username TEXT PRIMARY KEY, password TEXT NOT NULL, is_admin BOOLEAN)"
+            )
+            connection.execute(
+                "INSERT INTO usuarios (username, password, is_admin) VALUES ('legacy', 'hash', 1)"
+            )
+            connection.commit()
+            connection.close()
+
+            main.migrate_usuarios_table(path)
+
+            connection = sqlite3.connect(path)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(usuarios)")}
+            role, employee_number = connection.execute(
+                "SELECT role, employee_number FROM usuarios WHERE username='legacy'"
+            ).fetchone()
+            indexes = {
+                row[1]: (row[2], row[4]) for row in connection.execute("PRAGMA index_list(usuarios)")
+            }
+            connection.execute(
+                "INSERT INTO usuarios (username, password, role, activo, employee_number) "
+                "VALUES ('old-user', 'hash', 'TOOLCRIB_OPERATOR', 0, 'E-900')"
+            )
+            connection.execute(
+                "INSERT INTO usuarios (username, password, role, activo, employee_number) "
+                "VALUES ('new-user', 'hash', 'TOOLCRIB_OPERATOR', 1, 'E-900')"
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO usuarios (username, password, role, activo, employee_number) "
+                    "VALUES ('duplicate-user', 'hash', 'TOOLCRIB_OPERATOR', 1, 'e-900')"
+                )
+            connection.close()
+            self.assertTrue({"employee_number", "full_name", "area", "shift"}.issubset(columns))
+            self.assertEqual(role, "SYSTEM_ADMIN")
+            self.assertIsNone(employee_number)
+            self.assertEqual(indexes["uq_usuarios_employee_number"], (1, 1))
+        finally:
+            os.remove(path)
+
     def test_last_system_admin_is_protected(self):
         admin = self.headers("boss", "secret1")
         self.assertEqual(self.client.patch("/users/boss", json={"role": "PLANNING"}, headers=admin).status_code, 400)
@@ -193,12 +240,174 @@ class UserManagementTests(TempDbCase):
 
     def test_create_user_validates_role_and_password(self):
         admin = self.headers("boss", "secret1")
-        bad_role = self.client.post("/users", headers=admin, json={"username": "n1", "password": "abcdef", "role": "root"})
-        short = self.client.post("/users", headers=admin, json={"username": "n2", "password": "abc", "role": "PLANNING"})
-        ok = self.client.post("/users", headers=admin, json={"username": "N3", "password": "abcdef", "role": "ENGINEERING"})
+        profile = {
+            "employee_number": "E-100",
+            "full_name": "Employee Test",
+            "area": "Planning",
+            "shift": "Turno 1",
+        }
+        bad_role = self.client.post("/users", headers=admin, json={
+            "username": "n1", "password": "abcdef", "role": "root", **profile,
+        })
+        short = self.client.post("/users", headers=admin, json={
+            "username": "n2", "password": "abc", "role": "PLANNING", **profile,
+        })
+        ok = self.client.post("/users", headers=admin, json={
+            "username": "N3", "password": "abcdef", "role": "ENGINEERING", **profile,
+        })
         self.assertEqual((bad_role.status_code, short.status_code, ok.status_code), (400, 400, 200))
         self.assertEqual(ok.json()["username"], "n3")
-        self.assertEqual(self.login("n3", "abcdef").json()["role"], "ENGINEERING")
+        self.assertEqual(ok.json()["full_name"], "Employee Test")
+        login = self.login("n3", "abcdef").json()
+        self.assertEqual(login["role"], "ENGINEERING")
+        self.assertEqual(login["employee_number"], "E-100")
+        self.assertEqual(login["full_name"], "Employee Test")
+
+    def test_create_requires_profile_and_employee_number_is_unique(self):
+        admin = self.headers("boss", "secret1")
+        missing_profile = self.client.post("/users", headers=admin, json={
+            "username": "n1", "password": "abcdef", "role": "PUNCHING_OPERATOR",
+        })
+        profile = {
+            "employee_number": " E-200 ",
+            "full_name": "Punch Operator",
+            "area": "Punzonado",
+            "shift": "Turno Mixto",
+        }
+        created = self.client.post("/users", headers=admin, json={
+            "username": "punch-op", "password": "abcdef",
+            "role": "PUNCHING_OPERATOR", **profile,
+        })
+        duplicate = self.client.post("/users", headers=admin, json={
+            "username": "punch-tech", "password": "abcdef",
+            "role": "PUNCHING_TECHNICIAN", **profile,
+        })
+        self.assertEqual(missing_profile.status_code, 422)
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["employee_number"], "E-200")
+        self.assertEqual(duplicate.status_code, 400)
+
+    def test_user_profile_and_role_can_be_updated_together(self):
+        admin = self.headers("boss", "secret1")
+        response = self.client.patch("/users/op", headers=admin, json={
+            "employee_number": "E-300",
+            "full_name": "Tool Crib Operator",
+            "area": "Tool Crib",
+            "shift": "Turno 2",
+            "role": "PUNCHING_OPERATOR",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["employee_number"], "E-300")
+        self.assertEqual(response.json()["area"], "Tool Crib")
+        self.assertEqual(response.json()["role"], "PUNCHING_OPERATOR")
+
+    def test_shift_must_be_one_of_the_configured_turnos(self):
+        admin = self.headers("boss", "secret1")
+        response = self.client.post("/users", headers=admin, json={
+            "username": "bad-shift",
+            "password": "abcdef",
+            "role": "PUNCHING_OPERATOR",
+            "employee_number": "E-400",
+            "full_name": "Punzonado Operator",
+            "area": "Punzonado",
+            "shift": "A",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Turno 1", response.json()["detail"])
+
+    def test_inactive_employee_number_can_be_reused_but_active_number_cannot(self):
+        admin = self.headers("boss", "secret1")
+        profile = {
+            "employee_number": "E-500",
+            "full_name": "First Employee",
+            "area": "Tool Crib",
+            "shift": "Turno 1",
+        }
+        created = self.client.post("/users", headers=admin, json={
+            "username": "first-employee", "password": "abcdef",
+            "role": "TOOLCRIB_OPERATOR", **profile,
+        })
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(
+            self.client.patch("/users/first-employee", headers=admin, json={"activo": False}).status_code,
+            200,
+        )
+        recreated = self.client.post("/users", headers=admin, json={
+            "username": "second-employee", "password": "abcdef",
+            "role": "PUNCHING_OPERATOR", **profile,
+        })
+        self.assertEqual(recreated.status_code, 200)
+
+    def test_reactivation_rejects_an_employee_number_used_by_another_active_user(self):
+        admin = self.headers("boss", "secret1")
+        for username, employee_number in (("former", "E-600"), ("current", "E-601")):
+            response = self.client.post("/users", headers=admin, json={
+                "username": username,
+                "password": "abcdef",
+                "role": "TOOLCRIB_OPERATOR",
+                "employee_number": employee_number,
+                "full_name": username.title(),
+                "area": "Tool Crib",
+                "shift": "Turno 1",
+            })
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.client.patch("/users/former", headers=admin, json={"activo": False}).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.patch("/users/current", headers=admin, json={"employee_number": "E-600"}).status_code,
+            200,
+        )
+        response = self.client.patch("/users/former", headers=admin, json={"activo": True})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("another active user", response.json()["detail"])
+
+    def test_deactivate_others_keeps_admin_and_revokes_other_sessions(self):
+        admin = self.headers("boss", "secret1")
+        operator = self.headers("op", "secret2")
+        response = self.client.post("/users/deactivate-others", headers=admin)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["deactivated"], 2)
+        self.assertEqual(self.client.get("/me", headers=admin).status_code, 200)
+        self.assertEqual(self.client.get("/me", headers=operator).status_code, 401)
+        db = self.factory()
+        try:
+            self.assertFalse(db.query(Usuario).filter_by(username="op").one().activo)
+            self.assertFalse(db.query(Usuario).filter_by(username="plan").one().activo)
+            audited_users = {
+                row.entidad_id for row in db.query(Auditoria).filter(
+                    Auditoria.entidad == "usuarios",
+                    Auditoria.accion.like("%UPDATE%"),
+                ).all()
+            }
+            self.assertTrue({"op", "plan"}.issubset(audited_users))
+        finally:
+            db.close()
+
+    def test_punching_roles_are_read_only_and_can_view_manufacturing_only(self):
+        self.assertEqual(
+            auth.permissions_for("PUNCHING_OPERATOR"),
+            auth.permissions_for("PUNCHING_TECHNICIAN"),
+        )
+        db = self.factory()
+        db.add(Ubicacion(codigo="M1", nombre="Machine M1", tipo="machine", activa=True))
+        db.add(Usuario(
+            username="punch", password=hash_password("secret4"),
+            role="PUNCHING_OPERATOR", activo=True,
+        ))
+        db.commit()
+        db.close()
+        headers = self.headers("punch", "secret4")
+        self.assertEqual(self.client.get("/workflow/manufacturing/machines", headers=headers).status_code, 200)
+        self.assertEqual(
+            self.client.get("/workflow/manufacturing/machines/M1", headers=headers).status_code,
+            200,
+        )
+        self.assertEqual(self.client.get("/workflow/machine-profiles", headers=headers).status_code, 403)
+        self.assertEqual(self.client.get("/workflow/kits", headers=headers).status_code, 403)
+        self.assertEqual(self.client.get("/users", headers=headers).status_code, 403)
+        self.assertEqual(self.client.post("/users/deactivate-others", headers=headers).status_code, 403)
 
     def test_role_change_without_password(self):
         admin = self.headers("boss", "secret1")

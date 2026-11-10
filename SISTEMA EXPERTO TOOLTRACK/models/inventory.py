@@ -26,6 +26,7 @@ class Herramienta(Base):
     life = Column(String, nullable=True)
     clearance = Column(String, nullable=True)  # Nuevo campo para matriz
     so = Column(String, nullable=True)
+    proveedor = Column(String, nullable=True)
     categoria = Column(String, nullable=True)
     estado = Column(String, nullable=False, default="disponible", server_default="disponible")
     ubicacion = Column(String, nullable=True)  # Nuevo campo para rack/ubicación
@@ -120,6 +121,10 @@ class Usuario(Base):
     password = Column(String, nullable=False)
     role = Column(String, default='TOOLCRIB_OPERATOR')
     activo = Column(Boolean, nullable=False, default=True, server_default="1")
+    employee_number = Column(String, nullable=True)
+    full_name = Column(String, nullable=True)
+    area = Column(String, nullable=True)
+    shift = Column(String, nullable=True)
 
     @property
     def is_admin(self):

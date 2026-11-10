@@ -1,4 +1,5 @@
 import unittest
+import json
 from datetime import timedelta
 
 from fastapi import HTTPException
@@ -10,11 +11,15 @@ from models.inventory import (
     Base,
     EstadoMaquina,
     Herramienta,
+    Maquina,
     MovimientoHerramienta,
     PendienteRecoger,
+    ProgramaParte,
     ReservaHerramienta,
     RequisitoSetup,
     Setup,
+    Surtido,
+    Ubicacion,
 )
 
 
@@ -367,6 +372,129 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(sorted(result["returned"]), ["D200", "P200"])
         self.assertEqual(result["remaining"], 0)
         self.assertEqual(tracking.list_machine_tools("M1")["tools"], [])
+
+    def test_manufacturing_workspace_reports_setup_coverage_and_pending_pickups(self):
+        import tool_tracking_api as tracking
+
+        self._baseline()
+        session = self.session_factory()
+        try:
+            session.query(Herramienta).filter_by(id="P100").one().ubicacion = "R1"
+            session.query(Herramienta).filter_by(id="P200").one().tn = "999"
+            session.query(RequisitoSetup).filter_by(tn="200").one().die_tool_id = None
+            session.add(Maquina(codigo="M1", tipo_maquina="4 Index", edificio="B1"))
+            session.add(ProgramaParte(
+                numero_parte="CURRENT",
+                tipo_maquina="4I",
+                familia="Family A",
+                tipo_programa="NPI",
+                revision=2,
+                nombre_archivo="current.stp",
+                drawing_name="CURRENT",
+                material="Steel",
+                thickness="0.075",
+                contenido="program",
+                contenido_hash="hash",
+                requisitos_json=json.dumps([{"station": "201", "tn": "100", "angle": "0"}]),
+                actualizado_por="engineer",
+                actualizado_en=workflow_api.utcnow(),
+                piezas_blank=2,
+                cycle_time_s=30,
+                cycle_con_lead_s=210,
+                uph_teorico=34.3,
+            ))
+            session.commit()
+        finally:
+            session.close()
+
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        self.assertEqual(workspace["part_number"], "CURRENT")
+        self.assertEqual(workspace["building"], "B1")
+        self.assertEqual(workspace["coverage"], {
+            "installed": 1, "required": 4, "complete": False,
+        })
+        first_station = next(row for row in workspace["stations"] if row["station"] == "201")
+        self.assertEqual(
+            {row["category"]: row["state"] for row in first_station["components"]},
+            {"punzon": "elsewhere", "matriz": "installed"},
+        )
+        second_station = next(row for row in workspace["stations"] if row["station"] == "202")
+        self.assertEqual(
+            {row["category"]: row["state"] for row in second_station["components"]},
+            {"punzon": "incompatible", "matriz": "missing"},
+        )
+        self.assertTrue(first_station["components"][1]["clearance_valid"])
+        self.assertEqual(workspace["program"]["drawing_name"], "CURRENT")
+        self.assertEqual(workspace["program"]["material"], "Steel")
+        self.assertEqual(workspace["program"]["updated_by"], "engineer")
+        self.assertEqual(workspace["program"]["requirements"], [
+            {"station": "201", "tn": "100", "angle": "0"},
+        ])
+
+    def test_manufacturing_workspace_returns_empty_context_without_active_setup(self):
+        import tool_tracking_api as tracking
+
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        self.assertIsNone(workspace["part_number"])
+        self.assertIsNone(workspace["setup"])
+        self.assertEqual(workspace["coverage"], {
+            "installed": 0, "required": 0, "complete": False,
+        })
+        self.assertEqual(workspace["stations"], [])
+
+    def test_manufacturing_workspace_reports_complete_compatible_coverage(self):
+        import tool_tracking_api as tracking
+
+        self._baseline()
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        self.assertEqual(workspace["coverage"], {
+            "installed": 4, "required": 4, "complete": True,
+        })
+
+    def test_manufacturing_workspace_shows_only_active_machine_kit_status(self):
+        import tool_tracking_api as tracking
+
+        self._baseline()
+        session = self.session_factory()
+        try:
+            setup_id = session.query(EstadoMaquina).filter_by(maquina_codigo="M1").one().setup_activo_id
+            now = workflow_api.utcnow()
+            session.add(Surtido(
+                id="KIT-M1",
+                maquina_codigo="M1",
+                carro_codigo="C1",
+                setup_anterior_id=setup_id,
+                setup_nuevo_id=setup_id,
+                estado="ready",
+                creado_por="operator",
+                creado_en=now,
+                actualizado_en=now,
+            ))
+            session.commit()
+        finally:
+            session.close()
+
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        self.assertEqual(workspace["active_kit"]["id"], "KIT-M1")
+        self.assertEqual(workspace["active_kit"]["state"], "ready")
+
+    def test_manufacturing_workspace_flags_matrix_outside_required_clearance(self):
+        import tool_tracking_api as tracking
+
+        self._baseline()
+        session = self.session_factory()
+        try:
+            session.query(Herramienta).filter_by(id="D100").one().clearance = "0.020"
+            session.commit()
+        finally:
+            session.close()
+
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        first_station = next(row for row in workspace["stations"] if row["station"] == "201")
+        die = next(row for row in first_station["components"] if row["category"] == "matriz")
+        self.assertEqual(die["state"], "incompatible")
+        self.assertFalse(die["clearance_valid"])
+        self.assertEqual(workspace["coverage"]["installed"], 3)
 
     def test_store_in_rack_requires_the_tools_own_rack(self):
         import tool_tracking_api as tracking
@@ -770,8 +898,12 @@ class WorkflowApiTests(unittest.TestCase):
             machines_api.save_machine_profile("M1", machines_api.MachineProfile(
                 espesor_min="0.5", espesor_max="0.3",
             ))
-        machines_api.delete_station("M1", "202")
-        self.assertEqual(machines_api.get_machine_profile("M1")["estaciones_total"], 1)
+        with self.assertRaises(HTTPException) as referenced_station:
+            machines_api.delete_station("M1", "202")
+        self.assertEqual(referenced_station.exception.status_code, 409)
+        machines_api.add_station("M1", machines_api.StationCreate(numero="999"))
+        machines_api.delete_station("M1", "999")
+        self.assertEqual(machines_api.get_machine_profile("M1")["estaciones_total"], 2)
 
     def test_scanning_physical_ids_matches_tn_and_category_and_assigns_tools(self):
         _content, kit = self._create_new_setup_kit()

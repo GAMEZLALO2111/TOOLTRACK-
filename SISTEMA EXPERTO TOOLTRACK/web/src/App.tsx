@@ -8,6 +8,8 @@ import { InventoryPage } from "./pages/Inventory";
 import { ProgramsPage } from "./pages/Programs";
 import { ToolTrackingPage } from "./pages/ToolTracking";
 import { LabelsPage } from "./pages/Labels";
+import { MachinesPage } from "./pages/Machines";
+import { ManufacturingPage } from "./pages/Manufacturing";
 import { UsersPage } from "./pages/Users";
 import { useRoute } from "./router";
 
@@ -19,11 +21,13 @@ function Shell() {
   if (route.path === "/tv" && can("demand.view")) return <BoardPage tv />;
 
   const tabs = [
-    { path: "/board", label: "Sequence Board", show: can("demand.view") },
+    { path: "/board", label: "Board", show: can("demand.view") },
     { path: "/kitting", label: "Kitting", show: can("kitting.view") },
     { path: "/tracking", label: "Tool Tracking", show: can("inventory.view") },
     { path: "/inventory", label: "Inventory", show: can("inventory.view") },
     { path: "/programs", label: "Part numbers", show: can("program.view") },
+    { path: "/machines", label: "Machines", show: can("machine.view") },
+    { path: "/manufacturing", label: "Manufacturing", show: can("manufacturing.view") || can("machine.view") },
     { path: "/users", label: "Users", show: can("user.manage") },
   ].filter((tab) => tab.show);
 
@@ -31,9 +35,13 @@ function Shell() {
   const trackingMatch = route.path.match(/^\/tracking(?:\/([a-z]+))?$/);
   const inventoryMatch = route.path.match(/^\/inventory(?:\/([a-z]+))?$/);
   const programsMatch = route.path.match(/^\/programs(?:\/([a-z0-9]+))?$/);
+  const machinesMatch = route.path.match(/^\/machines(?:\/([^/]+))?$/);
+  const manufacturingMatch = route.path === "/manufacturing";
   let page;
   if (route.path === "/users" && can("user.manage")) page = <UsersPage />;
   else if (programsMatch && can("program.view")) page = <ProgramsPage tab={programsMatch[1] ?? ""} />
+  else if (machinesMatch && can("machine.view")) page = <MachinesPage code={machinesMatch[1] ? decodeURIComponent(machinesMatch[1]) : null} />
+  else if (manufacturingMatch && (can("manufacturing.view") || can("machine.view"))) page = <ManufacturingPage route={route} />
   else if (kitMatch && can("kitting.view")) page = <KitDetailPage kitId={decodeURIComponent(kitMatch[1])} />;
   else if (route.path === "/kitting/pending" && can("kitting.view")) page = <PendingPage />;
   else if (route.path === "/kitting/labels" && can("kitting.view")) page = <LabelsPage />;
@@ -48,7 +56,10 @@ function Shell() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">TOOLTRACK</div>
+        <div className="brand">
+          <img className="brand-logo brand-logo-mira" src="/brand/mira-logo.png" alt="MIRA" />
+          <img className="brand-logo brand-logo-axiom" src="/brand/axiom-logo.png" alt="Axiom" />
+        </div>
         <nav>
           {tabs.map((tab) => (
             <a key={tab.path} href={`#${tab.path}`} className={route.path === tab.path || route.path.startsWith(`${tab.path}/`) ? "active" : ""}>

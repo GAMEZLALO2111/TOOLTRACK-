@@ -1,3 +1,5 @@
+import json
+from decimal import Decimal
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -6,9 +8,12 @@ from pydantic import BaseModel
 import workflow_api
 from models.inventory import (
     EstadoMaquina,
+    EstacionMaquina,
     Herramienta,
+    Maquina,
     MovimientoHerramienta,
     PendienteRecoger,
+    ProgramaParte,
     RequisitoSetup,
     Setup,
     Surtido,
@@ -43,6 +48,35 @@ class MachineReturn(BaseModel):
     nota: Optional[str] = None
 
 
+@router.get("/manufacturing/machines")
+def list_manufacturing_machines():
+    db = workflow_api.SessionLocal()
+    try:
+        locations = db.query(Ubicacion).filter(
+            Ubicacion.tipo == "machine",
+            Ubicacion.activa.is_(True),
+        ).order_by(Ubicacion.codigo).all()
+        profiles = {
+            row.codigo: row
+            for row in db.query(Maquina).filter(
+                Maquina.codigo.in_([location.codigo for location in locations])
+            ).all()
+        } if locations else {}
+        return [
+            {
+                "codigo": location.codigo,
+                "nombre": location.nombre,
+                "activa": bool(location.activa),
+                "tipo_maquina": profiles[location.codigo].tipo_maquina if location.codigo in profiles else None,
+                "edificio": profiles[location.codigo].edificio if location.codigo in profiles else None,
+                "linea": profiles[location.codigo].linea if location.codigo in profiles else None,
+            }
+            for location in locations
+        ]
+    finally:
+        db.close()
+
+
 def _active_setup(db, machine_code):
     state = db.query(EstadoMaquina).filter(
         EstadoMaquina.maquina_codigo == machine_code
@@ -68,6 +102,174 @@ def _mounted_rows(db, setup):
             if tool:
                 rows.append((requirement, category, tool))
     return rows
+
+
+@router.get("/manufacturing/machines/{machine_code}")
+def manufacturing_machine_workspace(machine_code: str):
+    db = workflow_api.SessionLocal()
+    try:
+        code = machine_code.strip().upper()
+        machine = workflow_api._location(db, code, {"machine"})
+        if not machine.activa:
+            raise HTTPException(status_code=404, detail=f"Machine {code} is inactive")
+
+        profile = db.query(Maquina).filter(Maquina.codigo == code).first()
+        setup = _active_setup(db, code)
+        machine_type = workflow_api._machine_kind(profile.tipo_maquina) if profile else ""
+        part_number = workflow_api._part_from_name(setup.nombre_archivo).upper() if setup else None
+        program = None
+        if part_number and machine_type in {"4I", "2I", "45STA"}:
+            program = db.query(ProgramaParte).filter(
+                ProgramaParte.numero_parte == part_number,
+                ProgramaParte.tipo_maquina == machine_type,
+            ).first()
+
+        station_rows = []
+        installed_components = 0
+        total_components = 0
+        clearance_range = (
+            workflow_api.clearance_range_for_thickness(Decimal(setup.thickness))
+            if setup else None
+        )
+        if setup:
+            requirements = db.query(RequisitoSetup).filter(
+                RequisitoSetup.setup_id == setup.id
+            ).all()
+            requirements.sort(
+                key=lambda row: (
+                    not row.station.isdigit(),
+                    int(row.station) if row.station.isdigit() else 0,
+                    row.station,
+                )
+            )
+            machine_stations = {
+                row.numero: row
+                for row in db.query(EstacionMaquina).filter(
+                    EstacionMaquina.maquina_codigo == code
+                ).all()
+            }
+            for requirement in requirements:
+                configured_station = machine_stations.get(requirement.station)
+                components = []
+                for category, tool_id in (
+                    ("punzon", requirement.punch_tool_id),
+                    ("matriz", requirement.die_tool_id),
+                ):
+                    tool = db.query(Herramienta).filter(Herramienta.id == tool_id).first() if tool_id else None
+                    clearance_valid = (
+                        workflow_api._clearance_in_range(tool, clearance_range)
+                        if tool and category == "matriz" else None
+                    )
+                    compatible = bool(
+                        tool
+                        and tool.tn == requirement.tn
+                        and workflow_api._category(tool) == category
+                        and (category != "matriz" or clearance_valid)
+                    )
+                    mounted = bool(tool and tool.ubicacion == code)
+                    component_state = (
+                        "missing" if not tool
+                        else "installed" if mounted and compatible
+                        else "incompatible" if mounted
+                        else "elsewhere"
+                    )
+                    total_components += 1
+                    installed_components += int(component_state == "installed")
+                    components.append({
+                        "category": category,
+                        "tool_id": tool.id if tool else None,
+                        "tn": tool.tn if tool else requirement.tn,
+                        "location": tool.ubicacion if tool else None,
+                        "tool_status": (tool.estado or "disponible") if tool else None,
+                        "clearance": tool.clearance if tool else None,
+                        "clearance_valid": clearance_valid,
+                        "state": component_state,
+                    })
+                station_rows.append({
+                    "station": requirement.station,
+                    "tn": requirement.tn,
+                    "angle": requirement.angle,
+                    "machine_station": {
+                        "size": configured_station.tamano,
+                        "position": configured_station.posicion,
+                        "autoindex": bool(configured_station.autoindex),
+                        "state": configured_station.estado,
+                        "note": configured_station.nota,
+                    } if configured_station else None,
+                    "components": components,
+                })
+
+        pending_pickups = (
+            db.query(PendienteRecoger, Herramienta)
+            .join(Herramienta, Herramienta.id == PendienteRecoger.herramienta_id)
+            .filter(
+                PendienteRecoger.maquina_codigo == code,
+                PendienteRecoger.estado == "pending",
+            )
+            .order_by(PendienteRecoger.creado_en)
+            .all()
+        )
+        active_kit = db.query(Surtido).filter(
+            Surtido.maquina_codigo == code,
+            Surtido.estado.in_(OPEN_KIT_STATES),
+        ).order_by(Surtido.creado_en.desc()).first()
+        return {
+            "machine": code,
+            "machine_name": machine.nombre,
+            "active": bool(machine.activa),
+            "building": profile.edificio if profile else None,
+            "line": profile.linea if profile else None,
+            "machine_type": machine_type or None,
+            "part_number": part_number,
+            "setup": {
+                "id": setup.id,
+                "drawing_name": setup.drawing_name,
+                "material": setup.material,
+                "thickness": setup.thickness,
+                "created_at": setup.creado_en.isoformat(),
+            } if setup else None,
+            "program": {
+                "revision": program.revision,
+                "family": program.familia,
+                "program_type": program.tipo_programa,
+                "drawing_name": program.drawing_name,
+                "material": program.material,
+                "thickness": program.thickness,
+                "file_name": program.nombre_archivo,
+                "updated_by": program.actualizado_por,
+                "updated_at": program.actualizado_en.isoformat(),
+                "planning": {
+                    "pieces_per_blank": program.piezas_blank,
+                    "cycle_time_s": program.cycle_time_s,
+                    "cycle_with_lead_s": program.cycle_con_lead_s,
+                    "theoretical_uph": program.uph_teorico,
+                },
+                "requirements": json.loads(program.requisitos_json),
+            } if program else None,
+            "coverage": {
+                "installed": installed_components,
+                "required": total_components,
+                "complete": total_components > 0 and installed_components == total_components,
+            },
+            "stations": station_rows,
+            "pending_pickups": [
+                {
+                    "tool_id": tool.id,
+                    "tn": tool.tn,
+                    "category": workflow_api._category(tool) or tool.categoria,
+                    "created_at": pending.creado_en.isoformat(),
+                }
+                for pending, tool in pending_pickups
+            ],
+            "active_kit": {
+                "id": active_kit.id,
+                "state": active_kit.estado,
+                "created_at": active_kit.creado_en.isoformat(),
+                "updated_at": active_kit.actualizado_en.isoformat(),
+            } if active_kit else None,
+        }
+    finally:
+        db.close()
 
 
 @router.get("/machines/{machine_code}/tools")

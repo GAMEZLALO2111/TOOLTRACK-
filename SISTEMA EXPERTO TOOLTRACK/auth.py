@@ -33,6 +33,8 @@ ROLES = (
     "TOOLCRIB_SUPERVISOR",
     "TOOLCRIB_OPERATOR",
     "MAINTENANCE_TECHNICIAN",
+    "PUNCHING_OPERATOR",
+    "PUNCHING_TECHNICIAN",
 )
 LEGACY_ROLES = {
     "admin": "SYSTEM_ADMIN",
@@ -58,6 +60,8 @@ ROLE_PERMISSIONS = {
         "inventory.view", "catalog.view", "locations.view", "maintenance.view",
         "maintenance.operate", "tools.move", "tools.status", "tools.store",
     }),
+    "PUNCHING_OPERATOR": frozenset({"manufacturing.view"}),
+    "PUNCHING_TECHNICIAN": frozenset({"manufacturing.view"}),
     "PLANNING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "demand.view",
         "demand.manage", "demand.mark", "program.view", "machine.view", "setup.view",
@@ -73,7 +77,7 @@ ROLE_PERMISSIONS = {
 ALL_PERMISSIONS = frozenset(set().union(*ROLE_PERMISSIONS.values()) | {
     "user.manage", "machine.manage", "inventory.delete", "demand.manage", "audit.view",
     "locations.manage", "catalog.edit", "setup.baseline", "program.manage", "inventory.edit",
-    "inventory.adjust", "demand.mark", "maintenance.operate",
+    "inventory.adjust", "demand.mark", "maintenance.operate", "manufacturing.view",
 })
 ROLE_PERMISSIONS["SYSTEM_ADMIN"] = ALL_PERMISSIONS
 
@@ -86,6 +90,7 @@ ROUTE_RULES = {
     ("GET", "/me"): AUTHENTICATED,
     ("GET", "/users"): "user.manage",
     ("POST", "/users"): "user.manage",
+    ("POST", "/users/deactivate-others"): "user.manage",
     ("PATCH", "/users/{username}"): "user.manage",
     ("DELETE", "/users/{username}"): "user.manage",
     ("GET", "/catalogo/tn"): "catalog.view",
@@ -135,6 +140,8 @@ ROUTE_RULES = {
     ("POST", "/workflow/delivery/scan"): "kitting.operate",
     ("GET", "/workflow/machines/running"): "setup.view",
     ("GET", "/workflow/machines/{machine_code}/active-setup"): "setup.view",
+    ("GET", "/workflow/manufacturing/machines"): "manufacturing.view",
+    ("GET", "/workflow/manufacturing/machines/{machine_code}"): "manufacturing.view",
     ("POST", "/workflow/machines/transfer"): "kitting.operate",
     ("GET", "/workflow/pending-pickups"): "kitting.view",
     ("GET", "/workflow/tools/movable"): "inventory.view",
@@ -448,7 +455,7 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope["path"]
-        if method in ("GET", "HEAD") and (path == "/" or path.startswith("/assets/")):
+        if method in ("GET", "HEAD") and (path == "/" or path.startswith(("/assets/", "/brand/"))):
             # Archivos de la aplicación web (sin datos): la API sigue exigiendo sesión.
             await self.app(scope, receive, send)
             return

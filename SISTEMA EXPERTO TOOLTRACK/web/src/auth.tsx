@@ -7,6 +7,8 @@ interface LoginResponse {
   username: string;
   role: string;
   permissions: string[];
+  employee_number: string | null;
+  full_name: string | null;
 }
 
 interface AuthValue {
@@ -35,6 +37,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const next: Session = {
       token: result.token,
       username: result.username,
+      employeeNumber: result.employee_number,
+      fullName: result.full_name,
       role: result.role,
       permissions: result.permissions,
       expiresAt: result.expires_at,

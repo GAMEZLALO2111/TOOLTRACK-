@@ -2,6 +2,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 
 import auth
 from db import SessionLocal
@@ -21,8 +22,12 @@ class LoginRequest(BaseModel):
 class UserCreate(BaseModel):
     username: str
     password: str
+    employee_number: str
+    full_name: str
+    area: str
+    shift: str
     role: Optional[str] = None
-    is_admin: bool = False
+    is_admin: Optional[bool] = None
 
 
 class UserUpdate(BaseModel):
@@ -30,6 +35,10 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     is_admin: Optional[bool] = None
     activo: Optional[bool] = None
+    employee_number: Optional[str] = None
+    full_name: Optional[str] = None
+    area: Optional[str] = None
+    shift: Optional[str] = None
 
 
 class UserRead(BaseModel):
@@ -37,11 +46,48 @@ class UserRead(BaseModel):
     role: str
     is_admin: bool
     activo: bool
+    employee_number: Optional[str] = None
+    full_name: Optional[str] = None
+    area: Optional[str] = None
+    shift: Optional[str] = None
 
 
 def _read(user: Usuario) -> dict:
     role = auth.normalize_role(user.role) or "UNKNOWN"
-    return {"username": user.username, "role": role, "is_admin": role == "SYSTEM_ADMIN", "activo": bool(user.activo)}
+    return {
+        "username": user.username,
+        "role": role,
+        "is_admin": role == "SYSTEM_ADMIN",
+        "activo": bool(user.activo),
+        "employee_number": user.employee_number,
+        "full_name": user.full_name,
+        "area": user.area,
+        "shift": user.shift,
+    }
+
+
+PROFILE_FIELDS = ("employee_number", "full_name", "area", "shift")
+SHIFT_OPTIONS = ("Turno 1", "Turno 2", "Turno 3", "Turno Mixto")
+
+
+def _profile_values(item, *, required):
+    values = {}
+    for field in PROFILE_FIELDS:
+        value = getattr(item, field, None)
+        if value is None:
+            if required:
+                raise HTTPException(status_code=400, detail=f"{field.replace('_', ' ').title()} is required")
+            continue
+        value = value.strip()
+        if not value:
+            raise HTTPException(status_code=400, detail=f"{field.replace('_', ' ').title()} is required")
+        if field == "shift" and value not in SHIFT_OPTIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Shift must be one of: {', '.join(SHIFT_OPTIONS)}",
+            )
+        values[field] = value
+    return values
 
 
 def _valid_role(role: Optional[str], is_admin: Optional[bool] = None) -> str:
@@ -94,6 +140,8 @@ def login(item: LoginRequest):
             "role": role,
             "is_admin": role == "SYSTEM_ADMIN",
             "permissions": sorted(auth.permissions_for(role)),
+            "employee_number": user.employee_number,
+            "full_name": user.full_name,
         }
     finally:
         db.close()
@@ -137,15 +185,57 @@ def create_user(item: UserCreate):
     if not username:
         raise HTTPException(status_code=400, detail="Username is required")
     _check_password(item.password)
+    if item.role is None and item.is_admin is None:
+        raise HTTPException(status_code=400, detail="Role is required")
     role = _valid_role(item.role, item.is_admin)
+    profile = _profile_values(item, required=True)
     db = SessionLocal()
     try:
         if db.query(Usuario).filter(Usuario.username.ilike(username)).first():
             raise HTTPException(status_code=400, detail="User already exists")
-        user = Usuario(username=username, password=hash_password(item.password.strip()), role=role, activo=True)
+        if db.query(Usuario).filter(
+            Usuario.employee_number.ilike(profile["employee_number"]),
+            Usuario.activo.is_(True),
+        ).first():
+            raise HTTPException(status_code=400, detail="Employee number already exists")
+        user = Usuario(
+            username=username,
+            password=hash_password(item.password.strip()),
+            role=role,
+            activo=True,
+            **profile,
+        )
         db.add(user)
         db.commit()
         return _read(user)
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Username or employee number already exists") from error
+    finally:
+        db.close()
+
+
+@router.post("/users/deactivate-others")
+def deactivate_other_users():
+    actor = auth.current_user()
+    if not actor or actor.role != "SYSTEM_ADMIN":
+        raise HTTPException(status_code=403, detail="Only a system admin can deactivate other accounts")
+
+    db = SessionLocal()
+    try:
+        users = db.query(Usuario).filter(
+            Usuario.activo.is_(True),
+            Usuario.username != actor.username,
+        ).all()
+        for user in users:
+            user.activo = False
+        if users:
+            db.query(Sesion).filter(
+                Sesion.username != actor.username,
+                Sesion.revocada.is_(False),
+            ).update({"revocada": True}, synchronize_session=False)
+        db.commit()
+        return {"deactivated": len(users)}
     finally:
         db.close()
 
@@ -168,6 +258,25 @@ def _apply_update(db, user: Usuario, item: UserUpdate):
         user.role = new_role
     if item.activo is not None:
         user.activo = item.activo
+    profile_updates = _profile_values(item, required=False)
+    if "employee_number" in profile_updates:
+        duplicate = db.query(Usuario).filter(
+            Usuario.employee_number.ilike(profile_updates["employee_number"]),
+            Usuario.username != user.username,
+            Usuario.activo.is_(True),
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=400, detail="Employee number already exists")
+    for field, value in profile_updates.items():
+        setattr(user, field, value)
+    if item.activo is True and user.employee_number:
+        duplicate = db.query(Usuario).filter(
+            Usuario.employee_number.ilike(user.employee_number),
+            Usuario.username != user.username,
+            Usuario.activo.is_(True),
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=400, detail="Employee number belongs to another active user")
 
 
 @router.patch("/users/{username}", response_model=UserRead)
@@ -180,6 +289,9 @@ def update_user(username: str, item: UserUpdate):
         _apply_update(db, user, item)
         db.commit()
         return _read(user)
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Employee number already exists") from error
     finally:
         db.close()
 

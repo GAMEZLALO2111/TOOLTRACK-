@@ -4,6 +4,8 @@ const TIMEOUT_MS = 15000;
 export interface Session {
   token: string;
   username: string;
+  employeeNumber?: string | null;
+  fullName?: string | null;
   role: string;
   permissions: string[];
   expiresAt: string;

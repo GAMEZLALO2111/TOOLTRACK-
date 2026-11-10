@@ -29,7 +29,7 @@ from models.inventory import (
     Base,
 )
 from tool_types import ALL_INVENTORY_TYPES, INVENTORY_TYPES_BY_CATEGORY, PUNCH_DIE_TYPES
-from db import SessionLocal, engine
+from db import DB_PATH, SessionLocal, engine
 from workflow_api import router as workflow_router, seed_default_locations
 from tool_tracking_api import router as tool_tracking_router
 from machines_api import router as machines_router
@@ -54,6 +54,8 @@ app.include_router(kitting_router)
 WEB_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
 if os.path.isdir(os.path.join(WEB_DIST, "assets")):
     app.mount("/assets", StaticFiles(directory=os.path.join(WEB_DIST, "assets")), name="web-assets")
+if os.path.isdir(os.path.join(WEB_DIST, "brand")):
+    app.mount("/brand", StaticFiles(directory=os.path.join(WEB_DIST, "brand")), name="web-brand")
 
 
 @app.get("/", include_in_schema=False)
@@ -77,9 +79,9 @@ def normalize_role(role: Optional[str]) -> str:
 
 
 # --- MIGRACIÓN AUTOMÁTICA DE USUARIOS (campo 'role' y 'activo', roles heredados -> roles nuevos) ---
-def migrate_usuarios_table():
+def migrate_usuarios_table(db_path=DB_PATH):
     import sqlite3
-    conn = sqlite3.connect('tooltrack.db')
+    conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     cur.execute("PRAGMA table_info(usuarios)")
     columns = [col[1] for col in cur.fetchall()]
@@ -93,6 +95,14 @@ def migrate_usuarios_table():
     if 'activo' not in columns:
         cur.execute("ALTER TABLE usuarios ADD COLUMN activo INTEGER NOT NULL DEFAULT 1")
         conn.commit()
+    for column in ("employee_number", "full_name", "area", "shift"):
+        if column not in columns:
+            cur.execute(f"ALTER TABLE usuarios ADD COLUMN {column} TEXT")
+    cur.execute("DROP INDEX IF EXISTS uq_usuarios_employee_number")
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_usuarios_employee_number "
+        "ON usuarios(lower(employee_number)) WHERE activo = 1"
+    )
     for legacy, canonical in (("admin", "SYSTEM_ADMIN"), ("supervisor", "TOOLCRIB_SUPERVISOR"),
                               ("operator", "TOOLCRIB_OPERATOR")):
         cur.execute("UPDATE usuarios SET role=? WHERE lower(role)=?", (canonical, legacy))
@@ -304,6 +314,7 @@ class HerramientaCreate(BaseModel):
     life: Optional[str] = None
     clearance: Optional[str] = None
     so: Optional[str] = None
+    proveedor: Optional[str] = None
     categoria: Optional[str] = None
     ubicacion: Optional[str] = None  # Nuevo campo
 
@@ -315,6 +326,7 @@ class HerramientaRead(BaseModel):
     life: Optional[str] = None
     clearance: Optional[str] = None
     so: Optional[str] = None
+    proveedor: Optional[str] = None
     categoria: Optional[str] = None
     ubicacion: Optional[str] = None
     class Config:
@@ -1031,6 +1043,7 @@ def crear_herramienta(herramienta: HerramientaCreate):
         life=life_fmt,
         clearance=clearance_fmt,
         so=herramienta.so,
+        proveedor=herramienta.proveedor,
         categoria=herramienta.categoria,
         ubicacion=herramienta.ubicacion
     )
@@ -1148,6 +1161,7 @@ def actualizar_herramienta(herramienta_id: str, herramienta: HerramientaCreate):
     h.size = herramienta.size
     h.type = herramienta.type
     h.so = herramienta.so
+    h.proveedor = herramienta.proveedor
     h.categoria = herramienta.categoria
     h.ubicacion = herramienta.ubicacion
     db.commit()

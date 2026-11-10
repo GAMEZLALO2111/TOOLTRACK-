@@ -135,6 +135,8 @@ export const ROLE_INFO: Record<string, string> = {
   TOOLCRIB_SUPERVISOR: "Toolcrib operations, inventory adjustments, audit",
   TOOLCRIB_OPERATOR: "Kitting, deliveries, returns, run progress",
   MAINTENANCE_TECHNICIAN: "Receives, sharpens and releases tools",
+  PUNCHING_OPERATOR: "Read-only Manufacturing workspace for Punzonado",
+  PUNCHING_TECHNICIAN: "Read-only Manufacturing workspace for Punzonado",
 };
 
 export function fmtDuration(hours: number | null): string {

@@ -183,6 +183,209 @@ textarea:disabled {
   margin-bottom: 14px;
 }
 
+.manufacturing-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.info-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(15, 30, 60, 0.05);
+  text-align: left;
+}
+
+.manufacturing-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.manufacturing-selector label {
+  font-weight: 700;
+}
+
+.manufacturing-selector select {
+  min-width: min(100%, 360px);
+}
+
+.manufacturing-machine-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+}
+
+.eyebrow {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.manufacturing-machine-head h2 {
+  margin: 4px 0;
+}
+
+.manufacturing-part {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+  text-align: right;
+}
+
+.manufacturing-part strong {
+  font-size: 20px;
+}
+
+.manufacturing-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.manufacturing-summary .info-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.manufacturing-summary .info-card > strong {
+  font-size: 20px;
+}
+
+.coverage-complete {
+  color: var(--green);
+}
+
+.coverage-incomplete {
+  color: var(--red);
+}
+
+.manufacturing-link {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.manufacturing-page .table-wrap {
+  margin-bottom: 4px;
+}
+
+.manufacturing-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.manufacturing-stations {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr));
+  gap: 12px;
+}
+
+.manufacturing-station {
+  padding: 14px;
+}
+
+.manufacturing-station > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.manufacturing-station h3 {
+  margin-top: 3px;
+}
+
+.manufacturing-station-meta,
+.manufacturing-component-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.manufacturing-components {
+  display: grid;
+  gap: 8px;
+}
+
+.manufacturing-component {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.manufacturing-missing,
+.manufacturing-elsewhere {
+  background: #fff9ec;
+  border-color: #f0d58a;
+}
+
+.manufacturing-component-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.manufacturing-pickups {
+  display: grid;
+  gap: 10px;
+}
+
+.manufacturing-pickups > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) minmax(180px, 2fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.manufacturing-active-kit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.manufacturing-user {
+  text-align: right;
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .manufacturing-selector {
+    grid-template-columns: 1fr;
+  }
+
+  .manufacturing-machine-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .manufacturing-part {
+    text-align: left;
+  }
+
+  .manufacturing-pickups > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
 /* ---------- chips ---------- */
 .chip {
   display: inline-block;
@@ -271,39 +474,75 @@ textarea:disabled {
   letter-spacing: 1px;
 }
 .login-brand span {
+  display: block;
   color: var(--accent);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: 1px;
+}
+.login-logo {
+  display: block;
+  width: 180px;
+  max-width: 70%;
+  margin: 0 auto 8px;
+}
+.login-axiom {
+  display: block;
+  height: 28px;
+  margin: 4px auto 0;
+  opacity: 0.9;
 }
 
 /* ---------- estructura ---------- */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 0 20px;
-  min-height: 56px;
+  gap: 16px;
+  padding: 0 16px;
+  min-height: 60px;
   background: var(--navy);
   color: #fff;
   border-bottom: 4px solid var(--accent);
-  flex-wrap: wrap;
 }
 .brand {
-  font-size: 20px;
-  font-weight: 800;
-  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.brand-logo {
+  display: block;
+  height: 32px;
+  width: auto;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 8px;
+  box-sizing: content-box;
+}
+.brand-logo-mira {
+  height: 30px;
 }
 .topbar nav {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.topbar nav::-webkit-scrollbar {
+  display: none;
 }
 .topbar nav a {
   color: #c9d3df;
   text-decoration: none;
-  padding: 16px 12px;
+  padding: 20px 11px;
   font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.topbar nav a:hover {
+  color: #fff;
 }
 .topbar nav a.active {
   color: #fff;
@@ -312,8 +551,10 @@ textarea:disabled {
 .who {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   font-size: 13px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .who small {
   color: #c9d3df;
@@ -982,6 +1223,31 @@ textarea:disabled {
 }
 .section-title {
   margin: 20px 0 8px;
+}
+.machine-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  align-items: start;
+  gap: 14px;
+}
+.machine-profile-readonly {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: start;
+}
+.machine-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 8px;
+}
+.machine-section-head p {
+  margin: 4px 0 0;
+}
+.machine-station-create h3 {
+  font-size: 15px;
 }
 .start-title {
   margin-top: 0;

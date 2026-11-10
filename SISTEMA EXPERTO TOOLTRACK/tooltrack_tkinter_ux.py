@@ -643,7 +643,7 @@ class HerramientaApp:
                 state="readonly",
                 width=48,
             ).grid(row=0, column=1, padx=8, pady=6)
-            for row, label in enumerate(("Physical ID", "LIFE", "SO", "Location"), start=1):
+            for row, label in enumerate(("Physical ID", "LIFE", "SO", "Proveedor","Location"), start=1):
                 tk.Label(form, text=label, bg="#f4f6fa").grid(row=row, column=0, sticky=tk.W, padx=8, pady=6)
                 if label == "Location":
                     entry = ttk.Combobox(form, values=["", *fetch_rack_codes(form)], state="readonly", width=17)
@@ -664,6 +664,7 @@ class HerramientaApp:
                     "variante_id": variant["id"],
                     "life": life,
                     "so": fields["SO"].get().strip() or None,
+                    "proveedor": fields["Proveedor"].get().strip() or None,
                     "ubicacion": fields["Location"].get().strip() or None,
                 }
                 try:
@@ -676,7 +677,7 @@ class HerramientaApp:
                 except requests.RequestException as error:
                     messagebox.showerror("Catalog Error", f"Could not register physical tool: {error}", parent=form)
 
-            ttk.Button(form, text="Save", command=save).grid(row=5, column=0, columnspan=2, pady=10)
+            ttk.Button(form, text="Save", command=save).grid(row=6, column=0, columnspan=2, pady=10)
 
         catalog_buttons = tk.Frame(catalog_tab, bg="#f4f6fa")
         catalog_buttons.pack(pady=6)

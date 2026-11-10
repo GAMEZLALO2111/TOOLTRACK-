@@ -45,6 +45,19 @@ export interface UserRow {
   role: string;
   is_admin: boolean;
   activo: boolean;
+  employee_number: string | null;
+  full_name: string | null;
+  area: string | null;
+  shift: string | null;
+}
+
+export interface ManufacturingMachineOption {
+  codigo: string;
+  nombre: string;
+  activa: boolean;
+  tipo_maquina: string | null;
+  edificio: string | null;
+  linea: string | null;
 }
 
 export interface ProgramRow {
@@ -62,6 +75,95 @@ export interface RunningMachine {
   since: string | null;
   kit_state: KitState | null;
   kit_cart: string | null;
+}
+
+export interface MachineStation {
+  numero: string;
+  tamano: string | null;
+  posicion: string | null;
+  autoindex: boolean;
+  estado: "disponible" | "danada";
+  nota: string | null;
+}
+
+export interface MachineProfile {
+  codigo: string;
+  nombre: string;
+  activa: boolean;
+  estandar: boolean;
+  tipo_maquina: string | null;
+  linea: string | null;
+  capacidad: string | null;
+  espesor_max: string | null;
+  espesor_min: string | null;
+  edificio: string | null;
+  blank_max: string | null;
+  area_pallet: string | null;
+  notas: string | null;
+  numero_parte: string | null;
+  estaciones_total: number;
+  estaciones_disponibles: number;
+  estaciones_danadas: number;
+  estaciones: MachineStation[];
+}
+
+export interface ManufacturingWorkspace {
+  machine: string;
+  machine_name: string;
+  active: boolean;
+  building: string | null;
+  line: string | null;
+  machine_type: string | null;
+  part_number: string | null;
+  setup: {
+    id: number;
+    drawing_name: string | null;
+    material: string | null;
+    thickness: string;
+    created_at: string;
+  } | null;
+  program: {
+    revision: number;
+    family: string | null;
+    program_type: string;
+    drawing_name: string | null;
+    material: string | null;
+    thickness: string | null;
+    file_name: string | null;
+    updated_by: string;
+    updated_at: string;
+    requirements: { station: string; tn: string; angle: string | null }[];
+    planning: {
+      pieces_per_blank: number | null;
+      cycle_time_s: number | null;
+      cycle_with_lead_s: number | null;
+      theoretical_uph: number | null;
+    };
+  } | null;
+  coverage: { installed: number; required: number; complete: boolean };
+  stations: {
+    station: string;
+    tn: string;
+    angle: string | null;
+    machine_station: MachineStation | null;
+    components: {
+      category: "punzon" | "matriz";
+      tool_id: string | null;
+      tn: string;
+      location: string | null;
+      tool_status: string | null;
+      clearance: string | null;
+      clearance_valid: boolean | null;
+      state: "installed" | "missing" | "elsewhere" | "incompatible";
+    }[];
+  }[];
+  pending_pickups: { tool_id: string; tn: string | null; category: string | null; created_at: string }[];
+  active_kit: {
+    id: string;
+    state: string;
+    created_at: string;
+    updated_at: string;
+  } | null;
 }
 
 export interface CartRow {
