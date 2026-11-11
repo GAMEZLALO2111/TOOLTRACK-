@@ -6,8 +6,7 @@ import { LocationPicker } from "../components/LocationPicker";
 import { ScanInput } from "../components/ScanInput";
 import { CATEGORY_LABEL, RETURN_REASONS } from "../labels";
 import { toolCode, type Capture } from "../scan";
-import type { LocationRow, MachineTools, MovableTool } from "../types";
-import { usePoll } from "../usePoll";
+import type { LocationRow, MachineTools } from "../types";
 
 function useLocations() {
   const [locations, setLocations] = useState<LocationRow[]>([]);
@@ -286,97 +285,3 @@ export function ReturnsTab() {
   );
 }
 
-export function ServiceTab() {
-  const { can } = useAuth();
-  const locations = useLocations();
-  const [rows, setRows] = useState<MovableTool[]>([]);
-  const [choice, setChoice] = useState<Record<string, string>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setRows(await api<MovableTool[]>("GET", "/workflow/tools/movable"));
-      setError(null);
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Could not load the tools.");
-    }
-  }, []);
-  usePoll(load, 30000);
-
-  const destinations = useMemo(() => locations.filter((l) => ["rack", "togu", "maintenance", "workshop"].includes(l.tipo)).sort((a, b) => a.codigo.localeCompare(b.codigo)), [locations]);
-
-  async function move(row: MovableTool) {
-    const destination = choice[row.tool_id] ?? row.home_rack ?? "";
-    if (!destination) return setError("Choose where the tool goes.");
-    setError(null);
-    setMessage(null);
-    try {
-      await api("POST", `/workflow/tools/${encodeURIComponent(row.tool_id)}/move`, { destino_codigo: destination, realizado_por: "web" });
-      setMessage(`✔ ${row.tool_id} moved to ${destination}.`);
-      await load();
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "The movement could not be saved.");
-    }
-  }
-
-  return (
-    <div>
-      <p className="muted">Tools in TOGU, maintenance or the workshop. Move them between those places or send them back to their rack (a tool coming from sharpening or damage is released in “Store in rack” with its result).</p>
-      <ErrorNote message={error} />
-      {message && <div className="note note-info">{message}</div>}
-      {rows.length === 0 && !error && <p className="note note-info">No tools are in service right now.</p>}
-      {rows.length > 0 && (
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Tool</th>
-                <th>TN</th>
-                <th>Part</th>
-                <th>Now in</th>
-                <th>Home rack</th>
-                {can("tools.move") && <th>Move to</th>}
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.tool_id}>
-                  <td>
-                    <strong>{row.tool_id}</strong>
-                  </td>
-                  <td>{row.tn}</td>
-                  <td>{CATEGORY_LABEL[row.category ?? ""] ?? row.category ?? "—"}</td>
-                  <td>
-                    {row.location} ({row.location_type})
-                  </td>
-                  <td>{row.home_rack ?? "—"}</td>
-                  {can("tools.move") && (
-                    <>
-                      <td>
-                        <select value={choice[row.tool_id] ?? row.home_rack ?? ""} onChange={(event) => setChoice({ ...choice, [row.tool_id]: event.target.value })} aria-label={`Destination for ${row.tool_id}`}>
-                          <option value="">Select…</option>
-                          {destinations.filter((d) => d.codigo !== row.location).map((d) => (
-                            <option key={d.codigo} value={d.codigo}>
-                              {d.codigo} ({d.tipo})
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="row-actions">
-                        <button className="btn btn-primary" onClick={() => void move(row)}>
-                          Move
-                        </button>
-                      </td>
-                    </>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}

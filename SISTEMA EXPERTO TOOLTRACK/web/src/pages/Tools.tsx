@@ -4,6 +4,8 @@ import { useAuth } from "../auth";
 import { ConfirmDialog, Dialog, ErrorNote } from "../components/Dialog";
 import { Chip } from "../components/MachineCard";
 import { CATEGORY_LABEL, TOOL_STATE_CLASS, TOOL_STATE_LABEL } from "../labels";
+import { go } from "../router";
+import { toolCode } from "../scan";
 import type { InvOptions, InvPage, InvRow, LocationRow } from "../types";
 
 const PAGE_SIZE = 50;
@@ -18,7 +20,7 @@ function useDebounced<T>(value: T, ms: number): T {
   return debounced;
 }
 
-export function ToolsTab() {
+export function ToolsList() {
   const { can } = useAuth();
   const [options, setOptions] = useState<InvOptions | null>(null);
   const [locations, setLocations] = useState<LocationRow[]>([]);
@@ -32,8 +34,8 @@ export function ToolsTab() {
   const [data, setData] = useState<InvPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [editing, setEditing] = useState<InvRow | "new" | null>(null);
-  const debounced = useDebounced(search, 300);
+  const [registering, setRegistering] = useState(false);
+  const debounced = useDebounced(toolCode(search) || search.trim(), 300);
 
   useEffect(() => {
     api<InvOptions>("GET", "/inventario/opciones").then(setOptions).catch(() => setOptions(null));
@@ -46,7 +48,7 @@ export function ToolsTab() {
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
-    if (debounced.trim()) params.set("q", debounced.trim());
+    if (debounced) params.set("q", debounced);
     if (category) params.set("categoria", category);
     if (state) params.set("estado", state);
     if (link) params.set("vinculo", link);
@@ -80,14 +82,24 @@ export function ToolsTab() {
             {data.summary.unlinked} not linked
           </button>
           {canEdit && (
-            <button className="btn btn-primary push-right" onClick={() => setEditing("new")}>
+            <button className="btn btn-primary push-right" onClick={() => setRegistering(true)}>
               Register tool
             </button>
           )}
         </div>
       )}
-      <div className="filters">
-        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search ID, TN, type, SO or location" aria-label="Search" autoFocus />
+      <form
+        className="filters"
+        onSubmit={(event) => {
+          event.preventDefault();
+          // A scan or an exact ID opens the tool file straight away.
+          const exact = data?.items.find((row) => row.id.toUpperCase() === debounced.toUpperCase());
+          const only = data && data.items.length === 1 ? data.items[0] : undefined;
+          const target = exact ?? only;
+          if (target) go(`/tools/${encodeURIComponent(target.id)}`);
+        }}
+      >
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Scan or type ID, TN, type, SO or location" aria-label="Search" autoFocus />
         <select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Category">
           <option value="">All categories</option>
           {CATEGORIES.map((c) => (
@@ -117,7 +129,7 @@ export function ToolsTab() {
           <option value="linked">Linked</option>
           <option value="unlinked">Not linked</option>
         </select>
-      </div>
+      </form>
       <ErrorNote message={error} />
       {data && data.items.length === 0 && !error && <p className="note note-info">No tools match these filters.</p>}
       {data && data.items.length > 0 && (
@@ -141,7 +153,7 @@ export function ToolsTab() {
               </thead>
               <tbody>
                 {data.items.map((row) => (
-                  <tr key={row.id} className={row.estado === "baja" ? "inactive" : ""} onClick={() => setEditing(row)} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && setEditing(row)}>
+                  <tr key={row.id} className={row.estado === "baja" ? "inactive" : ""} onClick={() => go(`/tools/${encodeURIComponent(row.id)}`)} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && go(`/tools/${encodeURIComponent(row.id)}`)}>
                     <td>
                       <strong>{row.id}</strong>
                     </td>
@@ -178,17 +190,17 @@ export function ToolsTab() {
           </div>
         </>
       )}
-      {editing && options && (
+      {registering && options && (
         <ToolForm
-          tool={editing === "new" ? null : editing}
+          tool={null}
           options={options}
           locations={places}
           tns={tns}
           canEdit={canEdit}
-          canDelete={can("inventory.delete")}
-          onClose={() => setEditing(null)}
+          canDelete={false}
+          onClose={() => setRegistering(false)}
           onSaved={() => {
-            setEditing(null);
+            setRegistering(false);
             void load();
           }}
         />
@@ -208,7 +220,7 @@ interface FormProps {
   onSaved: () => void;
 }
 
-function ToolForm({ tool, options, locations, tns, canEdit, canDelete, onClose, onSaved }: FormProps) {
+export function ToolForm({ tool, options, locations, tns, canEdit, canDelete, onClose, onSaved }: FormProps) {
   const isNew = tool === null;
   const [id, setId] = useState(tool?.id ?? "");
   const [category, setCategory] = useState(tool?.categoria ?? "punzon");
@@ -357,7 +369,6 @@ function ToolForm({ tool, options, locations, tns, canEdit, canDelete, onClose, 
             </select>
           </label>
         </div>
-        {!isNew && <p className="muted small">The location and identity of a tool with movement history can only change through movements (kitting, returns, Tool Tracking). The state is changed in Tool Tracking.</p>}
         <ErrorNote message={error} />
         <div className="form-actions spread">
           {!isNew && canDelete ? (
@@ -382,7 +393,7 @@ function ToolForm({ tool, options, locations, tns, canEdit, canDelete, onClose, 
       {confirmDelete && (
         <ConfirmDialog
           title="Delete tool"
-          message={`Delete ${id}? This is only for entry mistakes; a tool with movement history cannot be deleted (retire it in Tool Tracking instead).`}
+          message={`Delete ${id}? Only for entry mistakes; a tool with movement history cannot be deleted.`}
           confirmLabel="Delete"
           danger
           onClose={() => setConfirmDelete(false)}

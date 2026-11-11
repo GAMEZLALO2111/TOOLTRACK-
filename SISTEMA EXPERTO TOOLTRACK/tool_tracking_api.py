@@ -656,6 +656,27 @@ def _describe_tool(db, tool, location_types, active_setups, pending_by_tool, ope
     }
 
 
+def _location_context(db):
+    """Lookups `_describe_tool` needs, built once per request."""
+    location_types = {code: kind for code, kind in db.query(Ubicacion.codigo, Ubicacion.tipo).all()}
+    active_setups = {}
+    for state in db.query(EstadoMaquina).all():
+        if state.setup_activo_id:
+            active_setups[state.maquina_codigo] = db.query(Setup).filter(
+                Setup.id == state.setup_activo_id
+            ).one()
+    pending_by_tool = {}
+    for pending, setup in db.query(PendienteRecoger, Setup).join(
+        Setup, Setup.id == PendienteRecoger.setup_origen_id
+    ).filter(PendienteRecoger.estado == "pending").all():
+        pending_by_tool[pending.herramienta_id] = (pending.maquina_codigo, setup.drawing_name)
+    open_kits = {
+        kit.carro_codigo: kit
+        for kit in db.query(Surtido).filter(Surtido.estado.in_(OPEN_KIT_STATES)).all()
+    }
+    return location_types, active_setups, pending_by_tool, open_kits
+
+
 @router.get("/tools/locate")
 def locate_tools(q: Optional[str] = None, limit: int = 300):
     db = workflow_api.SessionLocal()
@@ -668,25 +689,7 @@ def locate_tools(q: Optional[str] = None, limit: int = 300):
                 (Herramienta.id == text) | Herramienta.tn.ilike(like) | Herramienta.id.ilike(like)
             )
         tools = query.order_by(Herramienta.tn, Herramienta.id).limit(max(1, min(limit, 500))).all()
-        location_types = {code: kind for code, kind in db.query(Ubicacion.codigo, Ubicacion.tipo).all()}
-        active_setups = {}
-        for state in db.query(EstadoMaquina).all():
-            if state.setup_activo_id:
-                active_setups[state.maquina_codigo] = db.query(Setup).filter(
-                    Setup.id == state.setup_activo_id
-                ).one()
-        pending_by_tool = {}
-        for pending, setup in db.query(PendienteRecoger, Setup).join(
-            Setup, Setup.id == PendienteRecoger.setup_origen_id
-        ).filter(PendienteRecoger.estado == "pending").all():
-            pending_by_tool[pending.herramienta_id] = (pending.maquina_codigo, setup.drawing_name)
-        open_kits = {
-            kit.carro_codigo: kit
-            for kit in db.query(Surtido).filter(Surtido.estado.in_(OPEN_KIT_STATES)).all()
-        }
-        return [
-            _describe_tool(db, tool, location_types, active_setups, pending_by_tool, open_kits)
-            for tool in tools
-        ]
+        context = _location_context(db)
+        return [_describe_tool(db, tool, *context) for tool in tools]
     finally:
         db.close()

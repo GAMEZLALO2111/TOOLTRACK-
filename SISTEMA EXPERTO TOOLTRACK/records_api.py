@@ -125,6 +125,7 @@ class Filters:
     machine: Optional[str] = None
     user: Optional[str] = None
     group: Optional[str] = None
+    exact_tool: bool = False
 
 
 @dataclass
@@ -185,7 +186,11 @@ def _yes(value):
 
 def _tool_filter(query, f, *columns):
     if f.tool and f.tool.strip():
-        query = query.filter(or_(*[_has(column, f.tool) for column in columns]))
+        text = f.tool.strip().upper()
+        if f.exact_tool:
+            query = query.filter(or_(*[func.upper(column) == text for column in columns]))
+        else:
+            query = query.filter(or_(*[_has(column, f.tool) for column in columns]))
     return query
 
 
@@ -205,7 +210,7 @@ def _machine_filter(query, f, *columns):
 
 def _movements_query(db, f):
     group = f.group or "kitting_machine"
-    if group not in MOVEMENT_GROUPS:
+    if group != "all" and group not in MOVEMENT_GROUPS:
         raise HTTPException(status_code=422, detail="Choose a movement group from the list")
     tipo = MovimientoHerramienta.tipo
     kitting = or_(*[tipo.startswith(prefix, autoescape=True) for prefix in KITTING_PREFIXES])
@@ -217,7 +222,7 @@ def _movements_query(db, f):
         query = query.filter(service)
     elif group == "kitting_machine":
         query = query.filter(not_(service), kitting)
-    else:
+    elif group == "storage_status":
         query = query.filter(not_(service), not_(kitting))
     query = _between(query, MovimientoHerramienta.creado_en, f)
     query = _tool_filter(query, f, MovimientoHerramienta.herramienta_id)
@@ -240,6 +245,7 @@ def _movements_row(item, names):
         "entry": {"scan": "Scan", "manual": "Manual", "camera": "Camera"}.get(movement.captura or "", None),
         "kit": movement.surtido_id,
         "detail": movement.detalle,
+        "group": MOVEMENT_GROUPS[movement_group(movement.tipo)],
     }
 
 
@@ -458,7 +464,7 @@ KINDS = {kind.key: kind for kind in (
     Kind("movements", "Tool movements", _cols(
         ("when", "When", False), ("tool", "Tool", False), ("tn", "TN", False), ("category", "Type", False),
         ("from", "From", False), ("to", "To", False), ("movement", "Movement", False), ("by", "By", False),
-        ("entry", "Entry", False), ("kit", "Kit", True), ("detail", "Detail", True),
+        ("entry", "Entry", False), ("kit", "Kit", True), ("detail", "Detail", True), ("group", "Group", True),
     ), ("date", "tool", "machine", "user", "group"), _movements_query, _movements_row, MOVEMENT_GROUPS),
     Kind("requests", "Service requests", _cols(
         ("folio", "Request", False), ("requested_at", "Requested", False), ("type", "Type", False), ("state", "Status", False),
@@ -529,8 +535,8 @@ def _names(db):
     return {person.username: (person.full_name or person.username) for person in db.query(Usuario).all()}
 
 
-def _filters(date_from, date_to, tool, machine, user, group):
-    return Filters(date_from or None, date_to or None, tool, machine, user, group or None)
+def _filters(date_from, date_to, tool, machine, user, group, exact_tool=False):
+    return Filters(date_from or None, date_to or None, tool, machine, user, group or None, bool(exact_tool))
 
 
 def _rows(db, kind, f, limit, offset=0):
@@ -585,12 +591,13 @@ def get_records(
     machine: Optional[str] = None,
     user: Optional[str] = None,
     group: Optional[str] = None,
+    exact_tool: bool = False,
     limit: int = 100,
     offset: int = 0,
 ):
     _user()
     kind = _kind(kind_key)
-    f = _filters(date_from, date_to, tool, machine, user, group)
+    f = _filters(date_from, date_to, tool, machine, user, group, exact_tool)
     if kind.groups and not f.group:
         f.group = next(iter(kind.groups))
     db = workflow_api.SessionLocal()
@@ -619,10 +626,11 @@ def download_records(
     machine: Optional[str] = None,
     user: Optional[str] = None,
     group: Optional[str] = None,
+    exact_tool: bool = False,
 ):
     who = _user()
     kind = _kind(kind_key)
-    f = _filters(date_from, date_to, tool, machine, user, group)
+    f = _filters(date_from, date_to, tool, machine, user, group, exact_tool)
     if kind.groups and not f.group:
         f.group = next(iter(kind.groups))
     db = workflow_api.SessionLocal()
@@ -645,7 +653,7 @@ def _cell(value):
 
 
 def _sheet_title(kind, group=None):
-    return f"Mov - {kind.groups[group]}" if kind.groups else kind.label
+    return f"Mov - {kind.groups.get(group, 'All')}" if kind.groups else kind.label
 
 
 def _xlsx_response(sheets, base_name, who, f):

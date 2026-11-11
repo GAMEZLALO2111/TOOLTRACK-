@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, download } from "../api";
 import { ErrorNote } from "../components/Dialog";
+import { RecordTable, type RecordColumn, type RecordRow } from "../components/RecordTable";
 import { go } from "../router";
 
 const PAGE_SIZE = 100;
@@ -15,8 +16,8 @@ interface KindInfo {
 interface RecordPage {
   key: string;
   group: string | null;
-  columns: { key: string; label: string; export_only: boolean }[];
-  rows: Record<string, string | number | null>[];
+  columns: RecordColumn[];
+  rows: RecordRow[];
   total: number;
   limit: number;
   offset: number;
@@ -105,7 +106,6 @@ export function RecordsPage({ kind }: { kind: string }) {
     setOffset(0);
   }
 
-  const shown = data?.columns.filter((column) => !column.export_only) ?? [];
   const from = data && data.total > 0 ? data.offset + 1 : 0;
   const to = data ? Math.min(data.offset + data.limit, data.total) : 0;
   const has = (name: string) => !!current?.filters.includes(name);
@@ -187,32 +187,7 @@ export function RecordsPage({ kind }: { kind: string }) {
       {data && data.rows.length === 0 && !error && <p className="note note-info">Nothing found.</p>}
       {data && data.rows.length > 0 && (
         <>
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  {shown.map((column) => (
-                    <th key={column.key}>{column.label}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data.rows.map((row, index) => (
-                  <tr key={index}>
-                    {shown.map((column) => {
-                      const value = row[column.key];
-                      const text = value === null || value === undefined || value === "" ? "—" : String(value);
-                      return (
-                        <td key={column.key} title={text.length > 40 ? text : undefined} className={text.length > 40 ? "cell-clip" : undefined}>
-                          {text}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <RecordTable columns={data.columns} rows={data.rows} />
           <div className="pager">
             <span className="muted small">
               {from}–{to} of {data.total}

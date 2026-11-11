@@ -42,6 +42,7 @@ from kitting_api import router as kitting_router
 from service_requests_api import router as service_requests_router
 from maintenance_api import router as maintenance_router
 from records_api import router as records_router
+from tool_file_api import router as tool_file_router
 from auth import AuthMiddleware, normalize_role as _canonical_role
 from passwords import hash_password, verify_password, secrets_compare, ensure_password_hash
 from planning import calcular_planeacion
@@ -58,6 +59,7 @@ app.include_router(kitting_router)
 app.include_router(service_requests_router)
 app.include_router(maintenance_router)
 app.include_router(records_router)
+app.include_router(tool_file_router)
 # Aplicación web (web/dist). Se compila con build_web.bat; sin compilar, "/" avisa cómo hacerlo.
 WEB_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
 if os.path.isdir(os.path.join(WEB_DIST, "assets")):

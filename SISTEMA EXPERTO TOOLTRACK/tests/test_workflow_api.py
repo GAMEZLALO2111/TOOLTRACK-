@@ -1974,6 +1974,50 @@ class WorkflowApiTests(unittest.TestCase):
         ])
         self.assertEqual(workbook["Mov - Service and Maintenance"].max_row, 4)
 
+    def test_tool_file_gathers_one_tool_and_hides_service_data_from_roles_without_access(self):
+        import maintenance_api as maint
+        import service_requests_api as service
+        import tool_file_api as file_api
+
+        self._baseline()
+        self._create_tool("P1000", "100", "punzon")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        request = self._open_request("damage", note="Tip chipped")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        maint.create_ticket(maint.TicketCreate(
+            request_id=request["id"], hallazgo="Cracked shoulder", causa="collision", momento="setup", operador="op1",
+        ))
+
+        full = file_api.get_tool_file("p100")
+        self.assertEqual(
+            (full["tool"]["id"], full["tool"]["tn"], full["tool"]["estado"], full["where"]["location"]),
+            ("P100", "100", "danado", "MT1"),
+        )
+        self.assertEqual(list(full["sections"]), ["movements", "requests", "incidents", "tickets", "services"])
+        self.assertEqual(full["summary"]["open_ticket"], "MT-00001")
+        self.assertEqual((full["summary"]["incidents"], full["summary"]["tickets"], full["summary"]["requests"]), (1, 1, 1))
+        self.assertEqual(full["summary"]["movements"], full["sections"]["movements"]["total"])
+        self.assertTrue(all(row["tool"] == "P100" for row in full["sections"]["movements"]["rows"]))
+        self.assertIn("Service and Maintenance", {row["group"] for row in full["sections"]["movements"]["rows"]})
+        self.assertEqual(full["sections"]["tickets"]["rows"][0]["folio"], "MT-00001")
+
+        # A longer ID that merely contains P100 never leaks into this tool's file.
+        other = file_api.get_tool_file("P1000")
+        self.assertEqual(other["sections"]["movements"]["total"], 0)
+        self.assertEqual(other["summary"]["tickets"], 0)
+
+        self._ensure_user("plan1", role="PLANNING")
+        self._as("plan1", "PLANNING")
+        limited = file_api.get_tool_file("P100")
+        self.assertEqual(list(limited["sections"]), ["movements"])
+        self.assertNotIn("tickets", limited["summary"])
+
+        with self.assertRaises(HTTPException) as missing:
+            file_api.get_tool_file("NOPE")
+        self.assertEqual(missing.exception.status_code, 404)
+
     def test_service_request_install_requires_the_setup_it_was_opened_on(self):
         import service_requests_api as service
 

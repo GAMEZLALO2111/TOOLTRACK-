@@ -179,6 +179,7 @@ ROUTE_RULES = {
     ("POST", "/workflow/tools/{tool_id}/status"): "tools.status",
     ("POST", "/workflow/racks/{rack_code}/store"): "tools.store",
     ("GET", "/workflow/tools/locate"): "inventory.view",
+    ("GET", "/workflow/tools/{tool_id}/file"): "inventory.view",
     ("GET", "/workflow/machine-profiles"): "machine.view",
     ("GET", "/workflow/machine-profiles/{code}"): "machine.view",
     ("PUT", "/workflow/machine-profiles/{code}"): "machine.manage",
