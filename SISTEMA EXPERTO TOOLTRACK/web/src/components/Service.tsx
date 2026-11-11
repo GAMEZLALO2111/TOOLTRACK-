@@ -30,7 +30,7 @@ export function incidentMissing(values: IncidentValues): string | null {
 }
 
 /** Who was on the machine, why it happened and when; the shift comes from that operator's profile. */
-export function IncidentFields({ values, onChange }: { values: IncidentValues; onChange: (values: IncidentValues) => void }) {
+export function IncidentFields({ values, onChange, showOperator = true }: { values: IncidentValues; onChange: (values: IncidentValues) => void; showOperator?: boolean }) {
   const [operators, setOperators] = useState<OperatorOption[]>([]);
   useEffect(() => {
     api<OperatorOption[]>("GET", "/workflow/operators")
@@ -40,19 +40,21 @@ export function IncidentFields({ values, onChange }: { values: IncidentValues; o
   const chosen = operators.find((person) => person.username === values.operator);
   return (
     <>
-      <label>
-        Who was on the machine?
-        <select value={values.operator} onChange={(event) => onChange({ ...values, operator: event.target.value })}>
-          <option value="">Choose…</option>
-          {operators.map((person) => (
-            <option key={person.username} value={person.username}>
-              {person.full_name}
-              {person.employee_number ? ` · ${person.employee_number}` : ""}
-            </option>
-          ))}
-        </select>
-        {chosen && <span className="muted small">Shift: {chosen.shift ?? "not set in the profile"}</span>}
-      </label>
+      {showOperator && (
+        <label>
+          Who was on the machine?
+          <select value={values.operator} onChange={(event) => onChange({ ...values, operator: event.target.value })}>
+            <option value="">Choose…</option>
+            {operators.map((person) => (
+              <option key={person.username} value={person.username}>
+                {person.full_name}
+                {person.employee_number ? ` · ${person.employee_number}` : ""}
+              </option>
+            ))}
+          </select>
+          {chosen && <span className="muted small">Shift: {chosen.shift ?? "not set in the profile"}</span>}
+        </label>
+      )}
       <label>
         Cause
         <select value={values.cause} onChange={(event) => onChange({ ...values, cause: event.target.value })}>
@@ -126,11 +128,23 @@ export function isWaitingForTool(request: Pick<ServiceRequest, "state">): boolea
   return request.state === "open" || request.state === "attending" || request.state === "collected";
 }
 
-/** The old tool is physically in service and its result has not been recorded yet. */
-export function needsServiceResult(request: Pick<ServiceRequest, "state" | "type" | "service" | "tool_status">): boolean {
+/** The old tool is physically in service and its result has not been recorded yet (a Maintenance ticket records its own). */
+export function needsServiceResult(request: Pick<ServiceRequest, "state" | "type" | "service" | "tool_status" | "ticket">): boolean {
   return (
     (request.state === "collected" || request.state === "replaced") &&
     request.service === null &&
+    request.ticket === null &&
+    ["sharpening", "damage", "performance", "inspection", "replacement"].includes(request.type)
+  );
+}
+
+/** Tool Crib may send the tool to Maintenance while it holds it and no result was recorded. */
+export function canSendToMaintenance(request: Pick<ServiceRequest, "state" | "type" | "service" | "ticket" | "tool_id">): boolean {
+  return (
+    (request.state === "collected" || request.state === "replaced") &&
+    !!request.tool_id &&
+    request.service === null &&
+    request.ticket === null &&
     ["sharpening", "damage", "performance", "inspection", "replacement"].includes(request.type)
   );
 }

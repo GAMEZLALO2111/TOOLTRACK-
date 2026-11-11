@@ -152,6 +152,38 @@ export interface ServiceRequest {
   same_tool?: boolean;
   restored?: boolean;
   incident: ToolIncident | null;
+  ticket: { id: number; folio: string; state: TicketState; result: string | null } | null;
+}
+
+export type TicketState = "open" | "evaluating" | "repairing" | "closed";
+
+export interface MaintenanceTicket {
+  id: number;
+  folio: string;
+  state: TicketState;
+  tool_id: string;
+  tn: string | null;
+  category: string | null;
+  tool_status: string | null;
+  tool_location: string | null;
+  request_id: number | null;
+  request_folio: string | null;
+  finding: string;
+  incident: ToolIncident | null;
+  created_by: string;
+  created_by_name: string | null;
+  created_at: string | null;
+  received_by: string | null;
+  received_by_name: string | null;
+  received_at: string | null;
+  diagnosis: string | null;
+  repairable: boolean | null;
+  technical_cause: string | null;
+  work: string | null;
+  result: "released" | "unrepairable" | null;
+  closed_by: string | null;
+  closed_by_name: string | null;
+  closed_at: string | null;
 }
 
 export interface ToolIncident {

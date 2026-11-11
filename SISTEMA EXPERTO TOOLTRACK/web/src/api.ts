@@ -64,6 +64,40 @@ function errorDetail(body: unknown, status: number): string {
   return `The request failed (${status}).`;
 }
 
+/** Downloads a file the server generates (needs the session token, so it cannot be a plain link). */
+export async function download(path: string, fallbackName: string): Promise<void> {
+  const session = getSession();
+  let response: Response;
+  try {
+    response = await fetch(path, { headers: session ? { Authorization: `Bearer ${session.token}` } : {} });
+  } catch {
+    throw new ApiError(0, "Cannot reach the TOOLTRACK server. Check that it is running.");
+  }
+  if (response.status === 401 && session) {
+    clearSession();
+    onUnauthorized();
+    throw new ApiError(401, "Your session ended. Please sign in again.");
+  }
+  if (!response.ok) {
+    let parsed: unknown = null;
+    try {
+      parsed = await response.json();
+    } catch {
+      /* respuesta sin JSON */
+    }
+    throw new ApiError(response.status, errorDetail(parsed, response.status));
+  }
+  const name = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? fallbackName;
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
   const session = getSession();
   const headers: Record<string, string> = {};

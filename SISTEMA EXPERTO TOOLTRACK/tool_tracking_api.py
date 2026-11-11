@@ -454,6 +454,7 @@ def change_tool_status(tool_id: str, item: ToolStatusChange):
             raise HTTPException(status_code=409, detail=f"Tool {tool.id} is already retired")
         if current == target:
             raise HTTPException(status_code=409, detail=f"The tool is already '{target}'")
+        workflow_api._require_no_open_ticket(db, tool)
         location = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
         if not location or location.tipo not in {"rack", "togu", "maintenance", "workshop"}:
             raise HTTPException(
@@ -491,6 +492,7 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
         if not tool:
             raise HTTPException(status_code=404, detail=f"Tool '{item.tool_id}' is not in the inventory")
         workflow_api._require_home_rack(db, tool, rack)
+        workflow_api._require_no_open_ticket(db, tool)
         origin = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
         if not origin or origin.tipo not in {"machine", "togu", "maintenance", "workshop"}:
             raise HTTPException(

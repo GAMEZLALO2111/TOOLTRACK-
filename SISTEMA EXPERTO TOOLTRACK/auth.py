@@ -52,7 +52,7 @@ _OPERATOR = {
 }
 _SUPERVISOR = _OPERATOR | {
     "inventory.edit", "inventory.adjust", "catalog.edit", "locations.manage",
-    "setup.baseline", "demand.mark", "audit.view", "maintenance.operate",
+    "setup.baseline", "demand.mark", "audit.view", "maintenance.operate", "records.view",
 }
 ROLE_PERMISSIONS = {
     "TOOLCRIB_OPERATOR": frozenset(_OPERATOR),
@@ -70,7 +70,7 @@ ROLE_PERMISSIONS = {
     "ENGINEERING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "setup.view",
         "demand.view", "demand.mark", "program.view", "program.manage", "machine.view",
-        "maintenance.view", "audit.view", "service.view", "service.attend",
+        "maintenance.view", "audit.view", "service.view", "service.attend", "records.view",
     }),
 }
 # El administrador puede todo lo que existe (incluye operación para poder probar y dar soporte);
@@ -150,6 +150,15 @@ ROUTE_RULES = {
     ("POST", "/workflow/service-requests/{request_id}/resolve"): "service.attend",
     ("POST", "/workflow/service-requests/{request_id}/finish-service"): "service.attend",
     ("POST", "/workflow/service-requests/{request_id}/relocate"): "service.attend",
+    ("GET", "/workflow/maintenance/tickets"): "maintenance.view",
+    ("GET", "/records"): "records.view",
+    ("GET", "/records/workbook"): "records.view",
+    ("GET", "/records/{kind_key}"): "records.view",
+    ("GET", "/records/{kind_key}/download"): "records.view",
+    ("POST", "/workflow/maintenance/tickets"): "service.attend",
+    ("POST", "/workflow/maintenance/tickets/{ticket_id}/receive"): "maintenance.operate",
+    ("POST", "/workflow/maintenance/tickets/{ticket_id}/evaluate"): "maintenance.operate",
+    ("POST", "/workflow/maintenance/tickets/{ticket_id}/release"): "maintenance.operate",
     ("POST", "/workflow/service-requests/{request_id}/store"): "service.attend",
     ("GET", "/workflow/tool-service-log"): "service.view",
     ("GET", "/workflow/tool-incidents"): "service.view",

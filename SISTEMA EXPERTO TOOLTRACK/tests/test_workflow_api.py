@@ -1688,6 +1688,292 @@ class WorkflowApiTests(unittest.TestCase):
         finished = service.finish_tool_service(request["id"], service.ServiceFinish(resultado="ready", rebaje=0.002))
         self.assertEqual(finished["tool_status"], "disponible")
 
+    def test_maintenance_ticket_from_a_sharpening_request_follows_the_tool_through_repair(self):
+        import maintenance_api as maint
+        import service_requests_api as service
+        import tool_tracking_api as tracking
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        self._ensure_user("mt1", role="MAINTENANCE_TECHNICIAN")
+        request = self._open_request()  # Manufacturing only asked for a sharpening
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        with self.assertRaises(HTTPException) as too_early:
+            maint.create_ticket(maint.TicketCreate(
+                request_id=request["id"], hallazgo="Cracked", causa="collision", momento="setup", operador="op1",
+            ))
+        self.assertEqual(too_early.exception.status_code, 409)
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+
+        for bad in (dict(hallazgo="x"), dict(causa="nope"), dict(operador="ghost"), dict(operador="")):
+            payload = dict(request_id=request["id"], hallazgo="Cracked shoulder", causa="collision", momento="setup", operador="op1")
+            payload.update(bad)
+            with self.assertRaises(HTTPException, msg=str(bad)) as invalid:
+                maint.create_ticket(maint.TicketCreate(**payload))
+            self.assertEqual(invalid.exception.status_code, 422, bad)
+
+        ticket = maint.create_ticket(maint.TicketCreate(
+            request_id=request["id"], hallazgo="Cracked shoulder, needs more than sharpening",
+            causa="collision", momento="setup", operador="op1",
+        ))
+        self.assertEqual((ticket["folio"], ticket["state"], ticket["tool_id"]), ("MT-00001", "open", "P100"))
+        self.assertEqual((ticket["tool_location"], ticket["tool_status"]), ("MT1", "danado"))
+        self.assertEqual((ticket["incident"]["reported_as"], ticket["incident"]["machine"], ticket["incident"]["station"]),
+                         ("sharpening", "M1", "201"))
+        with self.assertRaises(HTTPException) as twice:
+            maint.create_ticket(maint.TicketCreate(
+                request_id=request["id"], hallazgo="Again", causa="collision", momento="setup", operador="op1",
+            ))
+        self.assertEqual(twice.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as blocked_result:
+            service.finish_tool_service(request["id"], service.ServiceFinish(resultado="ready", rebaje=0.001))
+        self.assertEqual(blocked_result.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as blocked_store:
+            tracking.store_tool_in_rack("R1", tracking.RackStore(tool_id="P100", realizado_por="tc1", resultado="baja"))
+        self.assertIn("MT-00001", blocked_store.exception.detail)
+
+        # The machine gets its replacement and the request closes: the old tool is now in the ticket.
+        self._as("op1", "PUNCHING_OPERATOR")
+        installed = service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))
+        self.assertEqual((installed["state"], installed["ticket"]["folio"]), ("closed", "MT-00001"))
+
+        with self.assertRaises(HTTPException) as not_technician:
+            maint.receive_ticket(ticket["id"], maint.TicketReceive(tool_id="P100"))
+        self.assertEqual(not_technician.exception.status_code, 403)
+        self._as("mt1", "MAINTENANCE_TECHNICIAN")
+        with self.assertRaises(HTTPException) as wrong_tool:
+            maint.receive_ticket(ticket["id"], maint.TicketReceive(tool_id="P200"))
+        self.assertEqual(wrong_tool.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as not_received:
+            maint.evaluate_ticket(ticket["id"], maint.TicketEvaluate(diagnostico="Weld the tip", reparable=True))
+        self.assertEqual(not_received.exception.status_code, 409)
+        received = maint.receive_ticket(ticket["id"], maint.TicketReceive(tool_id="tooltrack-tool:p100"))
+        self.assertEqual((received["state"], received["received_by"]), ("evaluating", "mt1"))
+        with self.assertRaises(HTTPException) as no_release:
+            maint.release_ticket(ticket["id"], maint.TicketRelease(trabajo="Reground"))
+        self.assertEqual(no_release.exception.status_code, 409)
+        evaluated = maint.evaluate_ticket(ticket["id"], maint.TicketEvaluate(
+            diagnostico="Shoulder crack is superficial", reparable=True, causa_tecnica="wrong_setup",
+        ))
+        self.assertEqual((evaluated["state"], evaluated["technical_cause"]), ("repairing", "wrong_setup"))
+        released = maint.release_ticket(ticket["id"], maint.TicketRelease(trabajo="Reground the shoulder and polished"))
+        self.assertEqual((released["state"], released["result"], released["tool_status"], released["tool_location"]),
+                         ("closed", "released", "disponible", "MT1"))
+        self.assertEqual(maint.list_tickets(state="active", tool_id=None, limit=10), [])
+        self.assertEqual([row["folio"] for row in maint.list_tickets(state="closed", tool_id="p100", limit=10)], ["MT-00001"])
+
+        # Tool Crib picks it up from Maintenance and stores it; it is a normal tool again.
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        stored = tracking.store_tool_in_rack("R1", tracking.RackStore(tool_id="P100", realizado_por="tc1"))
+        self.assertEqual(stored["to"], "R1")
+        session = self.session_factory()
+        try:
+            types = [row.tipo for row in session.query(MovimientoHerramienta).filter_by(herramienta_id="P100").all()]
+        finally:
+            session.close()
+        for expected in ("maintenance_ticket_opened", "maintenance_received", "maintenance_released", "maintenance_to_rack"):
+            self.assertIn(expected, types)
+
+    def test_ticket_opened_after_the_machine_already_has_its_replacement_closes_the_request(self):
+        import maintenance_api as maint
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        request = self._open_request()
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self._as("op1", "PUNCHING_OPERATOR")
+        self.assertEqual(service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))["state"], "replaced")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        maint.create_ticket(maint.TicketCreate(
+            request_id=request["id"], hallazgo="Not just dull: chipped", causa="handling", momento="handling", operador="op1",
+        ))
+        rows = service.list_service_requests(state="all", machine=None, limit=10)
+        self.assertEqual((rows[0]["state"], rows[0]["ticket"]["state"]), ("closed", "open"))
+
+    def test_toolcrib_opens_a_manual_ticket_for_a_tool_it_holds_and_unrepairable_tools_stay_damaged(self):
+        import maintenance_api as maint
+
+        self._baseline()
+        self._create_tool("P300", "300", "punzon")
+        self._ensure_user("op1")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        self._ensure_user("mt1", role="MAINTENANCE_TECHNICIAN")
+        base = dict(hallazgo="Chipped edge found at the rack", causa="unknown", momento="unknown", tool_id="P300")
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as operator:
+            maint.create_ticket(maint.TicketCreate(**base, origen="toolcrib"))
+        self.assertEqual(operator.exception.status_code, 403)
+        self._as("mt1", "MAINTENANCE_TECHNICIAN")
+        with self.assertRaises(HTTPException) as technician:
+            maint.create_ticket(maint.TicketCreate(**base, origen="toolcrib"))
+        self.assertEqual(technician.exception.status_code, 403)
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as no_origin:
+            maint.create_ticket(maint.TicketCreate(**base))
+        self.assertEqual(no_origin.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as no_machine:
+            maint.create_ticket(maint.TicketCreate(**base, origen="machine", operador="op1"))
+        self.assertEqual(no_machine.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as no_operator:
+            maint.create_ticket(maint.TicketCreate(**base, origen="machine", machine="M1"))
+        self.assertEqual(no_operator.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as mounted:
+            maint.create_ticket(maint.TicketCreate(**{**base, "tool_id": "P200"}, origen="toolcrib"))
+        self.assertEqual(mounted.exception.status_code, 409)
+
+        ticket = maint.create_ticket(maint.TicketCreate(**base, origen="toolcrib"))
+        self.assertEqual((ticket["state"], ticket["tool_location"], ticket["tool_status"]), ("open", "MT1", "danado"))
+        self.assertEqual((ticket["incident"]["origin"], ticket["incident"]["operator"], ticket["incident"]["tn"]),
+                         ("toolcrib", None, "300"))
+        with self.assertRaises(HTTPException) as duplicate:
+            maint.create_ticket(maint.TicketCreate(**base, origen="toolcrib"))
+        self.assertEqual(duplicate.exception.status_code, 409)
+
+        self._as("mt1", "MAINTENANCE_TECHNICIAN")
+        maint.receive_ticket(ticket["id"], maint.TicketReceive(tool_id="P300"))
+        closed = maint.evaluate_ticket(ticket["id"], maint.TicketEvaluate(diagnostico="Body cracked through", reparable=False))
+        self.assertEqual((closed["state"], closed["result"], closed["tool_status"], closed["tool_location"]),
+                         ("closed", "unrepairable", "danado", "MT1"))
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        self._create_tool("P301", "301", "punzon")
+        machine_ticket = maint.create_ticket(maint.TicketCreate(
+            hallazgo="Came back from the machine bent", causa="collision", momento="production", tool_id="p301",
+            origen="machine", machine="M1", operador="op1", part_number="ABC-1", station="201",
+        ))
+        incident = machine_ticket["incident"]
+        self.assertEqual(
+            (incident["origin"], incident["machine"], incident["part_number"], incident["station"], incident["operator"], incident["shift"]),
+            ("machine", "M1", "ABC-1", "201", "op1", "Turno 1"),
+        )
+        self.assertEqual(len(maint.list_tickets(state="all", tool_id=None, limit=10)), 2)
+        with self.assertRaises(HTTPException) as bad_state:
+            maint.list_tickets(state="weird", tool_id=None, limit=10)
+        self.assertEqual(bad_state.exception.status_code, 422)
+
+    def test_records_list_each_kind_apart_filter_and_download_to_excel(self):
+        import io
+
+        import maintenance_api as maint
+        import records_api as records
+        import service_requests_api as service
+        from openpyxl import load_workbook
+
+        self._baseline()
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        self._ensure_user("sup1", role="TOOLCRIB_SUPERVISOR", full_name="Super Visor")
+        request = self._open_request("damage", note="=1+1 chipped tip")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        maint.create_ticket(maint.TicketCreate(
+            request_id=request["id"], hallazgo="+cracked at the shoulder", causa="collision", momento="setup", operador="op1",
+        ))
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as denied:
+            records.list_records()
+        self.assertEqual(denied.exception.status_code, 403)
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as operator:
+            records.get_records("requests")
+        self.assertEqual(operator.exception.status_code, 403)
+
+        self._as("sup1", "TOOLCRIB_SUPERVISOR")
+        kinds = {kind["key"]: kind for kind in records.list_records()}
+        self.assertEqual(
+            list(kinds), ["movements", "requests", "incidents", "tickets", "services", "programs", "audit"],
+        )
+        self.assertEqual([group["value"] for group in kinds["movements"]["groups"]],
+                         ["kitting_machine", "service_maintenance", "storage_status"])
+
+        def fetch(key, **filters):
+            params = dict(date_from=None, date_to=None, tool=None, machine=None, user=None, group=None, limit=100, offset=0)
+            params.update(filters)
+            return records.get_records(key, **params)
+
+        service_moves = fetch("movements", group="service_maintenance")
+        self.assertEqual([row["movement"] for row in service_moves["rows"]], [
+            "Sent to Maintenance", "Collected from the machine, reported damaged", "Service requested from the machine",
+        ])
+        kitting = fetch("movements", group="kitting_machine")
+        storage = fetch("movements", group="storage_status")
+        for group_rows in (kitting["rows"], storage["rows"]):
+            self.assertFalse([row for row in group_rows if "Maintenance" in row["movement"] or "Service" in row["movement"]])
+        self.assertEqual(fetch("movements")["group"], "kitting_machine")
+        session = self.session_factory()
+        try:
+            all_movements = session.query(MovimientoHerramienta).count()
+        finally:
+            session.close()
+        self.assertEqual(
+            sum(fetch("movements", group=group)["total"] for group in ("kitting_machine", "service_maintenance", "storage_status")),
+            all_movements,
+        )
+        self.assertEqual(fetch("movements", group="service_maintenance", tool="p10")["total"], 3)
+        self.assertEqual(fetch("movements", group="service_maintenance", machine="zz")["total"], 0)
+        self.assertEqual(fetch("movements", group="service_maintenance", user="tc1")["total"], 2)
+        self.assertEqual(fetch("movements", group="service_maintenance", limit=2)["rows"].__len__(), 2)
+        with self.assertRaises(HTTPException) as group:
+            fetch("movements", group="mixed")
+        self.assertEqual(group.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as unknown:
+            fetch("nothing")
+        self.assertEqual(unknown.exception.status_code, 404)
+        with self.assertRaises(HTTPException) as date:
+            fetch("requests", date_from="30/11/2026")
+        self.assertEqual(date.exception.status_code, 422)
+        self.assertEqual(fetch("requests", date_from="2999-01-01")["total"], 0)
+        self.assertEqual(fetch("requests", date_from="2000-01-01", date_to="2999-01-01")["total"], 1)
+
+        row = fetch("requests", machine="m1", user="op1")["rows"][0]
+        self.assertEqual(
+            (row["folio"], row["type"], row["state"], row["tool"], row["cause"], row["ticket"], row["requested_by"]),
+            ("SR-00001", "Damage report", "Waiting for a tool", "P100", "Collision", "MT-00001", "OP1"),
+        )
+        incident = fetch("incidents", tool="P100")["rows"][0]
+        self.assertEqual((incident["operator"], incident["shift"], incident["cause"], incident["moment"], incident["request"], incident["ticket"]),
+                         ("OP1", "Turno 1", "Collision", "During setup", "SR-00001", "MT-00001"))
+        ticket = fetch("tickets")["rows"][0]
+        self.assertEqual((ticket["folio"], ticket["state"], ticket["tool"], ticket["machine"], ticket["part_number"]),
+                         ("MT-00001", "Waiting for the technician", "P100", "M1", "CURRENT"))
+        self.assertEqual(fetch("services")["total"], 0)
+        self.assertGreaterEqual(fetch("audit")["total"], 0)
+
+        sheet_response = records.download_records("incidents", date_from=None, date_to=None, tool=None, machine=None, user=None, group=None)
+        self.assertEqual(sheet_response.media_type, records.XLSX)
+        self.assertIn("attachment; filename=\"MIRA-incidents-", sheet_response.headers["content-disposition"])
+        book = load_workbook(io.BytesIO(sheet_response.body))
+        self.assertEqual(book.sheetnames, ["Damage incidents", "Info"])
+        header = [cell.value for cell in book["Damage incidents"][1]]
+        values = dict(zip(header, [cell.value for cell in book["Damage incidents"][2]]))
+        self.assertEqual((values["Tool"], values["Cause"], values["Found by Tool Crib"]), ("P100", "Collision", "'+cracked at the shoulder"))
+        self.assertEqual(book["Info"]["B3"].value, "sup1")
+
+        requests_book = load_workbook(io.BytesIO(records.download_records(
+            "requests", date_from=None, date_to=None, tool=None, machine=None, user=None, group=None,
+        ).body))
+        request_header = [cell.value for cell in requests_book["Service requests"][1]]
+        request_values = dict(zip(request_header, [cell.value for cell in requests_book["Service requests"][2]]))
+        self.assertEqual(request_values["Note"], "'=1+1 chipped tip")
+        self.assertIn("Resolution or cancel reason", request_header)
+
+        workbook = load_workbook(io.BytesIO(records.download_workbook(date_from=None, date_to=None).body))
+        self.assertEqual(workbook.sheetnames, [
+            "Mov - Kitting and machine", "Mov - Service and Maintenance", "Mov - Storage and status",
+            "Service requests", "Damage incidents", "Maintenance tickets", "Sharpening and repairs",
+            "Part number changes", "System audit", "Info",
+        ])
+        self.assertEqual(workbook["Mov - Service and Maintenance"].max_row, 4)
+
     def test_service_request_install_requires_the_setup_it_was_opened_on(self):
         import service_requests_api as service
 

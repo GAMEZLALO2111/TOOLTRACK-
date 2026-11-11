@@ -803,6 +803,23 @@ textarea:disabled {
 .filters select {
   min-width: 150px;
 }
+.filters .inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.filters .inline-field input {
+  flex: none;
+  min-width: 0;
+}
+.cell-clip {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .push-right {
   margin-left: auto;
 }

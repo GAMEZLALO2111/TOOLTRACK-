@@ -344,6 +344,39 @@ class IncidenteHerramienta(Base):
     actualizado_en = Column(DateTime, nullable=True)
 
 
+class TicketMantenimiento(Base):
+    """Maintenance ticket: always opened by Tool Crib, worked by the maintenance technician.
+
+    open -> evaluating (technician received the tool) -> repairing (repairable) -> closed (released),
+    or closed as unrepairable. The incident record keeps what happened; this keeps the repair work.
+    """
+    __tablename__ = "tickets_mantenimiento"
+    __table_args__ = (
+        Index("ix_tickets_mantenimiento_tool", "herramienta_id"),
+        Index("ix_tickets_mantenimiento_estado", "estado"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    herramienta_id = Column(String, ForeignKey("herramientas.id"), nullable=False)
+    solicitud_id = Column(Integer, ForeignKey("solicitudes_servicio.id"), nullable=True)
+    incidente_id = Column(Integer, ForeignKey("incidentes_herramienta.id"), nullable=False)
+    estado = Column(String, nullable=False, default="open")
+    motivo = Column(Text, nullable=False)
+    creado_por = Column(String, nullable=False)
+    creado_en = Column(DateTime, nullable=False)
+    recibido_por = Column(String, nullable=True)
+    recibido_en = Column(DateTime, nullable=True)
+    diagnostico = Column(Text, nullable=True)
+    reparable = Column(Boolean, nullable=True)
+    causa_tecnica = Column(String, nullable=True)
+    evaluado_por = Column(String, nullable=True)
+    evaluado_en = Column(DateTime, nullable=True)
+    trabajo = Column(Text, nullable=True)
+    resultado = Column(String, nullable=True)
+    cerrado_por = Column(String, nullable=True)
+    cerrado_en = Column(DateTime, nullable=True)
+
+
 class MovimientoHerramienta(Base):
     __tablename__ = "movimientos_herramienta"
 

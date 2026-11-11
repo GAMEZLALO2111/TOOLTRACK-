@@ -6,8 +6,8 @@ import { ReasonDialog } from "../components/ReasonDialog";
 import { LocationPicker } from "../components/LocationPicker";
 import { ScanInput } from "../components/ScanInput";
 import { sameCode, toolCode, type Capture } from "../scan";
-import { ABNORMAL_REBAJE, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, positionLabel, problemLabel, RequestChip, WAIT_LATE_MIN, WAIT_WARN_MIN, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
-import { SERVICE_TYPE_LABEL, TOOL_STATE_LABEL } from "../labels";
+import { ABNORMAL_REBAJE, canSendToMaintenance, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, positionLabel, problemLabel, RequestChip, WAIT_LATE_MIN, WAIT_WARN_MIN, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
+import { SERVICE_TYPE_LABEL, TICKET_STATE_LABEL, TOOL_STATE_LABEL } from "../labels";
 import type { LocationRow, ServiceRequest } from "../types";
 import { usePoll } from "../usePoll";
 
@@ -241,7 +241,7 @@ function StoreDialog({ request, racks, onClose, onDone }: { request: ServiceRequ
   );
 }
 
-function IncidentDialog({ request, onClose, onDone }: { request: ServiceRequest; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
+function IncidentDialog({ request, toMaintenance = false, onClose, onDone }: { request: ServiceRequest; toMaintenance?: boolean; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
   const existing = request.incident;
   const [values, setValues] = useState<IncidentValues>({ operator: existing?.operator ?? "", cause: existing?.cause ?? "", moment: existing?.moment ?? "" });
   const [finding, setFinding] = useState(existing?.finding ?? "");
@@ -254,24 +254,23 @@ function IncidentDialog({ request, onClose, onDone }: { request: ServiceRequest;
     if (finding.trim().length < 3) return setError("Write what Tool Crib found on the tool.");
     setBusy(true);
     setError(null);
+    const body = { operador: values.operator, causa: values.cause, momento: values.moment, hallazgo: finding.trim() };
     try {
-      onDone(
-        await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/incident`, {
-          operador: values.operator,
-          causa: values.cause,
-          momento: values.moment,
-          hallazgo: finding.trim(),
-        }),
-      );
+      if (toMaintenance) {
+        await api("POST", "/workflow/maintenance/tickets", { ...body, request_id: request.id });
+        onDone(request);
+      } else {
+        onDone(await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/incident`, body));
+      }
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "The incident could not be saved.");
+      setError(caught instanceof ApiError ? caught.message : toMaintenance ? "The ticket could not be opened." : "The incident could not be saved.");
       setBusy(false);
     }
   }
 
   return (
     <Dialog
-      title={`Incident · ${request.folio}`}
+      title={toMaintenance ? `Send to Maintenance · ${request.folio}` : `Incident · ${request.folio}`}
       onClose={onClose}
       footer={
         <>
@@ -279,7 +278,7 @@ function IncidentDialog({ request, onClose, onDone }: { request: ServiceRequest;
             Back
           </button>
           <button className="btn btn-primary" onClick={() => void submit()} disabled={busy}>
-            {busy ? "Saving…" : "Save incident"}
+            {busy ? "Saving…" : toMaintenance ? "Open ticket" : "Save incident"}
           </button>
         </>
       }
@@ -302,9 +301,10 @@ function IncidentDialog({ request, onClose, onDone }: { request: ServiceRequest;
           </div>
         </div>
         {request.note && <p className="note note-warn">Manufacturing said: {request.note}</p>}
+        {toMaintenance && <p className="note note-info">The tool moves to Maintenance. Bring a replacement to the machine as usual; the technician records the repair in the ticket.</p>}
         <IncidentFields values={values} onChange={setValues} />
         <label>
-          What Tool Crib found
+          {toMaintenance ? "What Tool Crib found (the reason for the ticket)" : "What Tool Crib found"}
           <textarea rows={3} maxLength={500} value={finding} onChange={(event) => setFinding(event.target.value)} autoFocus />
         </label>
         <ErrorNote message={error} />
@@ -382,6 +382,7 @@ export function ServiceRequestsPage() {
   const [finishing, setFinishing] = useState<ServiceRequest | null>(null);
   const [storing, setStoring] = useState<ServiceRequest | null>(null);
   const [recording, setRecording] = useState<ServiceRequest | null>(null);
+  const [ticketing, setTicketing] = useState<ServiceRequest | null>(null);
   const [relocating, setRelocating] = useState<ServiceRequest | null>(null);
   const [cancelling, setCancelling] = useState<ServiceRequest | null>(null);
 
@@ -552,6 +553,11 @@ export function ServiceRequestsPage() {
                             {request.service?.abnormal && <span className="warn-text"> · abnormal</span>}
                           </div>
                         )}
+                        {request.ticket && (
+                          <div>
+                            Maintenance {request.ticket.folio} · {TICKET_STATE_LABEL[request.ticket.state] ?? request.ticket.state}
+                          </div>
+                        )}
                         {request.replacement_tool_id && request.state === "replaced" && <div>On the machine: {request.replacement_tool_id}</div>}
                         {request.state === "closed" && (request.resolution ? `${request.resolution} · ${when(request.closed_at)}` : when(request.closed_at))}
                         {request.state === "cancelled" && (request.cancel_reason ?? "")}
@@ -568,9 +574,14 @@ export function ServiceRequestsPage() {
                           Tool collected…
                         </button>
                       )}
-                      {canHandleTools && (request.state === "collected" || request.state === "replaced") && !isProgram && request.type !== "tool_request" && (
+                      {canHandleTools && (request.state === "collected" || request.state === "replaced") && !isProgram && request.type !== "tool_request" && !request.ticket && (
                         <button className={`btn ${request.incident ? "" : "btn-primary"}`} onClick={() => setRecording(request)}>
                           {request.incident ? "Edit incident…" : "Record incident…"}
+                        </button>
+                      )}
+                      {canHandleTools && canSendToMaintenance(request) && (
+                        <button className="btn" onClick={() => setTicketing(request)}>
+                          Send to Maintenance…
                         </button>
                       )}
                       {canHandleTools && needsServiceResult(request) && inServicePlace(request) && (
@@ -658,6 +669,18 @@ export function ServiceRequestsPage() {
           onDone={(request) => {
             setRecording(null);
             setMessage(`Incident of ${request.tool_id} saved.`);
+            void load();
+          }}
+        />
+      )}
+      {ticketing && (
+        <IncidentDialog
+          request={ticketing}
+          toMaintenance
+          onClose={() => setTicketing(null)}
+          onDone={(request) => {
+            setTicketing(null);
+            setMessage(`${request.tool_id} is in Maintenance. ${request.state === "collected" ? `Bring a tool with TN ${request.tn} to ${request.machine}; Manufacturing scans it to close ${request.folio}.` : `${request.folio} is closed.`}`);
             void load();
           }}
         />

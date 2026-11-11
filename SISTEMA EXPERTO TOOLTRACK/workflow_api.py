@@ -27,6 +27,7 @@ from models.inventory import (
     Setup,
     SolicitudServicio,
     Surtido,
+    TicketMantenimiento,
     Ubicacion,
 )
 from setup_workflow import (
@@ -173,6 +174,19 @@ def _require_home_rack(db, tool, destination):
                 f"Tool {tool.id} (TN {tool.tn}) does not belong in rack "
                 f"'{destination.codigo}'. Its place is '{home}'."
             ),
+        )
+
+
+def _require_no_open_ticket(db, tool):
+    """A tool with an open maintenance ticket only moves through that ticket."""
+    ticket = db.query(TicketMantenimiento).filter(
+        TicketMantenimiento.herramienta_id == tool.id,
+        TicketMantenimiento.estado != "closed",
+    ).first()
+    if ticket:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tool {tool.id} has the open maintenance ticket MT-{ticket.id:05d}; Maintenance has to close it first.",
         )
 
 
@@ -1792,6 +1806,7 @@ def move_available_tool(tool_id: str, item: PendingPickupMove):
         if not tool:
             raise HTTPException(status_code=404, detail="Physical tool is not in inventory")
         origin = _location(db, tool.ubicacion, {"togu", "maintenance", "workshop"})
+        _require_no_open_ticket(db, tool)
         destination = _location(
             db,
             scan_codes.location_code(item.destino_codigo),

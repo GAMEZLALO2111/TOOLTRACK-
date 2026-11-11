@@ -10,6 +10,8 @@ import { ToolTrackingPage } from "./pages/ToolTracking";
 import { LabelsPage } from "./pages/Labels";
 import { MachinesPage } from "./pages/Machines";
 import { ManufacturingPage } from "./pages/Manufacturing";
+import { MaintenancePage } from "./pages/Maintenance";
+import { RecordsPage } from "./pages/Records";
 import { ServiceRequestsPage } from "./pages/ServiceRequests";
 import { RequestsTab } from "./components/RequestsTab";
 import { UsersPage } from "./pages/Users";
@@ -26,8 +28,10 @@ function Shell() {
     { path: "/board", label: "Board", show: can("demand.view") },
     { path: "/kitting", label: "Kitting", show: can("kitting.view") },
     { path: "/requests", label: "Requests", show: can("service.view") },
+    { path: "/maintenance", label: "Maintenance", show: can("maintenance.view") },
     { path: "/tracking", label: "Tool Tracking", show: can("inventory.view") },
     { path: "/inventory", label: "Inventory", show: can("inventory.view") },
+    { path: "/records", label: "Records", show: can("records.view") },
     { path: "/programs", label: "Part numbers", show: can("program.view") },
     { path: "/machines", label: "Machines", show: can("machine.view") },
     { path: "/manufacturing", label: "Manufacturing", show: can("manufacturing.view") },
@@ -40,12 +44,15 @@ function Shell() {
   const programsMatch = route.path.match(/^\/programs(?:\/([a-z0-9]+))?$/);
   const machinesMatch = route.path.match(/^\/machines(?:\/([^/]+))?$/);
   const manufacturingMatch = route.path === "/manufacturing";
+  const recordsMatch = route.path.match(/^\/records(?:\/([a-z]+))?$/);
   let page;
   if (route.path === "/users" && can("user.manage")) page = <UsersPage />;
   else if (programsMatch && can("program.view")) page = <ProgramsPage tab={programsMatch[1] ?? ""} />
   else if (machinesMatch && can("machine.view")) page = <MachinesPage code={machinesMatch[1] ? decodeURIComponent(machinesMatch[1]) : null} />
   else if (manufacturingMatch && can("manufacturing.view")) page = <ManufacturingPage route={route} />
   else if (route.path === "/requests" && can("service.view")) page = <ServiceRequestsPage />
+  else if (route.path === "/maintenance" && can("maintenance.view")) page = <MaintenancePage />
+  else if (recordsMatch && can("records.view")) page = <RecordsPage kind={recordsMatch[1] ?? ""} />
   else if (kitMatch && can("kitting.view")) page = <KitDetailPage kitId={decodeURIComponent(kitMatch[1])} />;
   else if (route.path === "/kitting/pending" && can("kitting.view")) page = <PendingPage />;
   else if (route.path === "/kitting/labels" && can("kitting.view")) page = <LabelsPage />;
@@ -54,6 +61,7 @@ function Shell() {
   else if (inventoryMatch && can("inventory.view")) page = <InventoryPage tab={inventoryMatch[1] ?? ""} />
   else if (can("demand.view")) page = <BoardPage />;
   else if (can("kitting.view")) page = <KittingPage route={route} />;
+  else if (can("maintenance.operate")) page = <MaintenancePage />;
   else if (can("inventory.view")) page = <ToolTrackingPage tab="" />;
   else if (can("manufacturing.view")) page = <ManufacturingPage route={route} />;
   else page = <p className="note note-info">Your role has no modules in the web app yet. Use the desktop app for now.</p>;

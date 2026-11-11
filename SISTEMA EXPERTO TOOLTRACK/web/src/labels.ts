@@ -144,6 +144,20 @@ export const SERVICE_STATE_LABEL: Record<string, string> = {
   cancelled: "Cancelled",
 };
 
+export const TICKET_STATE_LABEL: Record<string, string> = {
+  open: "Waiting for the technician",
+  evaluating: "Being evaluated",
+  repairing: "Being repaired",
+  closed: "Closed",
+};
+
+export const TICKET_STATE_CLASS: Record<string, string> = {
+  open: "st-kitting",
+  evaluating: "st-running",
+  repairing: "st-onmachine",
+  closed: "st-done",
+};
+
 export const SERVICE_STATE_CLASS: Record<string, string> = {
   open: "st-kitting",
   attending: "st-running",
@@ -171,6 +185,10 @@ export const MOVEMENT_LABEL: Record<string, string> = {
   service_relocate_replacement: "Moved to a service location to record the replacement",
   service_relocate_damage: "Moved to a service location to record the damage",
   service_relocate_performance: "Moved to a service location to record the performance issue",
+  maintenance_ticket_opened: "Sent to Maintenance",
+  maintenance_received: "Received by Maintenance",
+  maintenance_released: "Repaired and released by Maintenance",
+  maintenance_unrepairable: "Maintenance: cannot be repaired",
   rack_to_cart_for_kit: "Taken from the rack to the cart",
   kit_selection_reversed: "Cart selection undone",
   kit_cancelled_return_to_rack: "Kit cancelled: back to its rack",

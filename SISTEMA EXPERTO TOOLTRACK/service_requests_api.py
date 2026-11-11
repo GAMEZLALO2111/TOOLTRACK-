@@ -24,6 +24,7 @@ from models.inventory import (
     ServicioHerramienta,
     SolicitudServicio,
     Surtido,
+    TicketMantenimiento,
     Ubicacion,
     Usuario,
 )
@@ -46,7 +47,7 @@ OPEN_STATES = ("open", "attending", "collected", "replaced")
 POSITION_STATES = ("open", "attending", "collected")
 COLLECT_DESTINATIONS = {"rack", "togu", "maintenance", "workshop"}
 COLLECT_TOOL_STATUS = {"sharpening": "afilado", "damage": "danado"}
-INSTALL_SOURCES = {"rack", "cart", "togu"}
+INSTALL_SOURCES = {"rack", "cart", "togu", "maintenance"}
 SERVICE_LOCATIONS = {"togu", "maintenance", "workshop"}
 CAN_ATTEND_FOR_OTHERS = {"TOOLCRIB_SUPERVISOR", "SYSTEM_ADMIN"}
 MAX_NOTE_LENGTH = 500
@@ -167,7 +168,7 @@ def _people(db, rows):
     }
 
 
-def _incident_fields(db, operador, causa, momento):
+def _incident_fields(db, operador, causa, momento, require_operator=True):
     """Validated who/why/when of an incident; the shift is the involved operator's own."""
     cause = (causa or "").strip().lower()
     moment = (momento or "").strip().lower()
@@ -176,6 +177,8 @@ def _incident_fields(db, operador, causa, momento):
     if moment not in DAMAGE_MOMENTS:
         raise HTTPException(status_code=422, detail="Choose when it happened")
     username = (operador or "").strip()
+    if not username and not require_operator:
+        return {"operador": None, "turno": None, "causa": cause, "momento": moment}
     person = db.query(Usuario).filter(
         func.lower(Usuario.username) == username.lower(), Usuario.activo.is_(True)
     ).first() if username else None
@@ -241,7 +244,12 @@ def _read_many(db, rows):
     request_ids = [row.id for row in rows]
     services = {}
     incidents = {}
+    tickets = {}
     if request_ids:
+        for ticket in db.query(TicketMantenimiento).filter(
+            TicketMantenimiento.solicitud_id.in_(request_ids)
+        ).order_by(TicketMantenimiento.id).all():
+            tickets[ticket.solicitud_id] = ticket
         for event in db.query(ServicioHerramienta).filter(
             ServicioHerramienta.solicitud_id.in_(request_ids)
         ).order_by(ServicioHerramienta.id).all():
@@ -292,6 +300,12 @@ def _read_many(db, rows):
                 "done_at": _iso(service.fecha),
             } if service else None,
             "incident": _incident_read(incidents[row.id]) if row.id in incidents else None,
+            "ticket": {
+                "id": tickets[row.id].id,
+                "folio": f"MT-{tickets[row.id].id:05d}",
+                "state": tickets[row.id].estado,
+                "result": tickets[row.id].resultado,
+            } if row.id in tickets else None,
             "replacement_tool_id": row.herramienta_nueva_id,
             "destination": row.destino_codigo,
             "requested_by": row.solicitado_por,
@@ -697,6 +711,8 @@ def relocate_service_tool(request_id: int, item: ServiceCollect):
             raise HTTPException(status_code=409, detail="This request has no tool in service")
         if db.query(ServicioHerramienta.id).filter(ServicioHerramienta.solicitud_id == row.id).first():
             raise HTTPException(status_code=409, detail="The result of this service is already recorded")
+        if db.query(TicketMantenimiento.id).filter(TicketMantenimiento.solicitud_id == row.id).first():
+            raise HTTPException(status_code=409, detail="This tool went to Maintenance; its work is recorded in the ticket")
         tool = db.query(Herramienta).filter(Herramienta.id == row.herramienta_id).with_for_update().one()
         current = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
         if current and current.tipo in SERVICE_LOCATIONS:
@@ -917,6 +933,7 @@ def install_service_tool(request_id: int, item: ServiceInstall):
             or old_tool.id == tool.id
             or (old_tool.estado or "disponible") == "baja"
             or (old_location is not None and old_location.tipo == "rack")
+            or db.query(TicketMantenimiento.id).filter(TicketMantenimiento.solicitud_id == row.id).first() is not None
         )
         if old_tool_resolved:
             row.estado = "closed"
@@ -945,6 +962,12 @@ def _service_tool(db, row):
     if row.estado not in ("collected", "replaced") or not row.herramienta_id or row.tipo in ("tool_request", "return", "program_problem"):
         raise HTTPException(status_code=409, detail="This request has no tool in service")
     tool = db.query(Herramienta).filter(Herramienta.id == row.herramienta_id).with_for_update().one()
+    ticket = db.query(TicketMantenimiento).filter(TicketMantenimiento.solicitud_id == row.id).first()
+    if ticket:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tool {tool.id} went to Maintenance (MT-{ticket.id:05d}); the work is recorded in that ticket.",
+        )
     location = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
     if not location or location.tipo not in SERVICE_LOCATIONS:
         raise HTTPException(
