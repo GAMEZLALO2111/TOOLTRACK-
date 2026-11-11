@@ -93,7 +93,60 @@ export const PICK_ACTION_LABEL: Record<string, string> = {
   confirm_with_engineering: "Confirm the die with Engineering",
 };
 
+export const SERVICE_TYPES: { value: string; label: string; help: string; noteRequired?: boolean }[] = [
+  { value: "sharpening", label: "Sharpening", help: "The tool is dull and needs to be sharpened." },
+  { value: "inspection", label: "Inspection", help: "Tool Crib checks the tool before it goes back." },
+  { value: "replacement", label: "Replacement", help: "Swap it for another tool of the same TN." },
+  { value: "damage", label: "Damage report", help: "The tool is broken or damaged.", noteRequired: true },
+  { value: "performance", label: "Performance issue", help: "Parts or the tool are not performing as expected.", noteRequired: true },
+  { value: "return", label: "Return", help: "Take the tool back to Tool Crib; the position stays empty." },
+];
+
+export const PROGRAM_PROBLEMS: { value: string; label: string; help: string }[] = [
+  { value: "wrong_tool", label: "Wrong tool in the program", help: "The program asks for a tool that is not the right one." },
+  { value: "wrong_station_or_angle", label: "Wrong station or angle", help: "A station or angle in the program does not match the machine." },
+  { value: "part_out_of_spec", label: "Part out of specification", help: "The parts come out wrong and the program is the suspect." },
+  { value: "program_does_not_run", label: "The program does not run", help: "The machine stops or rejects the program." },
+  { value: "other", label: "Other", help: "Describe it below." },
+];
+
+export const SERVICE_TYPE_LABEL: Record<string, string> = {
+  ...Object.fromEntries(SERVICE_TYPES.map((type) => [type.value, type.label])),
+  tool_request: "Tool request",
+  program_problem: "Program problem",
+};
+
+export const SERVICE_STATE_LABEL: Record<string, string> = {
+  open: "Waiting for Tool Crib",
+  attending: "Tool Crib on the way",
+  collected: "Waiting for a tool",
+  replaced: "Replaced · old tool in service",
+  closed: "Closed",
+  cancelled: "Cancelled",
+};
+
+export const SERVICE_STATE_CLASS: Record<string, string> = {
+  open: "st-kitting",
+  attending: "st-running",
+  collected: "st-missing",
+  replaced: "st-onmachine",
+  closed: "st-done",
+  cancelled: "st-notstarted",
+};
+
 export const MOVEMENT_LABEL: Record<string, string> = {
+  service_requested: "Service requested from the machine",
+  service_cancelled: "Service request cancelled: back on the machine",
+  service_install: "Installed on the machine",
+  service_completed: "Service finished, ready for use",
+  service_retired: "Retired after service",
+  machine_observed: "Registered as mounted on the machine",
+  service_collect_sharpening: "Collected from the machine for sharpening",
+  service_collect_inspection: "Collected from the machine for inspection",
+  service_collect_replacement: "Collected from the machine to be replaced",
+  service_collect_damage: "Collected from the machine, reported damaged",
+  service_collect_performance: "Collected from the machine, performance issue",
+  service_collect_return: "Returned from the machine",
   rack_to_cart_for_kit: "Taken from the rack to the cart",
   kit_selection_reversed: "Cart selection undone",
   kit_cancelled_return_to_rack: "Kit cancelled: back to its rack",

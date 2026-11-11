@@ -31,6 +31,15 @@ class InventoryEditTests(unittest.TestCase):
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.original_session_local = main.SessionLocal
         main.SessionLocal = self.session_factory
+        session = self.session_factory()
+        try:
+            session.add_all([
+                Ubicacion(codigo=code, nombre=code, tipo="rack", activa=True)
+                for code in ("RACK-1", "RACK-2", "RACK-9")
+            ])
+            session.commit()
+        finally:
+            session.close()
 
     def tearDown(self):
         main.SessionLocal = self.original_session_local
@@ -263,7 +272,6 @@ class InventoryEditTests(unittest.TestCase):
         session = self.session_factory()
         try:
             session.add_all([
-                Ubicacion(codigo="RACK-1", nombre="Rack 1", tipo="rack", activa=True),
                 Ubicacion(codigo="M1", nombre="Machine 1", tipo="machine", activa=True),
             ])
             session.flush()
@@ -326,6 +334,49 @@ class InventoryEditTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as delete_error:
             main.eliminar_herramienta("PHYS-1")
         self.assertEqual(delete_error.exception.status_code, 409)
+
+    def test_location_must_be_a_registered_active_rack(self):
+        self.create_punch()
+        session = self.session_factory()
+        try:
+            session.add_all([
+                Ubicacion(codigo="M1", nombre="Machine 1", tipo="machine", activa=True),
+                Ubicacion(codigo="RACK-OLD", nombre="Old", tipo="rack", activa=False),
+            ])
+            session.commit()
+        finally:
+            session.close()
+
+        def payload(place):
+            return dict(id="PHYS-1", categoria="punzon", tn="TN-100", size="A", type="ROUND", life="10", ubicacion=place)
+
+        for bad in ("RACK-TYPO", "M1", "RACK-OLD"):
+            with self.assertRaises(HTTPException) as error:
+                main.actualizar_herramienta_inventario("PHYS-1", main.RegistroInventarioUpdate(**payload(bad)))
+            self.assertEqual(error.exception.status_code, 422, bad)
+        with self.assertRaises(HTTPException) as new_error:
+            main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+                id="PHYS-2", categoria="punzon", tn="TN-100", size="A", type="ROUND", life="10", ubicacion="NOPE",
+            ))
+        self.assertEqual(new_error.exception.status_code, 422)
+
+        moved = main.actualizar_herramienta_inventario("PHYS-1", main.RegistroInventarioUpdate(**payload("RACK-2")))
+        self.assertEqual(moved["ubicacion"], "RACK-2")
+        cleared = main.actualizar_herramienta_inventario("PHYS-1", main.RegistroInventarioUpdate(**payload("")))
+        self.assertIsNone(cleared["ubicacion"])
+
+    def test_edit_keeps_an_unchanged_legacy_location(self):
+        self.create_punch()
+        session = self.session_factory()
+        try:
+            session.query(Herramienta).filter_by(id="PHYS-1").one().ubicacion = "R-LEGACY"
+            session.commit()
+        finally:
+            session.close()
+        updated = main.actualizar_herramienta_inventario("PHYS-1", main.RegistroInventarioUpdate(
+            id="PHYS-1", categoria="punzon", tn="TN-100", size="A", type="ROUND", life="12", ubicacion="R-LEGACY",
+        ))
+        self.assertEqual((updated["ubicacion"], updated["life"]), ("R-LEGACY", "12.000"))
 
     def test_delete_cleans_catalog_link(self):
         self.create_punch()

@@ -12,12 +12,16 @@ from models.inventory import (
     Maquina,
     ProgramaParte,
     Setup,
+    SolicitudServicio,
     Surtido,
     Ubicacion,
 )
 from workflow_api import OPEN_KIT_STATES, _machine_kind, _part_from_name, utcnow
 
 router = APIRouter(prefix="/workflow/demandas", tags=["demandas"])
+
+# Service requests whose machine position is still without a tool.
+WAITING_REQUEST_STATES = ("open", "attending", "collected")
 
 MARCAS = ("PARO PROGRAMADO", "URGENTE", "LÁSER", "CORTE DE BLANCK")
 ESTADO_POR_KIT = {
@@ -207,6 +211,20 @@ def demandas_board(edificio: str = "B1"):
                 kit_states[(kit.maquina_codigo, part)] = kit.estado
 
         programs = _program_index(db)
+        waiting_tools = {}
+        for request in db.query(SolicitudServicio).filter(
+            SolicitudServicio.maquina_codigo.in_(codes),
+            SolicitudServicio.requisito_id.isnot(None),
+            SolicitudServicio.estado.in_(WAITING_REQUEST_STATES),
+        ).order_by(SolicitudServicio.solicitado_en).all():
+            waiting_tools.setdefault(request.maquina_codigo, []).append({
+                "folio": f"SR-{request.id:05d}",
+                "station": request.estacion,
+                "category": request.categoria,
+                "type": request.tipo,
+                "state": request.estado,
+                "since": request.solicitado_en.isoformat(),
+            })
         demands = db.query(DemandaPlaneacion).filter(
             DemandaPlaneacion.activa.is_(True),
             DemandaPlaneacion.maquina_codigo.in_(codes),
@@ -254,6 +272,7 @@ def demandas_board(edificio: str = "B1"):
                 "tie_total": round(sum(hrs), 2),
                 "tie_cubierto": round(sum(cubierto), 2),
                 "demandas": items,
+                "herramientas_esperando": waiting_tools.get(code, []),
                 **analysis,
             })
         result.sort(key=lambda m: (

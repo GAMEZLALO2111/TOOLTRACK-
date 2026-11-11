@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { ConfirmDialog, ErrorNote } from "../components/Dialog";
+import { LocationPicker } from "../components/LocationPicker";
+import { ScanInput } from "../components/ScanInput";
 import { CATEGORY_LABEL, RETURN_REASONS } from "../labels";
+import { toolCode, type Capture } from "../scan";
 import type { LocationRow, MachineTools, MovableTool } from "../types";
 import { usePoll } from "../usePoll";
 
@@ -26,6 +29,7 @@ export function StoreTab() {
   const racks = useMemo(() => locations.filter((l) => l.tipo === "rack").sort((a, b) => a.codigo.localeCompare(b.codigo)), [locations]);
   const [rack, setRack] = useState("");
   const [toolId, setToolId] = useState("");
+  const [capture, setCapture] = useState<Capture>("manual");
   const [result, setResult] = useState("");
   const [log, setLog] = useState<LogLine[]>([]);
   const [busy, setBusy] = useState(false);
@@ -37,7 +41,7 @@ export function StoreTab() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const id = toolId.trim();
+    const id = toolCode(toolId);
     if (!rack) return setLog([{ ok: false, text: "Choose the rack first." }, ...log]);
     if (!id) return;
     setBusy(true);
@@ -46,6 +50,7 @@ export function StoreTab() {
         tool_id: id,
         realizado_por: "web",
         resultado: result || null,
+        captura: capture,
       });
       const text = response.kind === "baja" ? `✔ ${response.tool_id} retired (it does not go back to a rack).` : `✔ ${response.tool_id} (TN ${response.tn}) stored: ${response.from} → ${response.to}`;
       setLog([{ ok: true, text }, ...log].slice(0, 12));
@@ -64,20 +69,10 @@ export function StoreTab() {
     <form className="panel" onSubmit={submit}>
       <p className="muted">Choose the rack and scan each tool that comes back (from a machine, pickups, TOGU, maintenance or the workshop). It is only accepted in its own rack.</p>
       <div className="form two-col">
-        <label>
-          1. Rack
-          <select value={rack} onChange={(event) => { setRack(event.target.value); input.current?.focus(); }}>
-            {racks.length === 0 && <option value="">No racks registered</option>}
-            {racks.map((r) => (
-              <option key={r.codigo} value={r.codigo}>
-                {r.codigo}
-              </option>
-            ))}
-          </select>
-        </label>
+        <LocationPicker label="1. Rack" options={racks} value={rack} onChange={(code) => { setRack(code); input.current?.focus(); }} />
         <label>
           2. Tool ID
-          <input ref={input} value={toolId} onChange={(event) => setToolId(event.target.value)} placeholder="Scan the tool, then Enter" autoFocus autoComplete="off" autoCapitalize="characters" />
+          <ScanInput ref={input} value={toolId} onValue={(value, mode) => { setToolId(value); setCapture(mode); }} placeholder="Scan the tool, then Enter" autoFocus />
         </label>
         <label>
           Result, only if it comes from sharpening or damage

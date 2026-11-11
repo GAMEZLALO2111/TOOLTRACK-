@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from db import SessionLocal
+import scan_codes
 from machine_rules import setup_warnings
 from models.inventory import (
     ComponenteSurtido,
@@ -24,6 +25,7 @@ from models.inventory import (
     ReservaHerramienta,
     RequisitoSetup,
     Setup,
+    SolicitudServicio,
     Surtido,
     Ubicacion,
 )
@@ -228,6 +230,7 @@ def _append_movement(
     details=None,
     kit_id=None,
     setup_id=None,
+    capture=None,
 ):
     db.add(MovimientoHerramienta(
         herramienta_id=tool.id,
@@ -239,6 +242,7 @@ def _append_movement(
         realizado_por=actor,
         creado_en=utcnow(),
         detalle=details,
+        captura=capture,
     ))
     tool.ubicacion = destination_code
 
@@ -332,6 +336,7 @@ class SurtidoCreate(BaseModel):
 class SurtidoToolSelect(BaseModel):
     herramienta_id: str
     realizado_por: str
+    captura: Optional[str] = None
 
 
 class SurtidoAction(BaseModel):
@@ -1192,7 +1197,7 @@ def list_component_candidates(kit_id: str, component_id: int):
         db.close()
 
 
-def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None):
+def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None, capture=None):
     if kit.estado not in {"preparing", "paused"}:
         raise HTTPException(status_code=409, detail="This kit is not accepting tool scans")
     if component.accion == "keep":
@@ -1201,13 +1206,11 @@ def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None):
         RequisitoSetup.id == component.requisito_id
     ).one()
     kit_cart = _location(db, kit.carro_codigo, {"cart"})
-    normalized_tool_id = tool_id.strip()
     if tool is None:
-        tool = db.query(Herramienta).filter(
-            Herramienta.id == normalized_tool_id
-        ).with_for_update().first()
+        tool = scan_codes.find_tool(db, tool_id, lock=True)
     if not tool:
         raise HTTPException(status_code=404, detail="That tool ID is not in the inventory")
+    normalized_tool_id = tool.id
     if tool.tn != requirement.tn or _category(tool) != component.categoria:
         raise HTTPException(status_code=409, detail="That tool ID does not match the required TN and type")
     if tool.ubicacion == kit.carro_codigo and component.herramienta_nueva_id == normalized_tool_id:
@@ -1275,6 +1278,7 @@ def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None):
         actor,
         details=f"Reserved for TN {requirement.tn} {component.categoria}",
         kit_id=kit.id,
+        capture=capture,
     )
     component.herramienta_nueva_id = tool.id
     component.origen_codigo = origin
@@ -1301,12 +1305,10 @@ def scan_kit_tool(kit_id: str, item: SurtidoToolSelect):
         kit = db.query(Surtido).filter(Surtido.id == kit_id).with_for_update().first()
         if not kit:
             raise HTTPException(status_code=404, detail="Kit not found")
-        tool_id = item.herramienta_id.strip()
+        tool_id = scan_codes.tool_code(item.herramienta_id)
         if not tool_id:
             raise HTTPException(status_code=422, detail="Scan or type a physical tool ID")
-        tool = db.query(Herramienta).filter(
-            Herramienta.id == tool_id
-        ).with_for_update().first()
+        tool = scan_codes.find_tool(db, tool_id, lock=True)
         if not tool:
             raise HTTPException(status_code=404, detail="That tool ID is not in the inventory")
         if kit.estado not in {"preparing", "paused"}:
@@ -1341,6 +1343,7 @@ def scan_kit_tool(kit_id: str, item: SurtidoToolSelect):
             tool_id,
             item.realizado_por,
             tool=tool,
+            capture=scan_codes.capture_mode(item.captura),
         )
     except HTTPException:
         db.rollback()
@@ -1369,6 +1372,7 @@ def select_kit_tool(kit_id: str, component_id: int, item: SurtidoToolSelect):
             component,
             item.herramienta_id,
             item.realizado_por,
+            capture=scan_codes.capture_mode(item.captura),
         )
         return result
     except HTTPException:
@@ -1462,6 +1466,16 @@ def cancel_kit(kit_id: str, item: SurtidoAction):
 def _kit_blockers(db, kit, components):
     # Each position needs a punch and a die; kept tools must still be on the machine.
     blockers = []
+    open_requests = db.query(SolicitudServicio).filter(
+        SolicitudServicio.maquina_codigo == kit.maquina_codigo,
+        SolicitudServicio.requisito_id.isnot(None),
+        SolicitudServicio.estado.in_(("open", "attending", "collected")),
+    ).order_by(SolicitudServicio.id).all()
+    for request in open_requests:
+        blockers.append(
+            f"service request SR-{request.id:05d} (station {request.estacion}) is still open on "
+            f"{kit.maquina_codigo}; close or cancel it before delivering"
+        )
     by_requirement = {}
     for component in components:
         by_requirement.setdefault(component.requisito_id, {})[component.categoria] = component
@@ -1543,11 +1557,7 @@ def confirm_kit_delivery(item: DeliveryScan):
             raise HTTPException(status_code=404, detail="Kit QR is not recognized")
         if kit.estado != "ready":
             raise HTTPException(status_code=409, detail="Kit is not ready for delivery or was already delivered")
-        machine_prefix = "TOOLTRACK-MACHINE:"
-        scanned_machine = item.machine_scan.strip()
-        if scanned_machine.startswith(machine_prefix):
-            scanned_machine = scanned_machine[len(machine_prefix):]
-        scanned_machine = scanned_machine.strip().upper()
+        scanned_machine = scan_codes.machine_code(item.machine_scan)
         if not scanned_machine:
             raise HTTPException(status_code=422, detail="Scan the QR on the machine where the kit is delivered first")
         if scanned_machine != kit.maquina_codigo:
@@ -1784,7 +1794,7 @@ def move_available_tool(tool_id: str, item: PendingPickupMove):
         origin = _location(db, tool.ubicacion, {"togu", "maintenance", "workshop"})
         destination = _location(
             db,
-            item.destino_codigo.strip().upper(),
+            scan_codes.location_code(item.destino_codigo),
             {"rack", "togu", "maintenance", "workshop"},
         )
         if origin.codigo == destination.codigo:
@@ -1851,7 +1861,7 @@ def move_pending_pickup(pending_id: int, item: PendingPickupMove):
         ).with_for_update().first()
         if not pending or pending.estado != "pending":
             raise HTTPException(status_code=404, detail="Pending pickup is not active")
-        destination_code = item.destino_codigo.strip().upper()
+        destination_code = scan_codes.location_code(item.destino_codigo)
         destination = _location(db, destination_code, {"rack", "togu", "maintenance"})
         tool = db.query(Herramienta).filter(
             Herramienta.id == pending.herramienta_id
@@ -1922,6 +1932,7 @@ def list_movements(tool_id: Optional[str] = None, machine_code: Optional[str] = 
                 "by": row.realizado_por,
                 "created_at": row.creado_en.isoformat(),
                 "details": row.detalle,
+                "capture": row.captura,
             }
             for row in rows
         ]

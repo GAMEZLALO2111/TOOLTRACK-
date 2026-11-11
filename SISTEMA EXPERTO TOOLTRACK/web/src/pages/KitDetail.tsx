@@ -5,6 +5,8 @@ import { Dialog, ErrorNote } from "../components/Dialog";
 import { Chip } from "../components/MachineCard";
 import { Qr } from "../components/Qr";
 import { ReasonDialog } from "../components/ReasonDialog";
+import { ScanInput } from "../components/ScanInput";
+import { toolCode, type Capture } from "../scan";
 import { ACTION_LABEL, CATEGORY_LABEL, COMPONENT_STATE_LABEL, KIT_STATE_CLASS, KIT_STATE_LABEL } from "../labels";
 import { go } from "../router";
 import type { Candidate, DeliveryResult, Kit, KitComponent, KitQr } from "../types";
@@ -229,6 +231,7 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
 
 function ScanBox({ kitId, disabled, onKit, hint }: { kitId: string; disabled: boolean; onKit: (kit: Kit) => void; hint?: string }) {
   const [value, setValue] = useState("");
+  const [capture, setCapture] = useState<Capture>("manual");
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -239,11 +242,11 @@ function ScanBox({ kitId, disabled, onKit, hint }: { kitId: string; disabled: bo
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const id = value.trim();
+    const id = toolCode(value);
     if (!id) return;
     setBusy(true);
     try {
-      const next = await api<Kit>("POST", `/workflow/kits/${encodeURIComponent(kitId)}/scan`, { herramienta_id: id, realizado_por: "web" });
+      const next = await api<Kit>("POST", `/workflow/kits/${encodeURIComponent(kitId)}/scan`, { herramienta_id: id, realizado_por: "web", captura: capture });
       onKit(next);
       const placed = next.components.find((c) => c.tool_id?.toUpperCase() === id.toUpperCase());
       setFeedback({ ok: true, text: placed ? `✔ ${id} → ${placed.tn} ${CATEGORY_LABEL[placed.category] ?? placed.category} (station ${placed.station ?? "—"})` : `✔ ${id} added` });
@@ -261,7 +264,7 @@ function ScanBox({ kitId, disabled, onKit, hint }: { kitId: string; disabled: bo
     <form className="panel scan" onSubmit={submit}>
       <h2>Scan or type a tool ID</h2>
       <div className="start-row">
-        <input ref={input} value={value} onChange={(event) => setValue(event.target.value)} placeholder="Scan the tool, then Enter" autoComplete="off" autoCapitalize="characters" disabled={disabled || busy} aria-label="Tool ID" />
+        <ScanInput ref={input} value={value} onValue={(next, mode) => { setValue(next); setCapture(mode); }} placeholder="Scan the tool, then Enter" disabled={disabled || busy} aria-label="Tool ID" />
         <button className="btn btn-primary" type="submit" disabled={disabled || busy || !value.trim()}>
           Add to cart
         </button>

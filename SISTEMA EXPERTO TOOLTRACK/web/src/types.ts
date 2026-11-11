@@ -17,6 +17,15 @@ export interface Demand {
   es_siguiente: boolean;
 }
 
+export interface WaitingTool {
+  folio: string;
+  station: string | null;
+  category: "punzon" | "matriz" | null;
+  type: string;
+  state: string;
+  since: string;
+}
+
 export interface Machine {
   maquina: string;
   tipo: string;
@@ -24,6 +33,7 @@ export interface Machine {
   tie_total: number;
   tie_cubierto: number;
   demandas: Demand[];
+  herramientas_esperando: WaitingTool[];
   nivel: Level;
   motivo: string;
   hr_restante: number | null;
@@ -107,6 +117,55 @@ export interface MachineProfile {
   estaciones: MachineStation[];
 }
 
+export interface ServiceRequest {
+  id: number;
+  folio: string;
+  machine: string;
+  part_number: string | null;
+  requirement_id: number | null;
+  station: string | null;
+  category: "punzon" | "matriz" | null;
+  tn: string | null;
+  type: ServiceRequestType;
+  state: ServiceRequestState;
+  problem: string | null;
+  resolution: string | null;
+  note: string | null;
+  tool_id: string | null;
+  tool_status: string | null;
+  tool_location: string | null;
+  service: ToolServiceResult | null;
+  replacement_tool_id: string | null;
+  destination: string | null;
+  requested_by: string;
+  requested_by_name: string;
+  requested_by_shift: string | null;
+  requested_at: string;
+  attended_by: string | null;
+  attended_by_name: string | null;
+  attended_at: string | null;
+  collected_by: string | null;
+  collected_at: string | null;
+  closed_by: string | null;
+  closed_at: string | null;
+  cancel_reason: string | null;
+  same_tool?: boolean;
+  restored?: boolean;
+}
+
+export type ServiceRequestType = "sharpening" | "inspection" | "replacement" | "damage" | "performance" | "return" | "tool_request" | "program_problem";
+export type ServiceRequestState = "open" | "attending" | "collected" | "replaced" | "closed" | "cancelled";
+
+export interface ToolServiceResult {
+  result: "ready" | "retired";
+  rebaje: number | null;
+  abnormal: boolean;
+  justification: string | null;
+  note: string | null;
+  done_by: string;
+  done_at: string;
+}
+
 export interface ManufacturingWorkspace {
   machine: string;
   machine_name: string;
@@ -124,6 +183,7 @@ export interface ManufacturingWorkspace {
   } | null;
   program: {
     revision: number;
+    client: string | null;
     family: string | null;
     program_type: string;
     drawing_name: string | null;
@@ -142,28 +202,40 @@ export interface ManufacturingWorkspace {
   } | null;
   coverage: { installed: number; required: number; complete: boolean };
   stations: {
+    requirement_id: number | null;
     station: string;
     tn: string;
     angle: string | null;
-    machine_station: MachineStation | null;
+    machine_station: {
+      size: string | null;
+      position: string | null;
+      autoindex: boolean;
+      state: string;
+      note: string | null;
+    } | null;
     components: {
       category: "punzon" | "matriz";
       tool_id: string | null;
       tn: string;
+      tool_type: string | null;
+      tool_size: string | null;
       location: string | null;
       tool_status: string | null;
       clearance: string | null;
       clearance_valid: boolean | null;
       state: "installed" | "missing" | "elsewhere" | "incompatible";
+      open_request: ServiceRequest | null;
     }[];
   }[];
   pending_pickups: { tool_id: string; tn: string | null; category: string | null; created_at: string }[];
+  requirements_source: "setup" | "program" | "none";
   active_kit: {
     id: string;
     state: string;
     created_at: string;
     updated_at: string;
   } | null;
+  service_requests: ServiceRequest[];
 }
 
 export interface CartRow {

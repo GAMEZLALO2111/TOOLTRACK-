@@ -243,6 +243,69 @@ class PendienteRecoger(Base):
     estado = Column(String, nullable=False)
 
 
+class SolicitudServicio(Base):
+    """Service request opened from a machine position (Manufacturing -> Tool Crib)."""
+    __tablename__ = "solicitudes_servicio"
+    __table_args__ = (
+        Index("ix_solicitudes_servicio_estado", "estado"),
+        Index("ix_solicitudes_servicio_maquina", "maquina_codigo"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    maquina_codigo = Column(String, ForeignKey("ubicaciones.codigo"), nullable=False)
+    setup_id = Column(Integer, ForeignKey("setups.id"), nullable=True)
+    requisito_id = Column(Integer, ForeignKey("requisitos_setup.id"), nullable=True)
+    numero_parte = Column(String, nullable=True)
+    estacion = Column(String, nullable=True)
+    categoria = Column(String, nullable=True)
+    tn = Column(String, nullable=True)
+    tipo = Column(String, nullable=False)
+    estado = Column(String, nullable=False)
+    problema = Column(String, nullable=True)
+    nota = Column(Text, nullable=True)
+    resolucion = Column(Text, nullable=True)
+    herramienta_id = Column(String, ForeignKey("herramientas.id"), nullable=True)
+    herramienta_nueva_id = Column(String, ForeignKey("herramientas.id"), nullable=True)
+    destino_codigo = Column(String, ForeignKey("ubicaciones.codigo"), nullable=True)
+    solicitado_por = Column(String, nullable=False)
+    solicitado_en = Column(DateTime, nullable=False)
+    atendido_por = Column(String, nullable=True)
+    atendido_en = Column(DateTime, nullable=True)
+    recogido_por = Column(String, nullable=True)
+    recogido_en = Column(DateTime, nullable=True)
+    cerrado_por = Column(String, nullable=True)
+    cerrado_en = Column(DateTime, nullable=True)
+    motivo_cancelacion = Column(Text, nullable=True)
+
+
+class ServicioHerramienta(Base):
+    """One service event on a physical tool (sharpening, repair, inspection): the history behind damage Paretos."""
+    __tablename__ = "servicios_herramienta"
+    __table_args__ = (
+        Index("ix_servicios_herramienta_tool", "herramienta_id"),
+        Index("ix_servicios_herramienta_fecha", "fecha"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    herramienta_id = Column(String, ForeignKey("herramientas.id"), nullable=False)
+    solicitud_id = Column(Integer, ForeignKey("solicitudes_servicio.id"), nullable=True)
+    tipo = Column(String, nullable=False)
+    resultado = Column(String, nullable=False)
+    maquina_codigo = Column(String, nullable=True)
+    numero_parte = Column(String, nullable=True)
+    estacion = Column(String, nullable=True)
+    tn = Column(String, nullable=True)
+    categoria = Column(String, nullable=True)
+    rebaje = Column(Float, nullable=True)
+    life_antes = Column(String, nullable=True)
+    life_despues = Column(String, nullable=True)
+    anormal = Column(Boolean, nullable=False, default=False, server_default="0")
+    justificacion = Column(Text, nullable=True)
+    nota = Column(Text, nullable=True)
+    realizado_por = Column(String, nullable=False)
+    fecha = Column(DateTime, nullable=False)
+
+
 class MovimientoHerramienta(Base):
     __tablename__ = "movimientos_herramienta"
 
@@ -256,6 +319,8 @@ class MovimientoHerramienta(Base):
     realizado_por = Column(String, nullable=False)
     creado_en = Column(DateTime, nullable=False)
     detalle = Column(Text, nullable=True)
+    # How the tool code was entered: "scan" or "manual" (NULL for movements recorded before this existed).
+    captura = Column(String, nullable=True)
 
 
 class Maquina(Base):

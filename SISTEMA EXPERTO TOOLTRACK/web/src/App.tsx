@@ -10,6 +10,8 @@ import { ToolTrackingPage } from "./pages/ToolTracking";
 import { LabelsPage } from "./pages/Labels";
 import { MachinesPage } from "./pages/Machines";
 import { ManufacturingPage } from "./pages/Manufacturing";
+import { ServiceRequestsPage } from "./pages/ServiceRequests";
+import { RequestsTab } from "./components/RequestsTab";
 import { UsersPage } from "./pages/Users";
 import { useRoute } from "./router";
 
@@ -23,11 +25,12 @@ function Shell() {
   const tabs = [
     { path: "/board", label: "Board", show: can("demand.view") },
     { path: "/kitting", label: "Kitting", show: can("kitting.view") },
+    { path: "/requests", label: "Requests", show: can("service.view") },
     { path: "/tracking", label: "Tool Tracking", show: can("inventory.view") },
     { path: "/inventory", label: "Inventory", show: can("inventory.view") },
     { path: "/programs", label: "Part numbers", show: can("program.view") },
     { path: "/machines", label: "Machines", show: can("machine.view") },
-    { path: "/manufacturing", label: "Manufacturing", show: can("manufacturing.view") || can("machine.view") },
+    { path: "/manufacturing", label: "Manufacturing", show: can("manufacturing.view") },
     { path: "/users", label: "Users", show: can("user.manage") },
   ].filter((tab) => tab.show);
 
@@ -41,7 +44,8 @@ function Shell() {
   if (route.path === "/users" && can("user.manage")) page = <UsersPage />;
   else if (programsMatch && can("program.view")) page = <ProgramsPage tab={programsMatch[1] ?? ""} />
   else if (machinesMatch && can("machine.view")) page = <MachinesPage code={machinesMatch[1] ? decodeURIComponent(machinesMatch[1]) : null} />
-  else if (manufacturingMatch && (can("manufacturing.view") || can("machine.view"))) page = <ManufacturingPage route={route} />
+  else if (manufacturingMatch && can("manufacturing.view")) page = <ManufacturingPage route={route} />
+  else if (route.path === "/requests" && can("service.view")) page = <ServiceRequestsPage />
   else if (kitMatch && can("kitting.view")) page = <KitDetailPage kitId={decodeURIComponent(kitMatch[1])} />;
   else if (route.path === "/kitting/pending" && can("kitting.view")) page = <PendingPage />;
   else if (route.path === "/kitting/labels" && can("kitting.view")) page = <LabelsPage />;
@@ -51,21 +55,23 @@ function Shell() {
   else if (can("demand.view")) page = <BoardPage />;
   else if (can("kitting.view")) page = <KittingPage route={route} />;
   else if (can("inventory.view")) page = <ToolTrackingPage tab="" />;
+  else if (can("manufacturing.view")) page = <ManufacturingPage route={route} />;
   else page = <p className="note note-info">Your role has no modules in the web app yet. Use the desktop app for now.</p>;
 
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">
-          <img className="brand-logo brand-logo-mira" src="/brand/mira-logo.png" alt="MIRA" />
-          <img className="brand-logo brand-logo-axiom" src="/brand/axiom-logo.png" alt="Axiom" />
-        </div>
         <nav>
-          {tabs.map((tab) => (
-            <a key={tab.path} href={`#${tab.path}`} className={route.path === tab.path || route.path.startsWith(`${tab.path}/`) ? "active" : ""}>
-              {tab.label}
-            </a>
-          ))}
+          {tabs.map((tab) => {
+            const current = route.path === tab.path || route.path.startsWith(`${tab.path}/`);
+            return tab.path === "/requests" ? (
+              <RequestsTab key={tab.path} active={current} programOnly={!can("tools.move")} />
+            ) : (
+              <a key={tab.path} href={`#${tab.path}`} className={current ? "active" : ""}>
+                {tab.label}
+              </a>
+            );
+          })}
         </nav>
         <div className="who">
           <span>

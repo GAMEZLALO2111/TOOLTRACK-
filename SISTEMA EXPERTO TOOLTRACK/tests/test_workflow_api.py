@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
+import auth
 import workflow_api
 from models.inventory import (
     Base,
@@ -1067,6 +1068,725 @@ class WorkflowApiTests(unittest.TestCase):
             )
         finally:
             session.close()
+
+    # ---------- service requests (Manufacturing -> Tool Crib) ----------
+    def _as(self, username, role):
+        token = auth.acting_as(username, role)
+        self.addCleanup(auth.CURRENT_USER.reset, token)
+
+    def _requirement_id(self, station):
+        import tool_tracking_api as tracking
+
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        return next(row["requirement_id"] for row in workspace["stations"] if row["station"] == station)
+
+    def _open_request(self, tipo="sharpening", station="201", category="punzon", tool_id="P100", note=None):
+        import service_requests_api as service
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        return service.create_service_request(service.ServiceRequestCreate(
+            machine="M1", requirement_id=self._requirement_id(station),
+            category=category, tipo=tipo, tool_id=tool_id, nota=note,
+        ))
+
+    def _slot_state(self, station, category):
+        import tool_tracking_api as tracking
+
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        row = next(row for row in workspace["stations"] if row["station"] == station)
+        return next(component for component in row["components"] if component["category"] == category)
+
+    def test_service_request_full_cycle_replaces_tool_with_same_tn(self):
+        import service_requests_api as service
+        import tool_tracking_api as tracking
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        self._create_tool("P300", "300", "punzon")
+        request = self._open_request()
+        self.assertEqual(request["state"], "open")
+        self.assertEqual(request["part_number"], "CURRENT")
+        self.assertEqual(request["requested_by"], "op1")
+
+        slot = self._slot_state("201", "punzon")
+        self.assertEqual(slot["state"], "missing")
+        self.assertEqual(slot["open_request"]["id"], request["id"])
+        self.assertEqual(tracking.manufacturing_machine_workspace("M1")["coverage"]["installed"], 3)
+        with self.assertRaises(HTTPException) as duplicate:
+            self._open_request()
+        self.assertEqual(duplicate.exception.status_code, 409)
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        attending = service.attend_service_request(request["id"])
+        self.assertEqual(attending["state"], "attending")
+        self.assertEqual(attending["attended_by"], "tc1")
+        self._as("tc2", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as taken:
+            service.attend_service_request(request["id"])
+        self.assertEqual(taken.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as other_user:
+            service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self.assertEqual(other_user.exception.status_code, 403)
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as too_early:
+            service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))
+        self.assertEqual(too_early.exception.status_code, 409)
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        collected = service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self.assertEqual(collected["state"], "collected")
+        self.assertEqual(collected["destination"], "TG1")
+        session = self.session_factory()
+        try:
+            old = session.query(Herramienta).filter_by(id="P100").one()
+            self.assertEqual((old.ubicacion, old.estado), ("TG1", "afilado"))
+        finally:
+            session.close()
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        for wrong, status in (("P300", 409), ("P100", 409), ("NOPE", 404)):
+            with self.assertRaises(HTTPException) as rejected:
+                service.install_service_tool(request["id"], service.ServiceInstall(tool_id=wrong))
+            self.assertEqual(rejected.exception.status_code, status, wrong)
+
+        replaced = service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))
+        self.assertEqual(replaced["state"], "replaced")
+        self.assertFalse(replaced["same_tool"])
+        self.assertEqual(replaced["tool_status"], "afilado")
+        self.assertEqual(self._slot_state("201", "punzon")["tool_id"], "P100B")
+        self.assertEqual(tracking.manufacturing_machine_workspace("M1")["coverage"]["complete"], True)
+        self.assertIsNone(self._slot_state("201", "punzon")["open_request"])
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as early_store:
+            service.store_serviced_tool(request["id"], service.ServiceStore(rack_code="R1", tool_id="P100"))
+        self.assertEqual(early_store.exception.status_code, 409)
+        service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.015))
+        closed = service.store_serviced_tool(request["id"], service.ServiceStore(rack_code="R1", tool_id="P100"))
+        self.assertEqual(closed["state"], "closed")
+        session = self.session_factory()
+        try:
+            self.assertEqual(session.query(Herramienta).filter_by(id="P100B").one().ubicacion, "M1")
+            old = session.query(Herramienta).filter_by(id="P100").one()
+            self.assertEqual((old.ubicacion, old.estado), ("R1", "disponible"))
+            types = [
+                row.tipo for row in session.query(MovimientoHerramienta).filter_by(herramienta_id="P100").all()
+            ]
+            self.assertIn("service_requested", types)
+            self.assertIn("service_collect_sharpening", types)
+            self.assertIn("service_completed", types)
+        finally:
+            session.close()
+
+    def test_sharpening_rebaje_over_the_limit_needs_a_justification_and_is_logged(self):
+        import service_requests_api as service
+
+        self._baseline()
+        session = self.session_factory()
+        try:
+            session.query(Herramienta).filter_by(id="P100").one().life = "1.200"
+            session.commit()
+        finally:
+            session.close()
+        request = self._open_request()
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as too_early:
+            service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.01))
+        self.assertEqual(too_early.exception.status_code, 409)
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+
+        with self.assertRaises(HTTPException) as missing:
+            service.finish_tool_service(request["id"], service.ServiceFinish())
+        self.assertEqual(missing.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as negative:
+            service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=-0.001))
+        self.assertEqual(negative.exception.status_code, 422)
+        for text in (None, "short"):
+            with self.assertRaises(HTTPException) as abnormal:
+                service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.021, justificacion=text))
+            self.assertEqual(abnormal.exception.status_code, 422)
+        self._as("eng1", "ENGINEERING")
+        with self.assertRaises(HTTPException) as engineering:
+            service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.01))
+        self.assertEqual(engineering.exception.status_code, 403)
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        done = service.finish_tool_service(request["id"], service.ServiceFinish(
+            rebaje=0.025, justificacion="Chipped tip, had to remove extra material",
+        ))
+        self.assertTrue(done["service"]["abnormal"])
+        self.assertEqual(done["tool_status"], "disponible")
+        with self.assertRaises(HTTPException) as again:
+            service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.01))
+        self.assertEqual(again.exception.status_code, 409)
+
+        log = service.list_tool_service_log(tool_id="P100", limit=10)
+        self.assertEqual(len(log), 1)
+        self.assertEqual((log[0]["rebaje"], log[0]["life_before"], log[0]["life_after"]), (0.025, "1.200", "1.175"))
+        self.assertEqual((log[0]["part_number"], log[0]["station"], log[0]["machine"]), ("CURRENT", "201", "M1"))
+        self.assertTrue(log[0]["abnormal"])
+
+    def test_sharpened_tool_returns_directly_to_the_machine_from_togu(self):
+        import service_requests_api as service
+
+        self._baseline()
+        request = self._open_request()
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.02))
+        session = self.session_factory()
+        try:
+            tool = session.query(Herramienta).filter_by(id="P100").one()
+            self.assertEqual((tool.ubicacion, tool.estado), ("TG1", "disponible"))
+        finally:
+            session.close()
+        self._as("op1", "PUNCHING_OPERATOR")
+        closed = service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100"))
+        self.assertEqual(closed["state"], "closed")
+        self.assertTrue(closed["same_tool"])
+        self.assertEqual(self._slot_state("201", "punzon")["tool_id"], "P100")
+
+    def test_retiring_a_tool_keeps_the_position_waiting_until_a_replacement_arrives(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        request = self._open_request(tipo="damage", note="Broken tip")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="MT1"))
+        with self.assertRaises(HTTPException) as no_reason:
+            service.finish_tool_service(request["id"], service.ServiceFinish(resultado="retired"))
+        self.assertEqual(no_reason.exception.status_code, 422)
+        waiting = service.finish_tool_service(request["id"], service.ServiceFinish(resultado="retired", nota="Beyond repair"))
+        self.assertEqual((waiting["state"], waiting["tool_status"]), ("collected", "baja"))
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as retired_tool:
+            service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100"))
+        self.assertEqual(retired_tool.exception.status_code, 409)
+        closed = service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))
+        self.assertEqual(closed["state"], "closed")
+
+    def test_retiring_the_old_tool_after_a_replacement_closes_the_request(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        request = self._open_request(tipo="damage", note="Cracked")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="MT1"))
+        self._as("op1", "PUNCHING_OPERATOR")
+        self.assertEqual(
+            service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))["state"], "replaced",
+        )
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        closed = service.finish_tool_service(request["id"], service.ServiceFinish(resultado="retired", nota="Cracked, discarded"))
+        self.assertEqual(closed["state"], "closed")
+        self.assertEqual(closed["tool_status"], "baja")
+
+    def test_service_request_can_install_the_same_tool_after_sharpening(self):
+        import service_requests_api as service
+        import tool_tracking_api as tracking
+
+        self._baseline()
+        request = self._open_request()
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException):
+            service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100"))
+
+        tracking.store_tool_in_rack("R1", tracking.RackStore(
+            tool_id="P100", realizado_por="tc1", resultado="disponible",
+        ))
+        closed = service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100"))
+        self.assertTrue(closed["same_tool"])
+        self.assertEqual(self._slot_state("201", "punzon")["tool_id"], "P100")
+
+    def test_service_flow_accepts_scanned_labels_typed_ids_and_records_how_they_were_entered(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("M00001", "100", "punzon")
+        request = self._open_request(tool_id="TOOLTRACK-TOOL:p100")
+        self.assertEqual(request["tool_id"], "P100")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        collected = service.collect_service_tool(
+            request["id"], service.ServiceCollect(destino_codigo="TOOLTRACK-LOCATION:tg1\r\n"),
+        )
+        self.assertEqual(collected["destination"], "TG1")
+        service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.01))
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as wrong_kind:
+            service.install_service_tool(request["id"], service.ServiceInstall(tool_id="TOOLTRACK-LOCATION:R1", captura="scan"))
+        self.assertEqual(wrong_kind.exception.status_code, 422)
+        replaced = service.install_service_tool(
+            request["id"], service.ServiceInstall(tool_id="TOOLTRACK-TOOL:m00001\r", captura="scan"),
+        )
+        self.assertEqual(replaced["replacement_tool_id"], "M00001")
+        self.assertEqual(replaced["state"], "replaced")
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as other_tool:
+            service.store_serviced_tool(request["id"], service.ServiceStore(rack_code="R1", tool_id="M00001"))
+        self.assertEqual(other_tool.exception.status_code, 409)
+        closed = service.store_serviced_tool(
+            request["id"], service.ServiceStore(rack_code="tooltrack-location:r1", tool_id="p100", captura="manual"),
+        )
+        self.assertEqual(closed["state"], "closed")
+
+        session = self.session_factory()
+        try:
+            def capture(tool_id, movement_type):
+                return session.query(MovimientoHerramienta).filter_by(
+                    herramienta_id=tool_id, tipo=movement_type
+                ).one().captura
+
+            self.assertEqual(capture("M00001", "service_install"), "scan")
+            self.assertEqual(capture("P100", "togu_to_rack"), "manual")
+            self.assertIsNone(capture("P100", "service_requested"))
+        finally:
+            session.close()
+        movements = workflow_api.list_movements(tool_id="M00001", machine_code=None)
+        self.assertEqual(movements[0]["capture"], "scan")
+
+    def test_kit_scan_accepts_lowercase_and_prefixed_tool_codes(self):
+        _content, kit = self._create_new_setup_kit()
+        components = {(item["tn"], item["category"]): item for item in kit["components"]}
+        for raw in ("tooltrack-tool:d100n", "P300\r\n"):
+            result = workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(
+                herramienta_id=raw, realizado_por="operator", captura="scan",
+            ))
+            self.assertTrue(result)
+        with self.assertRaises(HTTPException) as wrong_kind:
+            workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(
+                herramienta_id="TOOLTRACK-LOCATION:R1", realizado_por="operator",
+            ))
+        self.assertEqual(wrong_kind.exception.status_code, 422)
+        session = self.session_factory()
+        try:
+            self.assertEqual(
+                session.query(MovimientoHerramienta).filter_by(herramienta_id="D100N", tipo="rack_to_cart_for_kit").one().captura,
+                "scan",
+            )
+        finally:
+            session.close()
+        self.assertIn(("100", "matriz"), components)
+
+    def test_board_flags_machines_whose_position_is_waiting_for_a_tool(self):
+        import demandas_api
+
+        self._baseline()
+        session = self.session_factory()
+        try:
+            session.add(Maquina(codigo="M1", tipo_maquina="4 Index", edificio="B1"))
+            session.commit()
+        finally:
+            session.close()
+        original = demandas_api.SessionLocal
+        demandas_api.SessionLocal = self.session_factory
+        self.addCleanup(setattr, demandas_api, "SessionLocal", original)
+
+        def waiting():
+            machine = next(m for m in demandas_api.demandas_board("B1")["maquinas"] if m["maquina"] == "M1")
+            return machine["herramientas_esperando"]
+
+        self.assertEqual(waiting(), [])
+        request = self._open_request()
+        flagged = waiting()
+        self.assertEqual([(w["station"], w["category"], w["state"]) for w in flagged], [("201", "punzon", "open")])
+
+        import service_requests_api as service
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self._create_tool("P100B", "100", "punzon")
+        self._as("op1", "PUNCHING_OPERATOR")
+        service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))
+        self.assertEqual(waiting(), [])
+
+    def test_service_request_is_allowed_with_an_open_kit_but_blocks_its_delivery(self):
+        import service_requests_api as service
+
+        _content, kit = self._create_new_setup_kit()
+        self.assertTrue(kit["id"])
+        request = self._open_request()
+        self.assertEqual(request["state"], "open")
+
+        def blockers():
+            session = self.session_factory()
+            try:
+                components = session.query(workflow_api.ComponenteSurtido).filter_by(surtido_id=kit["id"]).all()
+                kit_row = session.query(Surtido).filter_by(id=kit["id"]).one()
+                return workflow_api._kit_blockers(session, kit_row, components)
+            finally:
+                session.close()
+
+        self.assertTrue(any("SR-" in text and "still open" in text for text in blockers()))
+        self._as("op1", "PUNCHING_OPERATOR")
+        service.cancel_service_request(request["id"], service.ServiceCancel(motivo="not needed"))
+        self.assertFalse(any("SR-" in text for text in blockers()))
+
+    def test_service_request_validation_and_permissions(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._as("op1", "PUNCHING_OPERATOR")
+        for tipo in ("damage", "performance"):
+            with self.assertRaises(HTTPException) as missing_note:
+                self._open_request(tipo=tipo)
+            self.assertEqual(missing_note.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as bad_type:
+            self._open_request(tipo="paint")
+        self.assertEqual(bad_type.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as stale_tool:
+            self._open_request(tool_id="P200")
+        self.assertEqual(stale_tool.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as has_tool:
+            self._open_request(tipo="tool_request")
+        self.assertEqual(has_tool.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as other_machine_position:
+            service.create_service_request(service.ServiceRequestCreate(
+                machine="M1", requirement_id=99999, category="punzon", tipo="inspection",
+            ))
+        self.assertEqual(other_machine_position.exception.status_code, 404)
+
+        damage = self._open_request(tipo="damage", note="Punch tip chipped")
+        self.assertEqual(damage["note"], "Punch tip chipped")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(damage["id"])
+        service.collect_service_tool(damage["id"], service.ServiceCollect(destino_codigo="MT1"))
+        session = self.session_factory()
+        try:
+            self.assertEqual(session.query(Herramienta).filter_by(id="P100").one().estado, "danado")
+        finally:
+            session.close()
+
+        listed = service.list_service_requests(state="active", machine=None, limit=100)
+        self.assertEqual([row["id"] for row in listed], [damage["id"]])
+        self.assertEqual(service.list_service_requests(state="closed", machine=None, limit=100), [])
+
+    def test_service_request_cancel_restores_tool_before_pickup(self):
+        import service_requests_api as service
+
+        self._baseline()
+        request = self._open_request(tipo="inspection")
+        self.assertEqual(self._slot_state("201", "punzon")["state"], "missing")
+
+        self._as("op2", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as not_owner:
+            service.cancel_service_request(request["id"], service.ServiceCancel(motivo="mistake"))
+        self.assertEqual(not_owner.exception.status_code, 403)
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as no_reason:
+            service.cancel_service_request(request["id"], service.ServiceCancel(motivo=" "))
+        self.assertEqual(no_reason.exception.status_code, 422)
+        cancelled = service.cancel_service_request(request["id"], service.ServiceCancel(motivo="Opened by mistake"))
+        self.assertEqual(cancelled["state"], "cancelled")
+        self.assertTrue(cancelled["restored"])
+        self.assertEqual(self._slot_state("201", "punzon")["state"], "installed")
+
+        again = self._open_request(tipo="inspection")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(again["id"])
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as owner_too_late:
+            service.cancel_service_request(again["id"], service.ServiceCancel(motivo="changed my mind"))
+        self.assertEqual(owner_too_late.exception.status_code, 403)
+
+    def test_service_return_closes_on_pickup_and_tool_request_fills_empty_position(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("D100B", "100", "matriz", "0.016")
+        returned = self._open_request(tipo="return", station="201", category="matriz", tool_id="D100")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(returned["id"])
+        closed = service.collect_service_tool(returned["id"], service.ServiceCollect(destino_codigo="R1"))
+        self.assertEqual(closed["state"], "closed")
+        self.assertEqual(self._slot_state("201", "matriz")["state"], "missing")
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        wanted = service.create_service_request(service.ServiceRequestCreate(
+            machine="M1", requirement_id=self._requirement_id("201"), category="matriz", tipo="tool_request",
+        ))
+        self.assertIsNone(wanted["tool_id"])
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(wanted["id"])
+        with self.assertRaises(HTTPException) as nothing_to_collect:
+            service.collect_service_tool(wanted["id"], service.ServiceCollect(destino_codigo="R1"))
+        self.assertEqual(nothing_to_collect.exception.status_code, 409)
+        self._as("op1", "PUNCHING_OPERATOR")
+        done = service.install_service_tool(wanted["id"], service.ServiceInstall(tool_id="D100B"))
+        self.assertEqual(done["state"], "closed")
+        self.assertEqual(self._slot_state("201", "matriz")["tool_id"], "D100B")
+
+    def test_service_request_install_requires_the_setup_it_was_opened_on(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        request = self._open_request()
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        session = self.session_factory()
+        try:
+            session.query(EstadoMaquina).filter_by(maquina_codigo="M1").one().setup_activo_id = None
+            session.commit()
+        finally:
+            session.close()
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as changed:
+            service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))
+        self.assertEqual(changed.exception.status_code, 409)
+    def test_workspace_uses_program_requirements_and_operator_registers_mounted_tools(self):
+        import service_requests_api as service
+        import tool_tracking_api as tracking
+
+        session = self.session_factory()
+        try:
+            setup = Setup(
+                maquina_codigo="M1", nombre_archivo="PN100.stp", drawing_name="PN100", thickness="0.075",
+                contenido_hash="hash", creado_por="engineer", creado_en=workflow_api.utcnow(), estado="active",
+            )
+            session.add(setup)
+            session.flush()
+            session.add(EstadoMaquina(maquina_codigo="M1", setup_activo_id=setup.id))
+            session.add(Maquina(codigo="M1", tipo_maquina="4 Index", edificio="B1"))
+            session.add(ProgramaParte(
+                numero_parte="PN100", tipo_maquina="4I", tipo_programa="NPI", revision=1,
+                contenido="program", contenido_hash="hash",
+                requisitos_json=json.dumps([
+                    {"station": "201", "tn": "100", "angle": "0"},
+                    {"station": "202", "tn": "200", "angle": None},
+                ]),
+                actualizado_por="engineer", actualizado_en=workflow_api.utcnow(),
+            ))
+            session.commit()
+        finally:
+            session.close()
+        self._create_tool("P100", "100", "punzon")
+        self._create_tool("D100", "100", "matriz", "0.016")
+        self._create_tool("P200", "200", "punzon")
+
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        self.assertEqual(workspace["requirements_source"], "program")
+        self.assertEqual([row["station"] for row in workspace["stations"]], ["201", "202"])
+        self.assertTrue(all(row["requirement_id"] is None for row in workspace["stations"]))
+        self.assertEqual(workspace["coverage"], {"installed": 0, "required": 4, "complete": False})
+        session = self.session_factory()
+        try:
+            self.assertEqual(session.query(RequisitoSetup).count(), 0)
+        finally:
+            session.close()
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        position = dict(station="201", tn="100", angle="0")
+        with self.assertRaises(HTTPException) as wrong_tn:
+            service.register_mounted_tool("M1", service.MountedRegister(category="punzon", tool_id="P200", **position))
+        self.assertEqual(wrong_tn.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as unknown:
+            service.register_mounted_tool("M1", service.MountedRegister(category="punzon", tool_id="NOPE", **position))
+        self.assertEqual(unknown.exception.status_code, 404)
+
+        registered = service.register_mounted_tool(
+            "M1", service.MountedRegister(category="punzon", tool_id="P100", **position)
+        )
+        self.assertEqual(registered["tool_id"], "P100")
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        self.assertEqual(workspace["requirements_source"], "setup")
+        self.assertEqual(workspace["coverage"]["installed"], 1)
+        self.assertEqual(self._slot_state("201", "punzon")["tool_id"], "P100")
+        session = self.session_factory()
+        try:
+            tool = session.query(Herramienta).filter_by(id="P100").one()
+            self.assertEqual(tool.ubicacion, "M1")
+            movement = session.query(MovimientoHerramienta).filter_by(herramienta_id="P100").one()
+            self.assertEqual((movement.origen_codigo, movement.tipo), ("R1", "machine_observed"))
+        finally:
+            session.close()
+        with self.assertRaises(HTTPException) as twice:
+            service.register_mounted_tool("M1", service.MountedRegister(category="punzon", tool_id="P100", **position))
+        self.assertEqual(twice.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as same_tool_elsewhere:
+            service.register_mounted_tool(
+                "M1", service.MountedRegister(category="punzon", tool_id="P100", station="202", tn="200")
+            )
+        self.assertEqual(same_tool_elsewhere.exception.status_code, 409)
+
+        request = service.create_service_request(service.ServiceRequestCreate(
+            machine="M1", category="punzon", tipo="inspection", station="201", tn="100", angle="0", tool_id="P100",
+        ))
+        self.assertEqual(request["tool_id"], "P100")
+        self.assertEqual(request["part_number"], "PN100")
+        empty = service.create_service_request(service.ServiceRequestCreate(
+            machine="M1", category="matriz", tipo="tool_request", station="201", tn="100", angle="0",
+        ))
+        self.assertIsNone(empty["tool_id"])
+        with self.assertRaises(HTTPException) as no_position:
+            service.register_mounted_tool("M1", service.MountedRegister(category="punzon", tool_id="P200"))
+        self.assertEqual(no_position.exception.status_code, 422)
+
+    def test_registering_mounted_tool_accepts_unregistered_rack_but_not_service_locations(self):
+        import service_requests_api as service
+
+        self._baseline()
+        session = self.session_factory()
+        try:
+            session.query(RequisitoSetup).filter_by(tn="100").one().punch_tool_id = None
+            session.query(Herramienta).filter_by(id="P100").one().ubicacion = "R-LEGACY"
+            session.commit()
+        finally:
+            session.close()
+        self._as("op1", "PUNCHING_OPERATOR")
+        service.register_mounted_tool(
+            "M1", service.MountedRegister(category="punzon", tool_id="P100", requirement_id=self._requirement_id("201"))
+        )
+        session = self.session_factory()
+        try:
+            movement = session.query(MovimientoHerramienta).filter_by(
+                herramienta_id="P100", tipo="machine_observed"
+            ).one()
+            self.assertIsNone(movement.origen_codigo)
+            self.assertEqual(session.query(Herramienta).filter_by(id="P100").one().ubicacion, "M1")
+            session.query(RequisitoSetup).filter_by(tn="100").one().punch_tool_id = None
+            session.query(Herramienta).filter_by(id="P100").one().ubicacion = "TG1"
+            session.commit()
+        finally:
+            session.close()
+        with self.assertRaises(HTTPException) as in_togu:
+            service.register_mounted_tool(
+                "M1", service.MountedRegister(category="punzon", tool_id="P100", requirement_id=self._requirement_id("201"))
+            )
+        self.assertEqual(in_togu.exception.status_code, 409)
+
+    def test_program_problem_reaches_the_queue_and_engineering_resolves_it(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as bad:
+            service.create_program_problem(service.ProgramProblemCreate(machine="M1", problema="paint"))
+        self.assertEqual(bad.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as needs_note:
+            service.create_program_problem(service.ProgramProblemCreate(machine="M1", problema="other"))
+        self.assertEqual(needs_note.exception.status_code, 422)
+
+        request = service.create_program_problem(service.ProgramProblemCreate(
+            machine="M1", problema="wrong_tool", station="201", nota="Station 201 uses a different tool",
+        ))
+        self.assertEqual(request["type"], "program_problem")
+        self.assertEqual(request["part_number"], "CURRENT")
+        self.assertIsNone(request["tool_id"])
+        with self.assertRaises(HTTPException) as duplicate:
+            service.create_program_problem(service.ProgramProblemCreate(machine="M1", problema="wrong_tool"))
+        self.assertEqual(duplicate.exception.status_code, 409)
+
+        self._as("eng1", "ENGINEERING")
+        listed = service.list_service_requests(state="active", machine=None, limit=100)
+        self.assertEqual([row["id"] for row in listed], [request["id"]])
+        attending = service.attend_service_request(request["id"])
+        self.assertEqual(attending["attended_by"], "eng1")
+        with self.assertRaises(HTTPException) as collect:
+            service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self.assertEqual(collect.exception.status_code, 409)
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as not_attendant:
+            service.resolve_program_problem(request["id"], service.ServiceResolve(resolucion="Program corrected"))
+        self.assertEqual(not_attendant.exception.status_code, 403)
+        self._as("eng1", "ENGINEERING")
+        with self.assertRaises(HTTPException) as short:
+            service.resolve_program_problem(request["id"], service.ServiceResolve(resolucion="x"))
+        self.assertEqual(short.exception.status_code, 422)
+        closed = service.resolve_program_problem(request["id"], service.ServiceResolve(resolucion="Program corrected, rev 2"))
+        self.assertEqual((closed["state"], closed["resolution"]), ("closed", "Program corrected, rev 2"))
+
+        import tool_tracking_api as tracking
+
+        workspace = tracking.manufacturing_machine_workspace("M1")
+        self.assertEqual([row["id"] for row in workspace["service_requests"]], [request["id"]])
+        self.assertTrue(all(c["open_request"] is None for s in workspace["stations"] for c in s["components"]))
+
+    def test_engineering_cannot_attend_tool_requests(self):
+        import service_requests_api as service
+
+        self._baseline()
+        request = self._open_request()
+        self._as("eng1", "ENGINEERING")
+        with self.assertRaises(HTTPException) as denied:
+            service.attend_service_request(request["id"])
+        self.assertEqual(denied.exception.status_code, 403)
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as not_program:
+            service.resolve_program_problem(request["id"], service.ServiceResolve(resolucion="done"))
+        self.assertEqual(not_program.exception.status_code, 409)
+
+    def test_service_request_table_migration_keeps_rows_and_allows_program_problems(self):
+        import os
+        import sqlite3
+        import tempfile
+
+        import main
+
+        handle, path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        try:
+            conn = sqlite3.connect(path)
+            conn.execute(
+                "CREATE TABLE solicitudes_servicio (id INTEGER PRIMARY KEY, maquina_codigo TEXT NOT NULL, "
+                "setup_id INTEGER NOT NULL, requisito_id INTEGER NOT NULL, numero_parte TEXT, estacion TEXT NOT NULL, "
+                "categoria TEXT NOT NULL, tn TEXT NOT NULL, tipo TEXT NOT NULL, estado TEXT NOT NULL, nota TEXT, "
+                "herramienta_id TEXT, herramienta_nueva_id TEXT, destino_codigo TEXT, solicitado_por TEXT NOT NULL, "
+                "solicitado_en DATETIME NOT NULL, atendido_por TEXT, atendido_en DATETIME, recogido_por TEXT, "
+                "recogido_en DATETIME, cerrado_por TEXT, cerrado_en DATETIME, motivo_cancelacion TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO solicitudes_servicio (id, maquina_codigo, setup_id, requisito_id, estacion, categoria, tn, "
+                "tipo, estado, solicitado_por, solicitado_en) VALUES (7, 'M1', 1, 1, '201', 'punzon', '100', "
+                "'inspection', 'closed', 'op1', '2026-01-01 00:00:00')"
+            )
+            conn.commit()
+            conn.close()
+            main.migrate_service_requests_table(path)
+            conn = sqlite3.connect(path)
+            columns = {row[1]: row for row in conn.execute("PRAGMA table_info(solicitudes_servicio)")}
+            self.assertEqual(columns["requisito_id"][3], 0)
+            self.assertIn("problema", columns)
+            self.assertIn("resolucion", columns)
+            self.assertEqual(conn.execute("SELECT id, estacion, estado FROM solicitudes_servicio").fetchall(), [(7, "201", "closed")])
+            conn.close()
+        finally:
+            os.remove(path)
+
+    def test_registering_mounted_tool_rejects_tools_being_serviced(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        request = self._open_request()
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as busy_slot:
+            service.register_mounted_tool(
+                "M1", service.MountedRegister(category="punzon", tool_id="P100B", requirement_id=self._requirement_id("201"))
+            )
+        self.assertEqual(busy_slot.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as in_service:
+            service.register_mounted_tool(
+                "M1", service.MountedRegister(category="punzon", tool_id="P100", requirement_id=self._requirement_id("201"))
+            )
+        self.assertEqual(in_service.exception.status_code, 409)
 
 
 if __name__ == "__main__":

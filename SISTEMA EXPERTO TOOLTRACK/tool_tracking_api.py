@@ -1,14 +1,17 @@
 import json
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import scan_codes
 import workflow_api
 from models.inventory import (
     EstadoMaquina,
     EstacionMaquina,
+    FamiliaParte,
     Herramienta,
     Maquina,
     MovimientoHerramienta,
@@ -104,6 +107,31 @@ def _mounted_rows(db, setup):
     return rows
 
 
+def setup_program(db, code, setup):
+    """Machine profile, normalized machine type, part number and stored program of the active setup."""
+    profile = db.query(Maquina).filter(Maquina.codigo == code).first()
+    machine_type = workflow_api._machine_kind(profile.tipo_maquina) if profile else ""
+    part_number = workflow_api._part_from_name(setup.nombre_archivo).upper() if setup else None
+    program = None
+    if part_number and machine_type in {"4I", "2I", "45STA"}:
+        program = db.query(ProgramaParte).filter(
+            ProgramaParte.numero_parte == part_number,
+            ProgramaParte.tipo_maquina == machine_type,
+        ).first()
+    return profile, machine_type, part_number, program
+
+
+def program_requirements(program):
+    """Station requirements of a stored program, shaped like RequisitoSetup rows without an assigned tool."""
+    return [
+        SimpleNamespace(
+            id=None, station=row["station"], tn=row["tn"], angle=row.get("angle"),
+            punch_tool_id=None, die_tool_id=None,
+        )
+        for row in json.loads(program.requisitos_json)
+    ]
+
+
 @router.get("/manufacturing/machines/{machine_code}")
 def manufacturing_machine_workspace(machine_code: str):
     db = workflow_api.SessionLocal()
@@ -113,28 +141,32 @@ def manufacturing_machine_workspace(machine_code: str):
         if not machine.activa:
             raise HTTPException(status_code=404, detail=f"Machine {code} is inactive")
 
-        profile = db.query(Maquina).filter(Maquina.codigo == code).first()
         setup = _active_setup(db, code)
-        machine_type = workflow_api._machine_kind(profile.tipo_maquina) if profile else ""
-        part_number = workflow_api._part_from_name(setup.nombre_archivo).upper() if setup else None
-        program = None
-        if part_number and machine_type in {"4I", "2I", "45STA"}:
-            program = db.query(ProgramaParte).filter(
-                ProgramaParte.numero_parte == part_number,
-                ProgramaParte.tipo_maquina == machine_type,
-            ).first()
-
+        profile, machine_type, part_number, program = setup_program(db, code, setup)
         station_rows = []
         installed_components = 0
         total_components = 0
+        import service_requests_api  # evita importación circular al cargar los routers
+        machine_requests = service_requests_api.machine_requests(db, code)
+        open_by_slot = {
+            (request["requirement_id"], request["category"]): request
+            for request in machine_requests
+            if request["state"] in service_requests_api.POSITION_STATES and request["requirement_id"] is not None
+        }
         clearance_range = (
             workflow_api.clearance_range_for_thickness(Decimal(setup.thickness))
             if setup else None
         )
+        requirements_source = "none"
         if setup:
             requirements = db.query(RequisitoSetup).filter(
                 RequisitoSetup.setup_id == setup.id
             ).all()
+            requirements_source = "setup" if requirements else "none"
+            if not requirements and program:
+                # Sin requerimientos registrados: se muestran los del programa del número de parte.
+                requirements = program_requirements(program)
+                requirements_source = "program" if requirements else "none"
             requirements.sort(
                 key=lambda row: (
                     not row.station.isdigit(),
@@ -179,13 +211,17 @@ def manufacturing_machine_workspace(machine_code: str):
                         "category": category,
                         "tool_id": tool.id if tool else None,
                         "tn": tool.tn if tool else requirement.tn,
+                        "tool_type": tool.type if tool else None,
+                        "tool_size": tool.size if tool else None,
                         "location": tool.ubicacion if tool else None,
                         "tool_status": (tool.estado or "disponible") if tool else None,
                         "clearance": tool.clearance if tool else None,
                         "clearance_valid": clearance_valid,
                         "state": component_state,
+                        "open_request": open_by_slot.get((requirement.id, category)),
                     })
                 station_rows.append({
+                    "requirement_id": requirement.id,
                     "station": requirement.station,
                     "tn": requirement.tn,
                     "angle": requirement.angle,
@@ -213,6 +249,10 @@ def manufacturing_machine_workspace(machine_code: str):
             Surtido.maquina_codigo == code,
             Surtido.estado.in_(OPEN_KIT_STATES),
         ).order_by(Surtido.creado_en.desc()).first()
+        family = db.query(FamiliaParte).filter(
+            FamiliaParte.nombre == program.familia
+        ).first() if program and program.familia else None
+        family_client = family.cliente if family else None
         return {
             "machine": code,
             "machine_name": machine.nombre,
@@ -230,6 +270,7 @@ def manufacturing_machine_workspace(machine_code: str):
             } if setup else None,
             "program": {
                 "revision": program.revision,
+                "client": family_client,
                 "family": program.familia,
                 "program_type": program.tipo_programa,
                 "drawing_name": program.drawing_name,
@@ -252,6 +293,7 @@ def manufacturing_machine_workspace(machine_code: str):
                 "complete": total_components > 0 and installed_components == total_components,
             },
             "stations": station_rows,
+            "requirements_source": requirements_source,
             "pending_pickups": [
                 {
                     "tool_id": tool.id,
@@ -267,6 +309,7 @@ def manufacturing_machine_workspace(machine_code: str):
                 "created_at": active_kit.creado_en.isoformat(),
                 "updated_at": active_kit.actualizado_en.isoformat(),
             } if active_kit else None,
+            "service_requests": machine_requests,
         }
     finally:
         db.close()
@@ -311,7 +354,7 @@ def return_machine_tools(machine_code: str, item: MachineReturn):
     try:
         workflow_api._location(db, code, {"machine"})
         destination = workflow_api._location(
-            db, item.destino_codigo.strip().upper(), RETURN_DESTINATION_TYPES
+            db, scan_codes.location_code(item.destino_codigo), RETURN_DESTINATION_TYPES
         )
         if db.query(Surtido.id).filter(
             Surtido.maquina_codigo == code,
@@ -386,6 +429,7 @@ class RackStore(BaseModel):
     tool_id: str
     realizado_por: str
     resultado: Optional[str] = None
+    captura: Optional[str] = None
 
 
 class ToolStatusChange(BaseModel):
@@ -402,9 +446,7 @@ def change_tool_status(tool_id: str, item: ToolStatusChange):
         raise HTTPException(status_code=422, detail="Invalid status (disponible, danado or baja)")
     db = workflow_api.SessionLocal()
     try:
-        tool = db.query(Herramienta).filter(
-            Herramienta.id == tool_id.strip()
-        ).with_for_update().first()
+        tool = scan_codes.find_tool(db, tool_id, lock=True)
         if not tool:
             raise HTTPException(status_code=404, detail="That tool is not in the inventory")
         current = tool.estado or "disponible"
@@ -442,11 +484,10 @@ def change_tool_status(tool_id: str, item: ToolStatusChange):
 def store_tool_in_rack(rack_code: str, item: RackStore):
     """Scan rack, then scan tool: stores it only in the rack it belongs to."""
     db = workflow_api.SessionLocal()
+    capture = scan_codes.capture_mode(item.captura)
     try:
-        rack = workflow_api._location(db, rack_code.strip().upper(), {"rack"})
-        tool = db.query(Herramienta).filter(
-            Herramienta.id == item.tool_id.strip()
-        ).with_for_update().first()
+        rack = workflow_api._location(db, scan_codes.location_code(rack_code), {"rack"})
+        tool = scan_codes.find_tool(db, item.tool_id, lock=True)
         if not tool:
             raise HTTPException(status_code=404, detail=f"Tool '{item.tool_id}' is not in the inventory")
         workflow_api._require_home_rack(db, tool, rack)
@@ -465,7 +506,7 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
                 workflow_api._append_movement(
                     db, tool, origin.codigo, rack.codigo, "pending_pickup_to_rack",
                     item.realizado_por, details=f"Picked up from {origin.codigo} and stored in its rack",
-                    kit_id=pending.surtido_id, setup_id=pending.setup_origen_id,
+                    kit_id=pending.surtido_id, setup_id=pending.setup_origen_id, capture=capture,
                 )
                 pending.estado = "collected"
                 pending.recogido_en = workflow_api.utcnow()
@@ -495,7 +536,7 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
                     db, tool, origin.codigo, rack.codigo, "machine_return",
                     item.realizado_por,
                     details=f"Return from {origin.codigo} ({setup.drawing_name or 'no part'}): regreso",
-                    setup_id=setup.id,
+                    setup_id=setup.id, capture=capture,
                 )
                 if category == "punzon":
                     requirement.punch_tool_id = None
@@ -520,7 +561,7 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
                     if result_choice == "baja":
                         workflow_api._append_movement(
                             db, tool, origin.codigo, origin.codigo, "status_baja",
-                            item.realizado_por, details=f"Retired from {current}",
+                            item.realizado_por, details=f"Retired from {current}", capture=capture,
                         )
                         tool.estado = "baja"
                         db.commit()
@@ -531,7 +572,7 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
                     tool.estado = "disponible"
             workflow_api._append_movement(
                 db, tool, origin.codigo, rack.codigo, f"{origin.tipo}_to_rack",
-                item.realizado_por, details="Stored in its rack",
+                item.realizado_por, details="Stored in its rack", capture=capture,
             )
             kind = f"{origin.tipo}_to_rack"
         db.commit()

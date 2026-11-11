@@ -61,6 +61,16 @@ export function MachineCard({ machine, tv, canKit, canAdd, onOpen, onKit, onAdd 
       </header>
 
       <div className="card-body">
+        {machine.herramientas_esperando?.length > 0 && (
+          <div className="tool-wait" role="alert">
+            <strong>Waiting for tool</strong>
+            <span>
+              {machine.herramientas_esperando
+                .map((item) => `${item.station ?? "—"} ${item.category === "punzon" ? "punch" : "die"}`)
+                .join(" · ")}
+            </span>
+          </div>
+        )}
         {actual ? (
           <>
             <div className="np-line">

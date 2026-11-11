@@ -183,207 +183,79 @@ textarea:disabled {
   margin-bottom: 14px;
 }
 
-.manufacturing-page {
+/* ---------- service requests ---------- */
+.tool-cell {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-}
-
-.info-card {
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  box-shadow: 0 1px 2px rgba(15, 30, 60, 0.05);
-  text-align: left;
-}
-
-.manufacturing-selector {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.manufacturing-selector label {
-  font-weight: 700;
-}
-
-.manufacturing-selector select {
-  min-width: min(100%, 360px);
-}
-
-.manufacturing-machine-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 24px;
-}
-
-.eyebrow {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.manufacturing-machine-head h2 {
-  margin: 4px 0;
-}
-
-.manufacturing-part {
-  display: flex;
-  flex-direction: column;
+  align-items: flex-start;
   gap: 4px;
-  min-width: 220px;
-  text-align: right;
 }
-
-.manufacturing-part strong {
-  font-size: 20px;
-}
-
-.manufacturing-summary {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 12px;
-}
-
-.manufacturing-summary .info-card {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.manufacturing-summary .info-card > strong {
-  font-size: 20px;
-}
-
-.coverage-complete {
-  color: var(--green);
-}
-
-.coverage-incomplete {
-  color: var(--red);
-}
-
-.manufacturing-link {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.manufacturing-page .table-wrap {
-  margin-bottom: 4px;
-}
-
-.manufacturing-section-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.manufacturing-stations {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr));
-  gap: 12px;
-}
-
-.manufacturing-station {
-  padding: 14px;
-}
-
-.manufacturing-station > header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.manufacturing-station h3 {
-  margin-top: 3px;
-}
-
-.manufacturing-station-meta,
-.manufacturing-component-details {
+.cell-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px 12px;
-  color: var(--muted);
-  font-size: 12px;
+  gap: 6px;
 }
-
-.manufacturing-components {
-  display: grid;
-  gap: 8px;
+.scan-small {
+  width: 190px;
 }
-
-.manufacturing-component {
-  padding: 10px;
+.location-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tool-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  min-width: 170px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
 }
-
-.manufacturing-missing,
-.manufacturing-elsewhere {
-  background: #fff9ec;
-  border-color: #f0d58a;
+.tool-pick:hover,
+.tool-pick:focus-visible {
+  border-color: var(--navy);
+  background: #f3f7fc;
 }
-
-.manufacturing-component-title {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 7px;
-}
-
-.manufacturing-pickups {
-  display: grid;
-  gap: 10px;
-}
-
-.manufacturing-pickups > div {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) minmax(180px, 2fr);
-  gap: 12px;
-  align-items: center;
-}
-
-.manufacturing-active-kit {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-
-.manufacturing-user {
-  text-align: right;
+.tool-pick-hint {
+  color: var(--navy);
   font-size: 12px;
+  font-weight: 700;
 }
-
-@media (max-width: 700px) {
-  .manufacturing-selector {
-    grid-template-columns: 1fr;
-  }
-
-  .manufacturing-machine-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .manufacturing-part {
-    text-align: left;
-  }
-
-  .manufacturing-pickups > div {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
+.svc-options {
+  display: grid;
+  gap: 8px;
+}
+.svc-option {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 15px;
+}
+.svc-option.selected {
+  border-color: var(--navy);
+  background: #f3f7fc;
+}
+.svc-option input {
+  min-height: 0;
+  margin-top: 4px;
+}
+.svc-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 /* ---------- chips ---------- */
@@ -468,29 +340,11 @@ textarea:disabled {
 .login-brand {
   text-align: center;
 }
-.login-brand h1 {
-  color: var(--navy);
-  font-size: 30px;
-  letter-spacing: 1px;
-}
-.login-brand span {
-  display: block;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 1px;
-}
 .login-logo {
   display: block;
   width: 180px;
   max-width: 70%;
   margin: 0 auto 8px;
-}
-.login-axiom {
-  display: block;
-  height: 28px;
-  margin: 4px auto 0;
-  opacity: 0.9;
 }
 
 /* ---------- estructura ---------- */
@@ -503,24 +357,6 @@ textarea:disabled {
   background: var(--navy);
   color: #fff;
   border-bottom: 4px solid var(--accent);
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.brand-logo {
-  display: block;
-  height: 32px;
-  width: auto;
-  background: #fff;
-  border-radius: 6px;
-  padding: 4px 8px;
-  box-sizing: content-box;
-}
-.brand-logo-mira {
-  height: 30px;
 }
 .topbar nav {
   display: flex;
@@ -1156,8 +992,46 @@ textarea:disabled {
 .check input {
   min-height: 0;
 }
-.row-overdue td {
+.tool-wait {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--red);
+  color: #fff;
+  font-size: 13px;
+}
+.tool-wait strong {
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+.row-overdue td,
+.wait-late td {
   background: #fdecea;
+}
+.wait-warn td {
+  background: #fff4d6;
+}
+.wait-late .wait-text {
+  color: var(--red);
+}
+.tab-badge {
+  display: inline-block;
+  min-width: 20px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+.tab-badge.late {
+  background: var(--red);
 }
 @media (max-width: 760px) {
   .delivery-grid {

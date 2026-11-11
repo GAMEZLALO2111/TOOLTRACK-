@@ -226,7 +226,7 @@ function ToolForm({ tool, options, locations, tns, canEdit, canDelete, onClose, 
   const cuts = category === "punzon" || category === "matriz";
   const types = options.tipos[category] ?? [];
   const readOnly = !canEdit;
-  const placeKnown = !place || locations.some((l) => l.codigo === place);
+  const racks = locations.filter((l) => l.tipo === "rack").sort((a, b) => a.codigo.localeCompare(b.codigo));
 
   function changeCategory(next: string) {
     setCategory(next);
@@ -345,13 +345,13 @@ function ToolForm({ tool, options, locations, tns, canEdit, canDelete, onClose, 
             <input value={so} onChange={(event) => setSo(event.target.value)} disabled={readOnly} />
           </label>
           <label>
-            Location
+            Rack
             <select value={place} onChange={(event) => setPlace(event.target.value)} disabled={readOnly}>
-              <option value="">No location</option>
-              {!placeKnown && <option value={place}>{place} (not registered)</option>}
-              {locations.map((l) => (
+              <option value="">No rack assigned</option>
+              {place && !racks.some((l) => l.codigo === place) && <option value={place}>{place} (current)</option>}
+              {racks.map((l) => (
                 <option key={l.codigo} value={l.codigo}>
-                  {l.codigo} ({l.tipo})
+                  {l.codigo}
                 </option>
               ))}
             </select>

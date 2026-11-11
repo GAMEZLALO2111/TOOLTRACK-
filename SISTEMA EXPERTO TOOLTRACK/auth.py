@@ -48,6 +48,7 @@ _OPERATOR = {
     "inventory.view", "catalog.view", "locations.view", "setup.view", "kitting.view",
     "kitting.operate", "tools.move", "tools.status", "tools.store", "returns.operate",
     "demand.view", "demand.progress", "program.view", "machine.view", "maintenance.view",
+    "service.view", "service.attend",
 }
 _SUPERVISOR = _OPERATOR | {
     "inventory.edit", "inventory.adjust", "catalog.edit", "locations.manage",
@@ -60,8 +61,8 @@ ROLE_PERMISSIONS = {
         "inventory.view", "catalog.view", "locations.view", "maintenance.view",
         "maintenance.operate", "tools.move", "tools.status", "tools.store",
     }),
-    "PUNCHING_OPERATOR": frozenset({"manufacturing.view"}),
-    "PUNCHING_TECHNICIAN": frozenset({"manufacturing.view"}),
+    "PUNCHING_OPERATOR": frozenset({"manufacturing.view", "service.request"}),
+    "PUNCHING_TECHNICIAN": frozenset({"manufacturing.view", "service.request"}),
     "PLANNING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "demand.view",
         "demand.manage", "demand.mark", "program.view", "machine.view", "setup.view",
@@ -69,7 +70,7 @@ ROLE_PERMISSIONS = {
     "ENGINEERING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "setup.view",
         "demand.view", "demand.mark", "program.view", "program.manage", "machine.view",
-        "maintenance.view", "audit.view",
+        "maintenance.view", "audit.view", "service.view", "service.attend",
     }),
 }
 # El administrador puede todo lo que existe (incluye operación para poder probar y dar soporte);
@@ -142,6 +143,18 @@ ROUTE_RULES = {
     ("GET", "/workflow/machines/{machine_code}/active-setup"): "setup.view",
     ("GET", "/workflow/manufacturing/machines"): "manufacturing.view",
     ("GET", "/workflow/manufacturing/machines/{machine_code}"): "manufacturing.view",
+    ("POST", "/workflow/manufacturing/machines/{machine_code}/mounted"): "service.request",
+    ("GET", "/workflow/service-requests"): "service.view",
+    ("POST", "/workflow/service-requests"): "service.request",
+    ("POST", "/workflow/service-requests/program-problem"): "service.request",
+    ("POST", "/workflow/service-requests/{request_id}/resolve"): "service.attend",
+    ("POST", "/workflow/service-requests/{request_id}/finish-service"): "service.attend",
+    ("POST", "/workflow/service-requests/{request_id}/store"): "service.attend",
+    ("GET", "/workflow/tool-service-log"): "service.view",
+    ("POST", "/workflow/service-requests/{request_id}/attend"): "service.attend",
+    ("POST", "/workflow/service-requests/{request_id}/collect"): "service.attend",
+    ("POST", "/workflow/service-requests/{request_id}/install"): "service.request",
+    ("POST", "/workflow/service-requests/{request_id}/cancel"): AUTHENTICATED,  # dueño o Tool Crib, se valida en el endpoint
     ("POST", "/workflow/machines/transfer"): "kitting.operate",
     ("GET", "/workflow/pending-pickups"): "kitting.view",
     ("GET", "/workflow/tools/movable"): "inventory.view",

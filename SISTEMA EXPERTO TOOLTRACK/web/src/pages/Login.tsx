@@ -35,7 +35,6 @@ export function LoginPage() {
       <form className="login" onSubmit={submit}>
         <div className="login-brand">
           <img className="login-logo" src="/brand/mira-logo.png" alt="MIRA" />
-          <span>Manufacturing Intelligence &amp; Resource Administration</span>
         </div>
         {expired && <div className="note note-warn">Your session ended. Please sign in again.</div>}
         <label>
@@ -50,7 +49,6 @@ export function LoginPage() {
         <button className="btn btn-primary block big" type="submit" disabled={busy}>
           {busy ? "Signing in…" : "SIGN IN"}
         </button>
-        <img className="login-axiom" src="/brand/axiom-logo.png" alt="Axiom" />
       </form>
     </main>
   );

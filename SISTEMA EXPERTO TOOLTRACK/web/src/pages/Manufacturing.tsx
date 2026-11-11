@@ -1,56 +1,413 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
-import { KIT_STATE_LABEL } from "../labels";
+import { Dialog, ErrorNote } from "../components/Dialog";
+import { Chip } from "../components/MachineCard";
+import { ReasonDialog } from "../components/ReasonDialog";
+import { ScanInput } from "../components/ScanInput";
+import { locationCode, type Capture } from "../scan";
+import { canReceive, positionLabel, problemLabel, RequestChip, when } from "../components/Service";
+import { KIT_STATE_LABEL, PROGRAM_PROBLEMS, SERVICE_TYPE_LABEL, SERVICE_TYPES, TOOL_STATE_CLASS, TOOL_STATE_LABEL } from "../labels";
 import { go, type Route } from "../router";
-import type { ManufacturingMachineOption, ManufacturingWorkspace } from "../types";
+import type { ManufacturingMachineOption, ManufacturingWorkspace, ServiceRequest } from "../types";
 import { usePoll } from "../usePoll";
+import { fmt } from "./ProgramUpload";
 
-const COMPONENT_LABELS = { punzon: "Punch", matriz: "Die" };
-const COMPONENT_STATE_LABELS = {
-  installed: "Installed and compatible",
-  missing: "No physical tool assigned",
-  elsewhere: "Assigned tool is elsewhere",
-  incompatible: "Mounted tool does not match requirement",
-};
+type Station = ManufacturingWorkspace["stations"][number];
+type Component = Station["components"][number];
 
-function formatNumber(value: number | null, digits = 1) {
-  return value == null ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: digits });
-}
+const MACHINE_KEY = "mira.machine";
+const CATEGORY_NAME = { punzon: "Punch", matriz: "Die" };
 
-function ComponentCard({ component }: { component: ManufacturingWorkspace["stations"][number]["components"][number] }) {
+function Fact({ label, value }: { label: string; value: string | number | null | undefined }) {
   return (
-    <div className={`manufacturing-component manufacturing-${component.state}`}>
-      <div className="manufacturing-component-title">
-        <strong>{COMPONENT_LABELS[component.category]}</strong>
-        <span className={`chip ${component.state === "installed" ? "st-onmachine" : "st-missing"}`}>
-          {COMPONENT_STATE_LABELS[component.state]}
-        </span>
-      </div>
-      <div className="manufacturing-component-details">
-        <span>TN {component.tn}</span>
-        <span>Physical ID: {component.tool_id ?? "—"}</span>
-        {component.clearance && (
-          <span>
-            Clearance: {component.clearance}
-            {component.clearance_valid !== null && ` · ${component.clearance_valid ? "within range" : "out of range"}`}
-          </span>
-        )}
-        {component.tool_status && <span>Condition: {component.tool_status}</span>}
-        {component.state === "elsewhere" && <span>Location: {component.location ?? "Unknown"}</span>}
-      </div>
+    <div>
+      <div className="muted small">{label}</div>
+      <strong>{value === null || value === undefined || value === "" ? "—" : value}</strong>
     </div>
   );
 }
 
+interface ToolCellProps {
+  component: Component;
+  canRequest: boolean;
+  onRequest: () => void;
+  onRegister: () => void;
+  onReceive: (request: ServiceRequest) => void;
+}
+
+function ToolCell({ component, canRequest, onRequest, onRegister, onReceive }: ToolCellProps) {
+  const request = component.open_request;
+  if (request) {
+    return (
+      <div className="tool-cell">
+        <RequestChip request={request} />
+        <span className="muted small">
+          {request.folio} · {SERVICE_TYPE_LABEL[request.type] ?? request.type}
+          {request.tool_id ? ` · ${request.tool_id}` : ""}
+        </span>
+        {canRequest && canReceive(request) && (
+          <button className="btn btn-primary" onClick={() => onReceive(request)}>
+            Receive tool
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (!component.tool_id) {
+    return (
+      <div className="tool-cell">
+        <Chip text="No tool recorded" className="st-missing" />
+        {canRequest && (
+          <div className="cell-actions">
+            <button className="btn" onClick={onRegister}>
+              Register mounted tool
+            </button>
+            <button className="btn" onClick={onRequest}>
+              Request tool
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const status = component.tool_status ?? "disponible";
+  const details = (
+    <>
+      <strong>{component.tool_id}</strong>
+      <span className="muted small">
+        {[component.tool_type, component.tool_size && `size ${component.tool_size}`, component.clearance && `clearance ${component.clearance}`].filter(Boolean).join(" · ") || "No tool details"}
+      </span>
+      <span className="chips">
+        <Chip text={TOOL_STATE_LABEL[status] ?? status} className={TOOL_STATE_CLASS[status] ?? ""} />
+        {component.state === "incompatible" && <Chip text="Does not match" className="st-missing" />}
+        {component.clearance_valid === false && <Chip text="Clearance out of range" className="st-missing" />}
+        {component.state === "elsewhere" && <Chip text={`In ${component.location ?? "unknown"}`} className="st-kitting" />}
+      </span>
+    </>
+  );
+
+  if (canRequest && component.state !== "elsewhere") {
+    return (
+      <button type="button" className="tool-pick" onClick={onRequest} aria-label={`Request service for ${component.tool_id}`}>
+        {details}
+        <span className="tool-pick-hint">Request service…</span>
+      </button>
+    );
+  }
+  return <div className="tool-cell">{details}</div>;
+}
+
+interface RequestDialogProps {
+  machine: string;
+  station: Station;
+  component: Component;
+  onClose: () => void;
+  onDone: (request: ServiceRequest) => void;
+}
+
+function RequestDialog({ machine, station, component, onClose, onDone }: RequestDialogProps) {
+  const emptyPosition = !component.tool_id;
+  const [type, setType] = useState(emptyPosition ? "tool_request" : "");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const chosen = SERVICE_TYPES.find((option) => option.value === type);
+  const noteRequired = !!chosen?.noteRequired;
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    if (!type) return setError("Choose what you need from Tool Crib.");
+    if (noteRequired && !note.trim()) return setError("Describe what happened so Tool Crib knows what to expect.");
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(
+        await api<ServiceRequest>("POST", "/workflow/service-requests", {
+          machine,
+          requirement_id: station.requirement_id,
+          station: station.station,
+          tn: station.tn,
+          angle: station.angle,
+          category: component.category,
+          tipo: type,
+          tool_id: component.tool_id,
+          nota: note.trim() || null,
+        }),
+      );
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The request could not be sent.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={emptyPosition ? "Request a tool" : `Request service · ${component.tool_id}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Back
+          </button>
+          <button className="btn btn-primary" onClick={() => void submit()} disabled={busy || !type}>
+            {busy ? "Sending…" : "Send to Tool Crib"}
+          </button>
+        </>
+      }
+    >
+      <form className="form" onSubmit={(event) => void submit(event)}>
+        <div className="facts">
+          <Fact label="Machine" value={machine} />
+          <Fact label="Position" value={`Station ${station.station} · ${CATEGORY_NAME[component.category]}`} />
+          <Fact label="TN" value={station.tn} />
+          {component.tool_id && <Fact label="Tool on the machine" value={component.tool_id} />}
+        </div>
+        {emptyPosition ? (
+          <p className="note note-info">This position has no tool. Tool Crib will bring one with TN {station.tn} ({CATEGORY_NAME[component.category].toLowerCase()}).</p>
+        ) : (
+          <>
+            <div className="muted small">What do you need?</div>
+            <div className="svc-options">
+              {SERVICE_TYPES.map((option) => (
+                <label key={option.value} className={`svc-option${type === option.value ? " selected" : ""}`}>
+                  <input type="radio" name="service-type" value={option.value} checked={type === option.value} onChange={() => setType(option.value)} />
+                  <span>
+                    <strong>{option.label}</strong>
+                    <span className="muted small">{option.help}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <p className="note note-warn">Take the tool off the machine first. This position will show as empty until Tool Crib brings the replacement.</p>
+          </>
+        )}
+        {type && (
+          <label>
+            {noteRequired ? "What happened? (required)" : "Notes (optional)"}
+            <textarea rows={3} maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} autoFocus />
+          </label>
+        )}
+        <ErrorNote message={error} />
+      </form>
+    </Dialog>
+  );
+}
+
+function RegisterDialog({ machine, station, component, onClose, onDone }: RequestDialogProps & { onDone: () => void }) {
+  const [toolId, setToolId] = useState("");
+  const [capture, setCapture] = useState<Capture>("manual");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    if (!toolId.trim()) return setError("Scan or type the ID of the tool mounted on this position.");
+    setBusy(true);
+    setError(null);
+    try {
+      await api("POST", `/workflow/manufacturing/machines/${encodeURIComponent(machine)}/mounted`, {
+        requirement_id: station.requirement_id,
+        station: station.station,
+        tn: station.tn,
+        angle: station.angle,
+        category: component.category,
+        tool_id: toolId,
+        captura: capture,
+      });
+      onDone();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The tool could not be registered.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title="Register mounted tool"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Back
+          </button>
+          <button className="btn btn-primary" onClick={() => void submit()} disabled={busy}>
+            {busy ? "Saving…" : "Register"}
+          </button>
+        </>
+      }
+    >
+      <form className="form" onSubmit={(event) => void submit(event)}>
+        <div className="facts">
+          <Fact label="Machine" value={machine} />
+          <Fact label="Position" value={`Station ${station.station} · ${CATEGORY_NAME[component.category]}`} />
+          <Fact label="Required TN" value={station.tn} />
+        </div>
+        <p className="note note-info">
+          Use this once for a tool that is already mounted here but not recorded. Scan its label or type its ID; it must be a {CATEGORY_NAME[component.category].toLowerCase()} with TN {station.tn}.
+        </p>
+        <ScanInput className="big-input" value={toolId} onValue={(value, mode) => { setToolId(value); setCapture(mode); }} placeholder="Scan the tool, or type its ID" autoFocus aria-label="Tool ID" />
+        <ErrorNote message={error} />
+      </form>
+    </Dialog>
+  );
+}
+
+function ProgramProblemDialog({ workspace, onClose, onDone }: { workspace: ManufacturingWorkspace; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
+  const [problem, setProblem] = useState("");
+  const [station, setStation] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const stations = [...new Set(workspace.stations.map((row) => row.station))];
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    if (!problem) return setError("Choose what is wrong with the program.");
+    if (problem === "other" && !note.trim()) return setError("Describe the problem.");
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(
+        await api<ServiceRequest>("POST", "/workflow/service-requests/program-problem", {
+          machine: workspace.machine,
+          problema: problem,
+          station: station || null,
+          nota: note.trim() || null,
+        }),
+      );
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The report could not be sent.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title="Report a program problem"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Back
+          </button>
+          <button className="btn btn-primary" onClick={() => void submit()} disabled={busy || !problem}>
+            {busy ? "Sending…" : "Send"}
+          </button>
+        </>
+      }
+    >
+      <form className="form" onSubmit={(event) => void submit(event)}>
+        <div className="facts">
+          <Fact label="Machine" value={workspace.machine} />
+          <Fact label="Part number" value={workspace.part_number} />
+        </div>
+        <div className="muted small">What is wrong?</div>
+        <div className="svc-options">
+          {PROGRAM_PROBLEMS.map((option) => (
+            <label key={option.value} className={`svc-option${problem === option.value ? " selected" : ""}`}>
+              <input type="radio" name="program-problem" value={option.value} checked={problem === option.value} onChange={() => setProblem(option.value)} />
+              <span>
+                <strong>{option.label}</strong>
+                <span className="muted small">{option.help}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {stations.length > 0 && (
+          <label>
+            Station (optional)
+            <select value={station} onChange={(event) => setStation(event.target.value)}>
+              <option value="">Not a specific station</option>
+              {stations.map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label>
+          {problem === "other" ? "Describe the problem (required)" : "Notes (optional)"}
+          <textarea rows={3} maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} />
+        </label>
+        <p className="note note-info">It goes to the same queue as tool requests; Tool Crib or Engineering will take it.</p>
+        <ErrorNote message={error} />
+      </form>
+    </Dialog>
+  );
+}
+
+function ReceiveDialog({ request, onClose, onDone }: { request: ServiceRequest; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
+  const [toolId, setToolId] = useState("");
+  const [capture, setCapture] = useState<Capture>("manual");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    if (!toolId.trim()) return setError("Scan or type the ID of the tool you received.");
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/install`, { tool_id: toolId, captura: capture }));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The installation could not be recorded.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`Receive tool · ${request.folio}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Back
+          </button>
+          <button className="btn btn-primary" onClick={() => void submit()} disabled={busy}>
+            {busy ? "Saving…" : "Installed on the machine"}
+          </button>
+        </>
+      }
+    >
+      <form className="form" onSubmit={(event) => void submit(event)}>
+        <div className="facts">
+          <Fact label="Machine" value={request.machine} />
+          <Fact label="Position" value={positionLabel(request)} />
+          {request.tool_id && <Fact label="Tool removed" value={request.tool_id} />}
+        </div>
+        <p className="note note-info">
+          Scan the label of the tool Tool Crib gave you, or type its ID. It can be the same tool or another one with TN {request.tn}. Mount it, then confirm.
+        </p>
+        <ScanInput className="big-input" value={toolId} onValue={(value, mode) => { setToolId(value); setCapture(mode); }} placeholder="Scan the tool, or type its ID" autoFocus aria-label="Tool ID" />
+        <ErrorNote message={error} />
+      </form>
+    </Dialog>
+  );
+}
+
 export function ManufacturingPage({ route }: { route: Route }) {
-  const { session } = useAuth();
+  const { session, can } = useAuth();
+  const canRequest = can("service.request");
   const [machines, setMachines] = useState<ManufacturingMachineOption[] | null>(null);
-  const [selectedCode, setSelectedCode] = useState(route.query.get("machine") ?? "");
+  const [selectedCode, setSelectedCode] = useState(route.query.get("machine") ?? localStorage.getItem(MACHINE_KEY) ?? "");
   const [workspace, setWorkspace] = useState<ManufacturingWorkspace | null>(null);
   const [machinesError, setMachinesError] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [tick, setTick] = useState(0);
+  const [message, setMessage] = useState<string | null>(null);
+  const [requesting, setRequesting] = useState<{ station: Station; component: Component } | null>(null);
+  const [registering, setRegistering] = useState<{ station: Station; component: Component } | null>(null);
+  const [reportingProgram, setReportingProgram] = useState(false);
+  const [receiving, setReceiving] = useState<ServiceRequest | null>(null);
+  const [cancelling, setCancelling] = useState<ServiceRequest | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [machineScan, setMachineScan] = useState("");
 
   const loadMachines = useCallback(async () => {
     try {
@@ -60,267 +417,394 @@ export function ManufacturingPage({ route }: { route: Route }) {
       setMachinesError(caught instanceof ApiError ? caught.message : "Could not load machines.");
     }
   }, []);
-  usePoll(loadMachines, 30000);
+  usePoll(loadMachines, 60000);
 
   const activeMachines = useMemo(() => machines ?? [], [machines]);
   const selectedMachine = activeMachines.find((machine) => machine.codigo === selectedCode) ?? null;
 
   useEffect(() => {
     if (!activeMachines.length) return;
-    if (!activeMachines.some((machine) => machine.codigo === selectedCode)) {
-      setSelectedCode(activeMachines[0].codigo);
-    }
+    if (!activeMachines.some((machine) => machine.codigo === selectedCode)) setSelectedCode(activeMachines[0].codigo);
   }, [activeMachines, selectedCode]);
 
   useEffect(() => {
-    if (!selectedCode || !selectedMachine) {
-      setWorkspace(null);
-      return;
-    }
+    setWorkspace(null);
+    setWorkspaceError(null);
+  }, [selectedCode]);
+
+  useEffect(() => {
+    if (!selectedCode || !selectedMachine) return;
     let active = true;
     const loadWorkspace = async () => {
       try {
-        const result = await api<ManufacturingWorkspace>(
-          "GET",
-          `/workflow/manufacturing/machines/${encodeURIComponent(selectedCode)}`,
-        );
+        const result = await api<ManufacturingWorkspace>("GET", `/workflow/manufacturing/machines/${encodeURIComponent(selectedCode)}`);
         if (active) {
           setWorkspace(result);
           setWorkspaceError(null);
           setUpdatedAt(new Date());
         }
       } catch (caught) {
-        if (active) {
-          setWorkspaceError(caught instanceof ApiError ? caught.message : "Could not load the machine workspace.");
-        }
+        if (active) setWorkspaceError(caught instanceof ApiError ? caught.message : "Could not load the machine.");
       }
     };
-    setWorkspace(null);
-    setWorkspaceError(null);
     void loadWorkspace();
-    const timer = window.setInterval(() => void loadWorkspace(), 30000);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void loadWorkspace();
+    }, 15000);
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [selectedCode, selectedMachine]);
+  }, [selectedCode, selectedMachine, tick]);
+
+  function chooseMachine(code: string) {
+    setSelectedCode(code);
+    localStorage.setItem(MACHINE_KEY, code);
+    go("/manufacturing", { machine: code });
+  }
+
+  function scanMachine() {
+    const code = locationCode(machineScan);
+    setMachineScan("");
+    if (!code) return;
+    const match = activeMachines.find((machine) => machine.codigo.toUpperCase() === code);
+    if (match) {
+      setActionError(null);
+      chooseMachine(match.codigo);
+    } else {
+      setActionError(`${code} is not an active machine.`);
+    }
+  }
+
+  function sent(request: ServiceRequest) {
+    setRequesting(null);
+    setMessage(
+      request.type === "tool_request"
+        ? `Tool request ${request.folio} sent to Tool Crib.`
+        : `${request.folio} sent to Tool Crib. Station ${request.station} is now waiting for its tool.`,
+    );
+    setTick((value) => value + 1);
+  }
+
+  function programReported(request: ServiceRequest) {
+    setReportingProgram(false);
+    setMessage(`${request.folio} sent. Tool Crib or Engineering will take it.`);
+    setTick((value) => value + 1);
+  }
+
+  function registered() {
+    setMessage(`Tool registered on station ${registering?.station.station}. You can now request service on it.`);
+    setRegistering(null);
+    setTick((value) => value + 1);
+  }
+
+  function received(request: ServiceRequest) {
+    setReceiving(null);
+    const where = `${request.replacement_tool_id} installed on station ${request.station}${request.same_tool ? " (the same tool came back)" : ""}.`;
+    setMessage(request.state === "closed" ? `${where} ${request.folio} is closed.` : `${where} Tool Crib keeps working on ${request.tool_id}.`);
+    setTick((value) => value + 1);
+  }
+
+  async function cancel(request: ServiceRequest, reason: string) {
+    setCancelling(null);
+    setActionError(null);
+    try {
+      const result = await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/cancel`, { motivo: reason });
+      setMessage(`${request.folio} cancelled${result.restored ? "; the tool is back on its position" : ""}.`);
+      setTick((value) => value + 1);
+    } catch (caught) {
+      setActionError(caught instanceof ApiError ? caught.message : "The request could not be cancelled.");
+    }
+  }
+
+  const program = workspace?.program ?? null;
+  const setup = workspace?.setup ?? null;
+  const requests = workspace?.service_requests ?? [];
+  const openRequests = requests.filter((request) => ["open", "attending", "collected"].includes(request.state));
+  const who = session?.fullName || session?.username || "";
 
   return (
-    <section className="manufacturing-page">
+    <section className="page">
       <div className="board-bar">
-        <div>
-          <h1>Manufacturing</h1>
-          <p className="muted">Machine setup, part data, station requirements, and physical tool coverage.</p>
-        </div>
+        <h1>Manufacturing</h1>
         <div className="bar-right">
-          {updatedAt && <span className="muted">Updated {updatedAt.toLocaleTimeString()}</span>}
-          <button className="btn" onClick={() => void loadMachines()}>Refresh</button>
+          {updatedAt && <span className="muted small">Updated {updatedAt.toLocaleTimeString()}</span>}
+          <ScanInput
+            className="scan-small"
+            value={machineScan}
+            onValue={setMachineScan}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                scanMachine();
+              }
+            }}
+            placeholder="Scan machine label"
+            aria-label="Scan the machine label"
+          />
+          <select value={selectedCode} onChange={(event) => chooseMachine(event.target.value)} disabled={!activeMachines.length} aria-label="Machine">
+            {!activeMachines.length && <option value="">No active machines</option>}
+            {activeMachines.map((machine) => (
+              <option key={machine.codigo} value={machine.codigo}>
+                {machine.codigo} · {machine.nombre}
+              </option>
+            ))}
+          </select>
+          <button className="btn" onClick={() => setTick((value) => value + 1)}>
+            Refresh
+          </button>
         </div>
       </div>
+      <p className="muted">What is running on your machine, its part number data, and the tools it needs. Ask Tool Crib for any tool from here.</p>
 
-      {machinesError && <div className="note note-error">{machinesError}</div>}
-      <div className="manufacturing-selector info-card">
-        <label htmlFor="manufacturing-machine">Machine</label>
-        <select
-          id="manufacturing-machine"
-          value={selectedCode}
-          onChange={(event) => {
-            setSelectedCode(event.target.value);
-            go("/manufacturing", { machine: event.target.value });
-          }}
-          disabled={!activeMachines.length}
-        >
-          {!activeMachines.length && <option value="">No active machines available</option>}
-          {activeMachines.map((machine) => (
-            <option key={machine.codigo} value={machine.codigo}>
-              {machine.codigo} · {machine.nombre}
-            </option>
-          ))}
-        </select>
-      </div>
-
+      <ErrorNote message={machinesError} />
+      <ErrorNote message={workspaceError} />
+      <ErrorNote message={actionError} />
+      {message && <div className="note note-info">✔ {message}</div>}
       {!machines && !machinesError && <p className="muted">Loading machines…</p>}
-      {machines && !activeMachines.length && <div className="note note-info">No active machines are registered.</div>}
-      {workspaceError && <div className="note note-error">{workspaceError}</div>}
-      {selectedMachine && workspace && (
+      {machines && !activeMachines.length && <p className="note note-info">No active machines are registered.</p>}
+      {selectedMachine && !workspace && !workspaceError && <p className="muted">Loading {selectedCode}…</p>}
+
+      {workspace && (
         <>
-          <div className="manufacturing-machine-head info-card">
-            <div>
-              <span className="eyebrow">Selected machine</span>
-              <h2>{workspace.machine} · {workspace.machine_name}</h2>
-              <div className="muted">
-                {[workspace.machine_type, workspace.building, workspace.line].filter(Boolean).join(" · ") || "Machine profile details not configured"}
+          <div className="summary">
+            <span className={`chip sum ${workspace.coverage.required === 0 ? "lvl-SIN_COLA" : workspace.coverage.complete ? "lvl-VERDE" : "lvl-ROJO"}`}>
+              {workspace.coverage.required === 0 ? "No tools required" : `Tools ${workspace.coverage.installed}/${workspace.coverage.required}`}
+            </span>
+            {openRequests.length > 0 && <span className="chip sum lvl-AMARILLO">{openRequests.length} open request{openRequests.length === 1 ? "" : "s"}</span>}
+            {workspace.active_kit && <span className="chip sum lvl-PARO">Kit {KIT_STATE_LABEL[workspace.active_kit.state] ?? workspace.active_kit.state}</span>}
+          </div>
+
+          <div className="panel">
+            <h2>On {workspace.machine}</h2>
+            <div className="facts">
+              <Fact label="Machine" value={`${workspace.machine} · ${workspace.machine_name}`} />
+              <Fact label="Part number" value={workspace.part_number ?? "No setup registered"} />
+              <Fact label="Setup loaded" value={setup ? when(setup.created_at) : null} />
+              <Fact label="Operator" value={who ? `${who}${session?.employeeNumber ? ` · ${session.employeeNumber}` : ""}` : null} />
+              <Fact label="Machine type" value={workspace.machine_type} />
+              <Fact label="Building · line" value={[workspace.building, workspace.line].filter(Boolean).join(" · ")} />
+            </div>
+            <p className="muted small">Based on the setup registered in MIRA. Production status and downtime are reported in MES.</p>
+          </div>
+
+          {workspace.part_number && (
+            <div className="panel">
+              <div className="machine-section-head" style={{ margin: 0 }}>
+                <h2>Part number {workspace.part_number}</h2>
+                {canRequest && (
+                  <button className="btn" onClick={() => { setMessage(null); setReportingProgram(true); }}>
+                    Report program problem
+                  </button>
+                )}
               </div>
-            </div>
-            <div className="manufacturing-part">
-              <span className="eyebrow">Part number from active setup</span>
-              <strong>{workspace.part_number ?? "No active setup registered"}</strong>
-              {workspace.setup?.drawing_name && <span className="muted">{workspace.setup.drawing_name}</span>}
-            </div>
-          </div>
-
-          <div className="note note-info">
-            This shows the registered active setup and physical tool locations. It does not confirm production status from MES.
-          </div>
-
-          <div className="manufacturing-summary">
-            <article className="info-card">
-              <span className="eyebrow">Physical coverage</span>
-              <strong className={workspace.coverage.complete ? "coverage-complete" : "coverage-incomplete"}>
-                {workspace.coverage.installed} / {workspace.coverage.required}
-              </strong>
-              <span className="muted">
-                {workspace.coverage.required === 0
-                  ? "No setup requirements"
-                  : workspace.coverage.complete
-                    ? "All required components are recorded on this machine"
-                    : "One or more required components are missing, elsewhere, or incompatible"}
-              </span>
-            </article>
-            <article className="info-card">
-              <span className="eyebrow">Setup technical data</span>
-              <strong>{workspace.setup?.material ?? workspace.program?.material ?? "Material not recorded"}</strong>
-              <span>
-                Thickness: {workspace.setup?.thickness ?? workspace.program?.thickness ?? "—"}
-                {workspace.setup?.thickness || workspace.program?.thickness ? " in" : ""}
-              </span>
-              {workspace.setup && (
-                <span className="muted">
-                  Setup recorded {new Date(`${workspace.setup.created_at}Z`).toLocaleString()}
-                </span>
-              )}
-            </article>
-            <article className="info-card">
-              <span className="eyebrow">Part program</span>
-              {workspace.program ? (
-                <>
-                  <strong>Revision {workspace.program.revision}</strong>
-                  <span>{[workspace.program.family, workspace.program.program_type].filter(Boolean).join(" · ")}</span>
-                  <span>{workspace.program.drawing_name ?? "Drawing not recorded"} · {workspace.program.file_name ?? "File not recorded"}</span>
-                  <span className="muted">
-                    Updated {new Date(`${workspace.program.updated_at}Z`).toLocaleString()} by {workspace.program.updated_by}
-                  </span>
-                  <a className="manufacturing-link" href="#/programs">Open part program details</a>
-                </>
+              <div className="facts">
+                <Fact label="Client" value={program?.client} />
+                <Fact label="Family" value={program?.family} />
+                <Fact label="Program type" value={program?.program_type} />
+                <Fact label="Revision" value={program?.revision} />
+                <Fact label="Drawing" value={program?.drawing_name ?? setup?.drawing_name} />
+                <Fact label="Material" value={program?.material ?? setup?.material} />
+                <Fact label="Thickness (in)" value={program?.thickness ?? setup?.thickness} />
+                <Fact label="Program file" value={program?.file_name} />
+                <Fact label="Pieces per blank" value={fmt(program?.planning.pieces_per_blank)} />
+                <Fact label="Cycle (s per blank)" value={fmt(program?.planning.cycle_time_s)} />
+                <Fact label="Cycle + lead time (s)" value={fmt(program?.planning.cycle_with_lead_s)} />
+                <Fact label="Theoretical UPH" value={fmt(program?.planning.theoretical_uph)} />
+              </div>
+              {program ? (
+                <p className="muted small">
+                  Program updated {when(program.updated_at)} by {program.updated_by}.
+                </p>
               ) : (
-                <span className="muted">No matching program record for this machine type and part number.</span>
+                <p className="muted small">No program is registered for this part number and machine type; showing what the setup records.</p>
               )}
-            </article>
-            {workspace.program && (
-              <article className="info-card">
-                <span className="eyebrow">Planning reference</span>
-                <strong>{formatNumber(workspace.program.planning.theoretical_uph)} theoretical UPH</strong>
-                <span>
-                  {formatNumber(workspace.program.planning.pieces_per_blank, 0)} pieces / blank ·{" "}
-                  {formatNumber(workspace.program.planning.cycle_with_lead_s)} s cycle with lead
-                </span>
-              </article>
-            )}
-          </div>
-
-          <div className="manufacturing-section-head">
-            <h2>Station layout and required tools</h2>
-            <span className="muted">{workspace.stations.length} required stations</span>
-          </div>
-          {!workspace.stations.length ? (
-            <div className="info-card muted">The active setup has no station requirements recorded.</div>
-          ) : (
-            <div className="manufacturing-stations">
-              {workspace.stations.map((station) => (
-                <article className="info-card manufacturing-station" key={station.station}>
-                  <header>
-                    <div>
-                      <span className="eyebrow">Station</span>
-                      <h3>{station.station}</h3>
-                    </div>
-                    <div className="manufacturing-station-meta">
-                      <span>TN {station.tn}</span>
-                      <span>Angle {station.angle || "—"}</span>
-                      {station.machine_station?.tamano && <span>Size {station.machine_station.tamano}</span>}
-                      {station.machine_station?.posicion && <span>{station.machine_station.posicion}</span>}
-                    </div>
-                  </header>
-                  <div className="manufacturing-components">
-                    {station.components.map((component) => (
-                      <ComponentCard key={component.category} component={component} />
-                    ))}
-                  </div>
-                </article>
-              ))}
             </div>
           )}
 
-          {workspace.program && (
+          <div className="machine-section-head">
+            <div>
+              <h2>Stations and tools</h2>
+              <p className="muted small">
+                {canRequest ? "Select a tool to request an action from Tool Crib." : "Your role can view the tools but not send requests."}
+              </p>
+            </div>
+          </div>
+          {!workspace.stations.length ? (
+            <p className="note note-info">
+              {workspace.setup
+                ? "There are no station requirements for this part number yet. Ask Engineering to load its program."
+                : "There is no setup registered on this machine."}
+            </p>
+          ) : (
             <>
-              <div className="manufacturing-section-head">
-                <h2>Part program requirements</h2>
-                <span className="muted">Saved program reference · revision {workspace.program.revision}</span>
-              </div>
-              {workspace.program.requirements.length ? (
-                <div className="table-wrap">
-                  <table className="table">
-                    <thead>
-                      <tr><th>Station</th><th>TN</th><th>Angle</th></tr>
-                    </thead>
-                    <tbody>
-                      {workspace.program.requirements.map((requirement) => (
-                        <tr key={`${requirement.station}-${requirement.tn}`}>
-                          <td>{requirement.station}</td>
-                          <td><strong>{requirement.tn}</strong></td>
-                          <td>{requirement.angle ?? "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="muted">The saved program has no station requirements.</p>
+              {workspace.requirements_source === "program" && (
+                <p className="note note-info">
+                  These stations come from the part number program. Register the tools already mounted on the machine once, then you can request service on them.
+                </p>
               )}
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Station</th>
+                      <th>TN</th>
+                      <th>Angle</th>
+                      <th className="hide-sm">Size · position</th>
+                      <th>Punch</th>
+                      <th>Die</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {workspace.stations.map((station) => (
+                      <tr key={station.requirement_id ?? `${station.station}-${station.tn}-${station.angle}`}>
+                        <td>
+                          <strong>{station.station}</strong>
+                        </td>
+                        <td>{station.tn}</td>
+                        <td>{station.angle || "—"}</td>
+                        <td className="hide-sm muted">{[station.machine_station?.size, station.machine_station?.position].filter(Boolean).join(" · ") || "—"}</td>
+                        {station.components.map((component) => (
+                          <td key={component.category}>
+                            <ToolCell
+                              component={component}
+                              canRequest={canRequest}
+                              onRequest={() => {
+                                setMessage(null);
+                                setRequesting({ station, component });
+                              }}
+                              onRegister={() => {
+                                setMessage(null);
+                                setRegistering({ station, component });
+                              }}
+                              onReceive={setReceiving}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
 
-          <div className="manufacturing-section-head">
-            <h2>Tools pending pickup</h2>
-            <span className="muted">{workspace.pending_pickups.length}</span>
+          <div className="machine-section-head">
+            <h2>Requests for {workspace.machine}</h2>
           </div>
-          {workspace.pending_pickups.length ? (
-            <div className="info-card manufacturing-pickups">
-              {workspace.pending_pickups.map((item) => (
-                <div key={item.tool_id}>
-                  <strong>{item.tool_id}</strong>
-                  <span>TN {item.tn ?? "—"} · {item.category ?? "Tool"}</span>
-                  <span className="muted">{new Date(`${item.created_at}Z`).toLocaleString()}</span>
-                </div>
-              ))}
-            </div>
+          {requests.length === 0 ? (
+            <p className="note note-info">Nothing has been requested from Tool Crib for this machine yet.</p>
           ) : (
-            <p className="muted">No tools are currently pending pickup from this machine.</p>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Request</th>
+                    <th>Position</th>
+                    <th className="hide-sm">Requested</th>
+                    <th>Status</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {requests.map((request) => {
+                    const done = request.state === "closed" || request.state === "cancelled";
+                    return (
+                      <tr key={request.id} className={done ? "inactive" : ""}>
+                        <td>
+                          <strong>{request.folio}</strong>
+                          <div className="muted small">{SERVICE_TYPE_LABEL[request.type] ?? request.type}</div>
+                        </td>
+                        <td>
+                          {positionLabel(request)}
+                          <div className="muted small">
+                            {request.type === "program_problem"
+                              ? problemLabel(request.problem)
+                              : `${request.tool_id ?? "No tool"}${request.replacement_tool_id ? ` → ${request.replacement_tool_id}` : ""}`}
+                          </div>
+                        </td>
+                        <td className="hide-sm">
+                          {request.requested_by_name}
+                          <div className="muted small">{when(request.requested_at)}</div>
+                        </td>
+                        <td>
+                          <RequestChip request={request} />
+                          <div className="muted small">
+                            {request.state === "attending" && `${request.attended_by_name} is on it`}
+                            {request.state === "collected" && `Tool recovered by ${request.collected_by}`}
+                            {request.state === "closed" && (request.resolution ? `${request.resolution} · ${when(request.closed_at)}` : when(request.closed_at))}
+                            {request.state === "cancelled" && (request.cancel_reason ?? "")}
+                          </div>
+                        </td>
+                        <td className="row-actions">
+                          {canRequest && canReceive(request) && (
+                            <button className="btn btn-primary" onClick={() => setReceiving(request)}>
+                              Receive tool
+                            </button>
+                          )}
+                          {canRequest && request.state === "open" && request.requested_by === session?.username && (
+                            <button className="btn btn-ghost-danger" onClick={() => setCancelling(request)}>
+                              Cancel
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
 
-          <div className="manufacturing-section-head">
-            <h2>Active kitting status</h2>
-          </div>
-          {workspace.active_kit ? (
-            <div className="info-card manufacturing-active-kit">
-              <strong>{workspace.active_kit.id}</strong>
-              <span className="chip">{KIT_STATE_LABEL[workspace.active_kit.state] ?? workspace.active_kit.state}</span>
-              <span>Started {new Date(`${workspace.active_kit.created_at}Z`).toLocaleString()}</span>
-              <span className="muted">Updated {new Date(`${workspace.active_kit.updated_at}Z`).toLocaleString()}</span>
-            </div>
-          ) : (
-            <p className="muted">No active kit is registered for this machine.</p>
+          {workspace.pending_pickups.length > 0 && (
+            <>
+              <div className="machine-section-head">
+                <h2>Tools waiting to be picked up</h2>
+              </div>
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Tool</th>
+                      <th>TN</th>
+                      <th>Since</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {workspace.pending_pickups.map((item) => (
+                      <tr key={item.tool_id}>
+                        <td>
+                          <strong>{item.tool_id}</strong>
+                        </td>
+                        <td>{item.tn ?? "—"}</td>
+                        <td>{when(item.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
-          <div className="note note-info">
-            Service requisitions and their history are not available yet; they will appear here after that workflow is implemented.
-          </div>
         </>
       )}
-      {selectedMachine && !workspace && !workspaceError && <p className="muted">Loading machine setup…</p>}
-      {session && (
-        <p className="manufacturing-user muted">
-          Signed in as {session.fullName || session.username}
-          {session.employeeNumber && ` · Employee ${session.employeeNumber}`}
-        </p>
+
+      {requesting && workspace && (
+        <RequestDialog machine={workspace.machine} station={requesting.station} component={requesting.component} onClose={() => setRequesting(null)} onDone={sent} />
+      )}
+      {reportingProgram && workspace && <ProgramProblemDialog workspace={workspace} onClose={() => setReportingProgram(false)} onDone={programReported} />}
+      {registering && workspace && (
+        <RegisterDialog machine={workspace.machine} station={registering.station} component={registering.component} onClose={() => setRegistering(null)} onDone={registered} />
+      )}
+      {receiving && <ReceiveDialog request={receiving} onClose={() => setReceiving(null)} onDone={received} />}
+      {cancelling && (
+        <ReasonDialog
+          title={`Cancel ${cancelling.folio}`}
+          message="Tool Crib has not taken it yet. If the tool is still on the machine it goes back to its position."
+          confirmLabel="Cancel request"
+          danger
+          onConfirm={(reason) => void cancel(cancelling, reason)}
+          onClose={() => setCancelling(null)}
+        />
       )}
     </section>
   );

@@ -24,6 +24,8 @@ from models.inventory import (
     PendienteRecoger,
     RequisitoSetup,
     ReservaHerramienta,
+    SolicitudServicio,
+    Ubicacion,
     Usuario,
     VarianteHerramienta,
     Base,
@@ -37,6 +39,7 @@ from programs_api import router as programs_router
 from demandas_api import router as demandas_router
 from users_api import router as users_router
 from kitting_api import router as kitting_router
+from service_requests_api import router as service_requests_router
 from auth import AuthMiddleware, normalize_role as _canonical_role
 from passwords import hash_password, verify_password, secrets_compare, ensure_password_hash
 from planning import calcular_planeacion
@@ -50,6 +53,7 @@ app.include_router(machines_router)
 app.include_router(programs_router)
 app.include_router(demandas_router)
 app.include_router(kitting_router)
+app.include_router(service_requests_router)
 # Aplicación web (web/dist). Se compila con build_web.bat; sin compilar, "/" avisa cómo hacerlo.
 WEB_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
 if os.path.isdir(os.path.join(WEB_DIST, "assets")):
@@ -111,6 +115,54 @@ def migrate_usuarios_table(db_path=DB_PATH):
     conn.close()
 migrate_usuarios_table()
 
+
+def migrate_service_requests_table(db_path=DB_PATH):
+    """Service requests gained optional position fields (program problems have none) and two columns."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    info = {row[1]: row for row in cur.execute("PRAGMA table_info(solicitudes_servicio)").fetchall()}
+    if not info:
+        conn.close()
+        return
+    if info["requisito_id"][3] == 1:  # NOT NULL en la versión anterior: se reconstruye (la tabla es pequeña)
+        old_columns = list(info)
+        cur.execute("DROP INDEX IF EXISTS ix_solicitudes_servicio_estado")
+        cur.execute("DROP INDEX IF EXISTS ix_solicitudes_servicio_maquina")
+        cur.execute("ALTER TABLE solicitudes_servicio RENAME TO solicitudes_servicio_old")
+        conn.commit()
+        conn.close()
+        from sqlalchemy import create_engine
+
+        target_engine = create_engine(f"sqlite:///{db_path}")
+        SolicitudServicio.__table__.create(bind=target_engine)
+        target_engine.dispose()
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        new_columns = [row[1] for row in cur.execute("PRAGMA table_info(solicitudes_servicio)").fetchall()]
+        shared = ", ".join(column for column in old_columns if column in new_columns)
+        cur.execute(f"INSERT INTO solicitudes_servicio ({shared}) SELECT {shared} FROM solicitudes_servicio_old")
+        cur.execute("DROP TABLE solicitudes_servicio_old")
+    else:
+        for column in ("problema", "resolucion"):
+            if column not in info:
+                cur.execute(f"ALTER TABLE solicitudes_servicio ADD COLUMN {column} TEXT")
+    conn.commit()
+    conn.close()
+migrate_service_requests_table()
+
+
+def migrate_movements_table(db_path=DB_PATH):
+    """Movements record whether a tool code was scanned or typed."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    columns = [row[1] for row in cur.execute("PRAGMA table_info(movimientos_herramienta)").fetchall()]
+    if columns and "captura" not in columns:
+        cur.execute("ALTER TABLE movimientos_herramienta ADD COLUMN captura TEXT")
+        conn.commit()
+    conn.close()
+migrate_movements_table()
 # Crear usuario admin principal si no existe
 def ensure_admin_user():
     db = SessionLocal()
@@ -832,6 +884,21 @@ def apply_inventory_record(tool, record, variant):
     return tool
 
 
+def require_registered_rack(db, tool, requested_location):
+    """A tool's stored location can only be set to an active registered rack (or cleared)."""
+    requested = (requested_location or "").strip()
+    if not requested or (tool is not None and (tool.ubicacion or "") == requested):
+        return
+    rack = db.query(Ubicacion).filter(
+        Ubicacion.codigo == requested, Ubicacion.tipo == "rack", Ubicacion.activa.is_(True)
+    ).first()
+    if not rack:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Location '{requested}' is not a registered rack. Choose one from the list or register the rack in Locations.",
+        )
+
+
 def reject_untracked_location_change(db, tool, requested_location):
     if tool.ubicacion == requested_location:
         return
@@ -977,6 +1044,7 @@ def registrar_herramienta_inventario(item: RegistroInventarioCreate):
     try:
         if db.query(Herramienta).filter(Herramienta.id == record["id"]).first():
             raise HTTPException(status_code=409, detail="Physical tool ID already exists")
+        require_registered_rack(db, None, record["ubicacion"])
         variant = get_or_create_catalog_variant(db, record)
         tool = apply_inventory_record(Herramienta(id=record["id"]), record, variant)
         db.add(tool)
@@ -1005,6 +1073,7 @@ def actualizar_herramienta_inventario(herramienta_id: str, item: RegistroInventa
             existing_category=tool.categoria,
         )
         reject_untracked_location_change(db, tool, record["ubicacion"])
+        require_registered_rack(db, tool, record["ubicacion"])
         reject_tracked_identity_change(db, tool, record)
         if record["id"] != herramienta_id:
             raise HTTPException(status_code=409, detail="Physical tool ID cannot be changed")
@@ -1024,6 +1093,11 @@ def actualizar_herramienta_inventario(herramienta_id: str, item: RegistroInventa
 @app.post("/herramientas/", response_model=HerramientaRead)
 def crear_herramienta(herramienta: HerramientaCreate):
     db = SessionLocal()
+    try:
+        require_registered_rack(db, None, herramienta.ubicacion)
+    except HTTPException:
+        db.close()
+        raise
     # Formatear life y clearance
     life = herramienta.life
     clearance = herramienta.clearance
@@ -1100,6 +1174,7 @@ def actualizar_herramienta(herramienta_id: str, herramienta: HerramientaCreate):
         raise HTTPException(status_code=404, detail="Herramienta no encontrada")
     try:
         reject_untracked_location_change(db, h, herramienta.ubicacion)
+        require_registered_rack(db, h, herramienta.ubicacion)
     except HTTPException:
         db.close()
         raise
