@@ -21,6 +21,7 @@ from models.inventory import (
     Setup,
     Surtido,
     Ubicacion,
+    Usuario,
 )
 
 
@@ -1080,13 +1081,30 @@ class WorkflowApiTests(unittest.TestCase):
         workspace = tracking.manufacturing_machine_workspace("M1")
         return next(row["requirement_id"] for row in workspace["stations"] if row["station"] == station)
 
-    def _open_request(self, tipo="sharpening", station="201", category="punzon", tool_id="P100", note=None):
+    def _ensure_user(self, username, role="PUNCHING_OPERATOR", shift="Turno 1", full_name=None, active=True):
+        session = self.session_factory()
+        try:
+            session.merge(Usuario(
+                username=username, password="x", role=role, activo=active,
+                full_name=full_name or username.upper(), shift=shift, area="Punzonado",
+            ))
+            session.commit()
+        finally:
+            session.close()
+
+    def _open_request(self, tipo="sharpening", station="201", category="punzon", tool_id="P100", note=None,
+                      causa=None, momento=None, operador=None):
         import service_requests_api as service
 
+        self._ensure_user("op1")
         self._as("op1", "PUNCHING_OPERATOR")
+        if tipo == "damage":
+            causa = causa or "collision"
+            momento = momento or "production"
         return service.create_service_request(service.ServiceRequestCreate(
             machine="M1", requirement_id=self._requirement_id(station),
             category=category, tipo=tipo, tool_id=tool_id, nota=note,
+            causa=causa, momento=momento, operador=operador,
         ))
 
     def _slot_state(self, station, category):
@@ -1380,6 +1398,111 @@ class WorkflowApiTests(unittest.TestCase):
             session.close()
         self.assertIn(("100", "matriz"), components)
 
+    def test_damage_report_captures_who_why_and_when_with_the_context_already_known(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._ensure_user("op1")
+        self._ensure_user("op2", shift="Turno 2", full_name="Second Operator")
+        self._ensure_user("gone", shift="Turno 3", active=False)
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR", shift="Turno 2")
+        self._as("op1", "PUNCHING_OPERATOR")
+        base = dict(machine="M1", requirement_id=self._requirement_id("201"), category="punzon",
+                    tipo="damage", tool_id="P100", nota="Tip chipped on the first hit")
+        for bad in (
+            dict(causa=None, momento="production"),
+            dict(causa="witchcraft", momento="production"),
+            dict(causa="collision", momento="lunch"),
+            dict(causa="collision", momento="production", operador="nobody"),
+            dict(causa="collision", momento="production", operador="gone"),
+        ):
+            with self.assertRaises(HTTPException, msg=str(bad)) as error:
+                service.create_service_request(service.ServiceRequestCreate(**base, **bad))
+            self.assertEqual(error.exception.status_code, 422, bad)
+
+        request = service.create_service_request(service.ServiceRequestCreate(
+            **base, causa="collision", momento="setup", operador="op2",
+        ))
+        incident = request["incident"]
+        self.assertEqual(
+            (incident["operator"], incident["shift"], incident["cause"], incident["moment"]),
+            ("op2", "Turno 2", "collision", "setup"),
+        )
+        self.assertEqual(
+            (incident["machine"], incident["part_number"], incident["station"], incident["tn"], incident["tool_id"]),
+            ("M1", "CURRENT", "201", "100", "P100"),
+        )
+        self.assertEqual((incident["origin"], incident["reported_as"], incident["description"]),
+                         ("machine", "damage", "Tip chipped on the first hit"))
+        self.assertEqual(incident["created_by"], "op1")
+
+        # Without naming anyone, the operator involved is the person reporting.
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="MT1"))
+        self._as("op1", "PUNCHING_OPERATOR")
+        second = service.create_service_request(service.ServiceRequestCreate(
+            machine="M1", requirement_id=self._requirement_id("202"), category="punzon", tipo="damage",
+            tool_id="P200", nota="Worn out", causa="normal_wear", momento="production",
+        ))
+        self.assertEqual((second["incident"]["operator"], second["incident"]["shift"]), ("op1", "Turno 1"))
+        listed = service.list_tool_incidents(tool_id="p100", limit=10)
+        self.assertEqual([row["tool_id"] for row in listed], ["P100"])
+
+    def test_toolcrib_records_the_finding_when_a_sharpening_needs_more(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._ensure_user("op2", shift="Turno 2")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR", shift="Turno 2")
+        request = self._open_request()  # reported as sharpening
+        self.assertIsNone(request["incident"])
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        payload = dict(operador="op2", causa="wrong_setup", momento="setup", hallazgo="Cracked shoulder, not just dull")
+        with self.assertRaises(HTTPException) as too_early:
+            service.record_tool_incident(request["id"], service.IncidentRecord(**payload))
+        self.assertEqual(too_early.exception.status_code, 409)
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+
+        for wrong in (dict(hallazgo="x"), dict(causa="nope"), dict(operador="ghost")):
+            with self.assertRaises(HTTPException) as invalid:
+                service.record_tool_incident(request["id"], service.IncidentRecord(**{**payload, **wrong}))
+            self.assertEqual(invalid.exception.status_code, 422, wrong)
+        self._as("eng1", "ENGINEERING")
+        with self.assertRaises(HTTPException) as engineering:
+            service.record_tool_incident(request["id"], service.IncidentRecord(**payload))
+        self.assertEqual(engineering.exception.status_code, 403)
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        recorded = service.record_tool_incident(request["id"], service.IncidentRecord(**payload))["incident"]
+        self.assertEqual((recorded["reported_as"], recorded["finding"], recorded["origin"]),
+                         ("sharpening", "Cracked shoulder, not just dull", "machine"))
+        self.assertEqual((recorded["operator"], recorded["shift"], recorded["cause"]), ("op2", "Turno 2", "wrong_setup"))
+        self.assertEqual((recorded["machine"], recorded["part_number"], recorded["station"]), ("M1", "CURRENT", "201"))
+
+        corrected = service.record_tool_incident(
+            request["id"], service.IncidentRecord(**{**payload, "causa": "collision", "hallazgo": "Collision confirmed"}),
+        )["incident"]
+        self.assertEqual((corrected["id"], corrected["cause"], corrected["updated_by"]), (recorded["id"], "collision", "tc1"))
+        self.assertEqual(len(service.list_tool_incidents(tool_id=None, limit=50)), 1)
+
+    def test_operators_list_only_shows_active_manufacturing_users_to_allowed_roles(self):
+        import service_requests_api as service
+
+        self._ensure_user("op1", full_name="First Operator")
+        self._ensure_user("tech1", role="PUNCHING_TECHNICIAN", full_name="A Technician")
+        self._ensure_user("old", active=False)
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        self.assertEqual([row["username"] for row in service.list_operators()], ["tech1", "op1"])
+        self._as("op1", "PUNCHING_OPERATOR")
+        self.assertEqual(len(service.list_operators()), 2)
+        self._as("plan1", "PLANNING")
+        with self.assertRaises(HTTPException) as denied:
+            service.list_operators()
+        self.assertEqual(denied.exception.status_code, 403)
+
     def test_board_flags_machines_whose_position_is_waiting_for_a_tool(self):
         import demandas_api
 
@@ -1528,6 +1651,42 @@ class WorkflowApiTests(unittest.TestCase):
         done = service.install_service_tool(wanted["id"], service.ServiceInstall(tool_id="D100B"))
         self.assertEqual(done["state"], "closed")
         self.assertEqual(self._slot_state("201", "matriz")["tool_id"], "D100B")
+
+    def test_work_on_a_tool_cannot_be_collected_into_a_rack_and_a_stuck_tool_can_be_moved(self):
+        import service_requests_api as service
+
+        self._baseline()
+        request = self._open_request()
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        with self.assertRaises(HTTPException) as rack:
+            service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="R1"))
+        self.assertEqual(rack.exception.status_code, 409)
+        self.assertIn("service location", rack.exception.detail)
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+
+        # A tool already in a service location has nothing to move.
+        with self.assertRaises(HTTPException) as in_service:
+            service.relocate_service_tool(request["id"], service.ServiceCollect(destino_codigo="MT1"))
+        self.assertEqual(in_service.exception.status_code, 409)
+
+        # Simulate a tool left in a rack by an older version, then move it to a service location.
+        session = self.session_factory()
+        try:
+            session.query(Herramienta).filter_by(id="P100").one().ubicacion = "R1"
+            session.commit()
+        finally:
+            session.close()
+        with self.assertRaises(HTTPException) as no_result:
+            service.finish_tool_service(request["id"], service.ServiceFinish(resultado="ready", rebaje=0.002))
+        self.assertEqual(no_result.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as to_rack:
+            service.relocate_service_tool(request["id"], service.ServiceCollect(destino_codigo="R1"))
+        self.assertEqual(to_rack.exception.status_code, 409)
+        moved = service.relocate_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self.assertEqual((moved["tool_location"], moved["tool_status"]), ("TG1", "afilado"))
+        finished = service.finish_tool_service(request["id"], service.ServiceFinish(resultado="ready", rebaje=0.002))
+        self.assertEqual(finished["tool_status"], "disponible")
 
     def test_service_request_install_requires_the_setup_it_was_opened_on(self):
         import service_requests_api as service

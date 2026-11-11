@@ -306,6 +306,44 @@ class ServicioHerramienta(Base):
     fecha = Column(DateTime, nullable=False)
 
 
+class IncidenteHerramienta(Base):
+    """What happened to a tool (damage or escalation): the record behind damage Paretos.
+
+    Created when an operator reports damage, or when Tool Crib finds a tool needs more than the
+    reported service. `reportado_como` keeps what Manufacturing reported; `hallazgo` what Tool Crib found.
+    """
+    __tablename__ = "incidentes_herramienta"
+    __table_args__ = (
+        UniqueConstraint("solicitud_id", name="uq_incidente_solicitud"),
+        Index("ix_incidentes_herramienta_tool", "herramienta_id"),
+        Index("ix_incidentes_herramienta_fecha", "creado_en"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    herramienta_id = Column(String, ForeignKey("herramientas.id"), nullable=False)
+    solicitud_id = Column(Integer, ForeignKey("solicitudes_servicio.id"), nullable=True)
+    ticket_id = Column(Integer, nullable=True)
+    origen = Column(String, nullable=False)
+    reportado_como = Column(String, nullable=True)
+    maquina_codigo = Column(String, nullable=True)
+    numero_parte = Column(String, nullable=True)
+    estacion = Column(String, nullable=True)
+    setup_id = Column(Integer, nullable=True)
+    tn = Column(String, nullable=True)
+    categoria = Column(String, nullable=True)
+    life = Column(String, nullable=True)
+    operador = Column(String, nullable=True)
+    turno = Column(String, nullable=True)
+    causa = Column(String, nullable=True)
+    momento = Column(String, nullable=True)
+    descripcion = Column(Text, nullable=True)
+    hallazgo = Column(Text, nullable=True)
+    creado_por = Column(String, nullable=False)
+    creado_en = Column(DateTime, nullable=False)
+    actualizado_por = Column(String, nullable=True)
+    actualizado_en = Column(DateTime, nullable=True)
+
+
 class MovimientoHerramienta(Base):
     __tablename__ = "movimientos_herramienta"
 

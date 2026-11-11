@@ -102,6 +102,25 @@ export const SERVICE_TYPES: { value: string; label: string; help: string; noteRe
   { value: "return", label: "Return", help: "Take the tool back to Tool Crib; the position stays empty." },
 ];
 
+export const DAMAGE_CAUSES: { value: string; label: string }[] = [
+  { value: "collision", label: "Collision" },
+  { value: "normal_wear", label: "Normal wear" },
+  { value: "wrong_setup", label: "Wrong setup" },
+  { value: "wrong_material", label: "Wrong material" },
+  { value: "handling", label: "Handling" },
+  { value: "lubrication", label: "Lubrication" },
+  { value: "supplier_defect", label: "Supplier defect" },
+  { value: "unknown", label: "Unknown" },
+];
+
+export const DAMAGE_MOMENTS: { value: string; label: string }[] = [
+  { value: "setup", label: "During setup" },
+  { value: "production", label: "In production" },
+  { value: "inspection", label: "During inspection" },
+  { value: "handling", label: "While handling" },
+  { value: "unknown", label: "Unknown" },
+];
+
 export const PROGRAM_PROBLEMS: { value: string; label: string; help: string }[] = [
   { value: "wrong_tool", label: "Wrong tool in the program", help: "The program asks for a tool that is not the right one." },
   { value: "wrong_station_or_angle", label: "Wrong station or angle", help: "A station or angle in the program does not match the machine." },
@@ -147,6 +166,11 @@ export const MOVEMENT_LABEL: Record<string, string> = {
   service_collect_damage: "Collected from the machine, reported damaged",
   service_collect_performance: "Collected from the machine, performance issue",
   service_collect_return: "Returned from the machine",
+  service_relocate_sharpening: "Moved to a service location to record the sharpening",
+  service_relocate_inspection: "Moved to a service location to record the inspection",
+  service_relocate_replacement: "Moved to a service location to record the replacement",
+  service_relocate_damage: "Moved to a service location to record the damage",
+  service_relocate_performance: "Moved to a service location to record the performance issue",
   rack_to_cart_for_kit: "Taken from the rack to the cart",
   kit_selection_reversed: "Cart selection undone",
   kit_cancelled_return_to_rack: "Kit cancelled: back to its rack",

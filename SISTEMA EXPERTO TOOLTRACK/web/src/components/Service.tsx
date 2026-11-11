@@ -1,9 +1,94 @@
-import { PROGRAM_PROBLEMS, SERVICE_STATE_CLASS, SERVICE_STATE_LABEL } from "../labels";
-import type { ServiceRequest } from "../types";
+import { useEffect, useState } from "react";
+import { api } from "../api";
+import { DAMAGE_CAUSES, DAMAGE_MOMENTS, PROGRAM_PROBLEMS, SERVICE_STATE_CLASS, SERVICE_STATE_LABEL } from "../labels";
+import type { OperatorOption, ServiceRequest, ToolIncident } from "../types";
 import { Chip } from "./MachineCard";
 
 export function when(iso: string | null | undefined): string {
   return iso ? new Date(`${iso}Z`).toLocaleString() : "—";
+}
+
+export function causeLabel(value: string | null): string {
+  return DAMAGE_CAUSES.find((cause) => cause.value === value)?.label ?? value ?? "—";
+}
+
+export function momentLabel(value: string | null): string {
+  return DAMAGE_MOMENTS.find((moment) => moment.value === value)?.label ?? value ?? "—";
+}
+
+export interface IncidentValues {
+  operator: string;
+  cause: string;
+  moment: string;
+}
+
+export function incidentMissing(values: IncidentValues): string | null {
+  if (!values.operator) return "Choose who was on the machine.";
+  if (!values.cause) return "Choose the cause.";
+  if (!values.moment) return "Choose when it happened.";
+  return null;
+}
+
+/** Who was on the machine, why it happened and when; the shift comes from that operator's profile. */
+export function IncidentFields({ values, onChange }: { values: IncidentValues; onChange: (values: IncidentValues) => void }) {
+  const [operators, setOperators] = useState<OperatorOption[]>([]);
+  useEffect(() => {
+    api<OperatorOption[]>("GET", "/workflow/operators")
+      .then(setOperators)
+      .catch(() => setOperators([]));
+  }, []);
+  const chosen = operators.find((person) => person.username === values.operator);
+  return (
+    <>
+      <label>
+        Who was on the machine?
+        <select value={values.operator} onChange={(event) => onChange({ ...values, operator: event.target.value })}>
+          <option value="">Choose…</option>
+          {operators.map((person) => (
+            <option key={person.username} value={person.username}>
+              {person.full_name}
+              {person.employee_number ? ` · ${person.employee_number}` : ""}
+            </option>
+          ))}
+        </select>
+        {chosen && <span className="muted small">Shift: {chosen.shift ?? "not set in the profile"}</span>}
+      </label>
+      <label>
+        Cause
+        <select value={values.cause} onChange={(event) => onChange({ ...values, cause: event.target.value })}>
+          <option value="">Choose…</option>
+          {DAMAGE_CAUSES.map((cause) => (
+            <option key={cause.value} value={cause.value}>
+              {cause.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        When did it happen?
+        <select value={values.moment} onChange={(event) => onChange({ ...values, moment: event.target.value })}>
+          <option value="">Choose…</option>
+          {DAMAGE_MOMENTS.map((moment) => (
+            <option key={moment.value} value={moment.value}>
+              {moment.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
+}
+
+export function IncidentSummary({ incident }: { incident: ToolIncident }) {
+  return (
+    <div className="muted small">
+      <div>
+        Incident: {causeLabel(incident.cause)} · {momentLabel(incident.moment)} · {incident.operator ?? "—"}
+        {incident.shift ? ` (${incident.shift})` : ""}
+      </div>
+      {incident.finding && <div>Tool Crib found: {incident.finding}</div>}
+    </div>
+  );
 }
 
 export function RequestChip({ request }: { request: Pick<ServiceRequest, "state"> & Partial<Pick<ServiceRequest, "type">> }) {

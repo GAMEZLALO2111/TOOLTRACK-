@@ -6,7 +6,7 @@ import { Chip } from "../components/MachineCard";
 import { ReasonDialog } from "../components/ReasonDialog";
 import { ScanInput } from "../components/ScanInput";
 import { locationCode, type Capture } from "../scan";
-import { canReceive, positionLabel, problemLabel, RequestChip, when } from "../components/Service";
+import { canReceive, IncidentFields, incidentMissing, positionLabel, problemLabel, RequestChip, when, type IncidentValues } from "../components/Service";
 import { KIT_STATE_LABEL, PROGRAM_PROBLEMS, SERVICE_TYPE_LABEL, SERVICE_TYPES, TOOL_STATE_CLASS, TOOL_STATE_LABEL } from "../labels";
 import { go, type Route } from "../router";
 import type { ManufacturingMachineOption, ManufacturingWorkspace, ServiceRequest } from "../types";
@@ -112,15 +112,20 @@ function RequestDialog({ machine, station, component, onClose, onDone }: Request
   const emptyPosition = !component.tool_id;
   const [type, setType] = useState(emptyPosition ? "tool_request" : "");
   const [note, setNote] = useState("");
+  const { session } = useAuth();
+  const [incident, setIncident] = useState<IncidentValues>({ operator: session?.username ?? "", cause: "", moment: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const chosen = SERVICE_TYPES.find((option) => option.value === type);
   const noteRequired = !!chosen?.noteRequired;
+  const isDamage = type === "damage";
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     if (!type) return setError("Choose what you need from Tool Crib.");
     if (noteRequired && !note.trim()) return setError("Describe what happened so Tool Crib knows what to expect.");
+    const missing = isDamage ? incidentMissing(incident) : null;
+    if (missing) return setError(missing);
     setBusy(true);
     setError(null);
     try {
@@ -135,6 +140,7 @@ function RequestDialog({ machine, station, component, onClose, onDone }: Request
           tipo: type,
           tool_id: component.tool_id,
           nota: note.trim() || null,
+          ...(isDamage ? { operador: incident.operator, causa: incident.cause, momento: incident.moment } : {}),
         }),
       );
     } catch (caught) {
@@ -184,6 +190,7 @@ function RequestDialog({ machine, station, component, onClose, onDone }: Request
             <p className="note note-warn">Take the tool off the machine first. This position will show as empty until Tool Crib brings the replacement.</p>
           </>
         )}
+        {isDamage && <IncidentFields values={incident} onChange={setIncident} />}
         {type && (
           <label>
             {noteRequired ? "What happened? (required)" : "Notes (optional)"}

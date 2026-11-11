@@ -6,7 +6,7 @@ import { ReasonDialog } from "../components/ReasonDialog";
 import { LocationPicker } from "../components/LocationPicker";
 import { ScanInput } from "../components/ScanInput";
 import { sameCode, toolCode, type Capture } from "../scan";
-import { ABNORMAL_REBAJE, isActive, isWaitingForTool, needsServiceResult, positionLabel, problemLabel, RequestChip, WAIT_LATE_MIN, WAIT_WARN_MIN, waitClass, waitMinutes, waitText, when } from "../components/Service";
+import { ABNORMAL_REBAJE, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, positionLabel, problemLabel, RequestChip, WAIT_LATE_MIN, WAIT_WARN_MIN, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
 import { SERVICE_TYPE_LABEL, TOOL_STATE_LABEL } from "../labels";
 import type { LocationRow, ServiceRequest } from "../types";
 import { usePoll } from "../usePoll";
@@ -18,24 +18,27 @@ const VIEWS = [
   { value: "closed", label: "Closed" },
   { value: "all", label: "All" },
 ];
+const SERVICE_PLACES = ["togu", "maintenance", "workshop"];
 const COLLECT_HINT: Record<string, string> = {
   sharpening: "The tool will be marked as being sharpened.",
   damage: "The tool will be marked as damaged.",
   return: "The request closes once the tool is recorded; the position stays empty.",
 };
 
-function CollectDialog({ request, destinations, onClose, onDone }: { request: ServiceRequest; destinations: LocationRow[]; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
+function CollectDialog({ request, destinations, relocate, onClose, onDone }: { request: ServiceRequest; destinations: LocationRow[]; relocate?: boolean; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
   const [destination, setDestination] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Work on a tool happens in a service location; only a return goes straight to a rack.
+  const allowed = request.type === "return" ? destinations : destinations.filter((place) => SERVICE_PLACES.includes(place.tipo));
 
   async function submit() {
     if (!destination) return setError("Choose where the tool is going.");
     setBusy(true);
     setError(null);
     try {
-      onDone(await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/collect`, { destino_codigo: destination, nota: note.trim() || null }));
+      onDone(await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/${relocate ? "relocate" : "collect"}`, { destino_codigo: destination, nota: note.trim() || null }));
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "The pickup could not be recorded.");
       setBusy(false);
@@ -44,7 +47,7 @@ function CollectDialog({ request, destinations, onClose, onDone }: { request: Se
 
   return (
     <Dialog
-      title={`Tool collected · ${request.folio}`}
+      title={relocate ? `Move the tool · ${request.folio}` : `Tool collected · ${request.folio}`}
       onClose={onClose}
       footer={
         <>
@@ -52,7 +55,7 @@ function CollectDialog({ request, destinations, onClose, onDone }: { request: Se
             Back
           </button>
           <button className="btn btn-primary" onClick={() => void submit()} disabled={busy}>
-            {busy ? "Saving…" : "Save pickup"}
+            {busy ? "Saving…" : relocate ? "Move tool" : "Save pickup"}
           </button>
         </>
       }
@@ -64,8 +67,8 @@ function CollectDialog({ request, destinations, onClose, onDone }: { request: Se
             <strong>{request.tool_id}</strong>
           </div>
           <div>
-            <div className="muted small">Taken from</div>
-            <strong>{request.machine}</strong>
+            <div className="muted small">{relocate ? "Now in" : "Taken from"}</div>
+            <strong>{relocate ? request.tool_location ?? "—" : request.machine}</strong>
           </div>
           <div>
             <div className="muted small">Request</div>
@@ -73,8 +76,9 @@ function CollectDialog({ request, destinations, onClose, onDone }: { request: Se
           </div>
         </div>
         {request.note && <p className="note note-warn">Operator note: {request.note}</p>}
-        <LocationPicker label="Where does the tool go?" options={destinations} value={destination} onChange={setDestination} autoFocus showType />
-        {COLLECT_HINT[request.type] && <p className="muted small">{COLLECT_HINT[request.type]}</p>}
+        {relocate && <p className="note note-warn">The tool is not in a service location, so its result cannot be recorded. Move it to the place where the work is done.</p>}
+        <LocationPicker label={request.type === "return" ? "Where does the tool go?" : "Which service location?"} options={allowed} value={destination} onChange={setDestination} autoFocus showType />
+        {!relocate && COLLECT_HINT[request.type] && <p className="muted small">{COLLECT_HINT[request.type]}</p>}
         <label>
           Notes (optional)
           <input value={note} onChange={(event) => setNote(event.target.value)} maxLength={200} />
@@ -237,6 +241,78 @@ function StoreDialog({ request, racks, onClose, onDone }: { request: ServiceRequ
   );
 }
 
+function IncidentDialog({ request, onClose, onDone }: { request: ServiceRequest; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
+  const existing = request.incident;
+  const [values, setValues] = useState<IncidentValues>({ operator: existing?.operator ?? "", cause: existing?.cause ?? "", moment: existing?.moment ?? "" });
+  const [finding, setFinding] = useState(existing?.finding ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    const missing = incidentMissing(values);
+    if (missing) return setError(missing);
+    if (finding.trim().length < 3) return setError("Write what Tool Crib found on the tool.");
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(
+        await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/incident`, {
+          operador: values.operator,
+          causa: values.cause,
+          momento: values.moment,
+          hallazgo: finding.trim(),
+        }),
+      );
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The incident could not be saved.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`Incident · ${request.folio}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Back
+          </button>
+          <button className="btn btn-primary" onClick={() => void submit()} disabled={busy}>
+            {busy ? "Saving…" : "Save incident"}
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        <div className="facts">
+          <div>
+            <div className="muted small">Tool</div>
+            <strong>{request.tool_id}</strong>
+          </div>
+          <div>
+            <div className="muted small">Machine · part</div>
+            <strong>
+              {request.machine} · {request.part_number ?? "—"}
+            </strong>
+          </div>
+          <div>
+            <div className="muted small">Reported as</div>
+            <strong>{SERVICE_TYPE_LABEL[request.type] ?? request.type}</strong>
+          </div>
+        </div>
+        {request.note && <p className="note note-warn">Manufacturing said: {request.note}</p>}
+        <IncidentFields values={values} onChange={setValues} />
+        <label>
+          What Tool Crib found
+          <textarea rows={3} maxLength={500} value={finding} onChange={(event) => setFinding(event.target.value)} autoFocus />
+        </label>
+        <ErrorNote message={error} />
+      </div>
+    </Dialog>
+  );
+}
+
 function ResolveDialog({ request, onClose, onDone }: { request: ServiceRequest; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -305,6 +381,8 @@ export function ServiceRequestsPage() {
   const [resolving, setResolving] = useState<ServiceRequest | null>(null);
   const [finishing, setFinishing] = useState<ServiceRequest | null>(null);
   const [storing, setStoring] = useState<ServiceRequest | null>(null);
+  const [recording, setRecording] = useState<ServiceRequest | null>(null);
+  const [relocating, setRelocating] = useState<ServiceRequest | null>(null);
   const [cancelling, setCancelling] = useState<ServiceRequest | null>(null);
 
   const load = useCallback(async () => {
@@ -365,6 +443,13 @@ export function ServiceRequestsPage() {
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Could not cancel the request.");
     }
+  }
+
+  // Until the locations load, assume the tool is where it should be.
+  function inServicePlace(request: ServiceRequest): boolean {
+    if (destinations.length === 0) return true;
+    const place = destinations.find((item) => item.codigo === request.tool_location);
+    return !!place && SERVICE_PLACES.includes(place.tipo);
   }
 
   function collected(request: ServiceRequest) {
@@ -444,6 +529,7 @@ export function ServiceRequestsPage() {
                           : `${request.tool_id ?? "No tool: bring one"}${request.replacement_tool_id ? ` → ${request.replacement_tool_id}` : ""}`}
                       </div>
                       {request.note && <div className="warn-text small">“{request.note}”</div>}
+                      {request.incident && <IncidentSummary incident={request.incident} />}
                     </td>
                     <td className="hide-sm">
                       {request.requested_by_name}
@@ -482,9 +568,19 @@ export function ServiceRequestsPage() {
                           Tool collected…
                         </button>
                       )}
-                      {canHandleTools && needsServiceResult(request) && (
+                      {canHandleTools && (request.state === "collected" || request.state === "replaced") && !isProgram && request.type !== "tool_request" && (
+                        <button className={`btn ${request.incident ? "" : "btn-primary"}`} onClick={() => setRecording(request)}>
+                          {request.incident ? "Edit incident…" : "Record incident…"}
+                        </button>
+                      )}
+                      {canHandleTools && needsServiceResult(request) && inServicePlace(request) && (
                         <button className="btn btn-primary" onClick={() => setFinishing(request)}>
                           Record result…
+                        </button>
+                      )}
+                      {canHandleTools && needsServiceResult(request) && !inServicePlace(request) && (
+                        <button className="btn btn-primary" onClick={() => setRelocating(request)}>
+                          Move to service…
                         </button>
                       )}
                       {canHandleTools && request.state === "replaced" && toolReady && (
@@ -513,6 +609,19 @@ export function ServiceRequestsPage() {
       {!rows && !error && <p className="muted">Loading requests…</p>}
 
       {collecting && <CollectDialog request={collecting} destinations={destinations} onClose={() => setCollecting(null)} onDone={collected} />}
+      {relocating && (
+        <CollectDialog
+          request={relocating}
+          destinations={destinations}
+          relocate
+          onClose={() => setRelocating(null)}
+          onDone={(request) => {
+            setRelocating(null);
+            setMessage(`${request.tool_id} moved to ${request.destination}. Now record the result.`);
+            void load();
+          }}
+        />
+      )}
       {finishing && (
         <FinishDialog
           request={finishing}
@@ -538,6 +647,17 @@ export function ServiceRequestsPage() {
           onDone={(request) => {
             setStoring(null);
             setMessage(`${request.tool_id} stored. ${request.folio} is closed.`);
+            void load();
+          }}
+        />
+      )}
+      {recording && (
+        <IncidentDialog
+          request={recording}
+          onClose={() => setRecording(null)}
+          onDone={(request) => {
+            setRecording(null);
+            setMessage(`Incident of ${request.tool_id} saved.`);
             void load();
           }}
         />

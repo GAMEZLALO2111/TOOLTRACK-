@@ -149,8 +149,12 @@ ROUTE_RULES = {
     ("POST", "/workflow/service-requests/program-problem"): "service.request",
     ("POST", "/workflow/service-requests/{request_id}/resolve"): "service.attend",
     ("POST", "/workflow/service-requests/{request_id}/finish-service"): "service.attend",
+    ("POST", "/workflow/service-requests/{request_id}/relocate"): "service.attend",
     ("POST", "/workflow/service-requests/{request_id}/store"): "service.attend",
     ("GET", "/workflow/tool-service-log"): "service.view",
+    ("GET", "/workflow/tool-incidents"): "service.view",
+    ("POST", "/workflow/service-requests/{request_id}/incident"): "service.attend",
+    ("GET", "/workflow/operators"): AUTHENTICATED,  # service.request o service.view, se valida en el endpoint
     ("POST", "/workflow/service-requests/{request_id}/attend"): "service.attend",
     ("POST", "/workflow/service-requests/{request_id}/collect"): "service.attend",
     ("POST", "/workflow/service-requests/{request_id}/install"): "service.request",

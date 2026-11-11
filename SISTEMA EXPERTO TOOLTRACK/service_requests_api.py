@@ -8,6 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 
 import auth
 import scan_codes
@@ -16,6 +17,7 @@ import workflow_api
 from models.inventory import (
     EstadoMaquina,
     Herramienta,
+    IncidenteHerramienta,
     PendienteRecoger,
     RequisitoSetup,
     ReservaHerramienta,
@@ -30,6 +32,13 @@ router = APIRouter(prefix="/workflow", tags=["service requests"])
 
 SERVICE_TYPES = ("sharpening", "inspection", "replacement", "damage", "performance", "return", "tool_request")
 PROGRAM_PROBLEMS = ("wrong_tool", "wrong_station_or_angle", "part_out_of_spec", "program_does_not_run", "other")
+# Initial lists for damage analysis (Pareto); the technician can correct the cause when evaluating.
+DAMAGE_CAUSES = (
+    "collision", "normal_wear", "wrong_setup", "wrong_material",
+    "handling", "lubrication", "supplier_defect", "unknown",
+)
+DAMAGE_MOMENTS = ("setup", "production", "inspection", "handling", "unknown")
+OPERATOR_ROLES = ("PUNCHING_OPERATOR", "PUNCHING_TECHNICIAN")
 NOTE_REQUIRED = {"damage", "performance"}
 # Active requests; "replaced" means the machine already has its tool and only the old tool is still in service.
 OPEN_STATES = ("open", "attending", "collected", "replaced")
@@ -56,6 +65,17 @@ class ServiceRequestCreate(BaseModel):
     angle: Optional[str] = None
     tool_id: Optional[str] = None
     nota: Optional[str] = None
+    operador: Optional[str] = None
+    causa: Optional[str] = None
+    momento: Optional[str] = None
+
+
+class IncidentRecord(BaseModel):
+    operador: str
+    causa: str
+    momento: str
+    hallazgo: str
+    descripcion: Optional[str] = None
 
 
 class MountedRegister(BaseModel):
@@ -147,15 +167,89 @@ def _people(db, rows):
     }
 
 
+def _incident_fields(db, operador, causa, momento):
+    """Validated who/why/when of an incident; the shift is the involved operator's own."""
+    cause = (causa or "").strip().lower()
+    moment = (momento or "").strip().lower()
+    if cause not in DAMAGE_CAUSES:
+        raise HTTPException(status_code=422, detail="Choose the cause of the damage from the list")
+    if moment not in DAMAGE_MOMENTS:
+        raise HTTPException(status_code=422, detail="Choose when it happened")
+    username = (operador or "").strip()
+    person = db.query(Usuario).filter(
+        func.lower(Usuario.username) == username.lower(), Usuario.activo.is_(True)
+    ).first() if username else None
+    if not person:
+        raise HTTPException(status_code=422, detail="Choose the operator who was on the machine from the list")
+    return {"operador": person.username, "turno": person.shift, "causa": cause, "momento": moment}
+
+
+def _save_incident(db, row, tool, fields, actor, descripcion=None, hallazgo=None):
+    """Creates the incident of a request, or updates it when it already exists."""
+    now = workflow_api.utcnow()
+    incident = db.query(IncidenteHerramienta).filter(IncidenteHerramienta.solicitud_id == row.id).first()
+    if incident is None:
+        incident = IncidenteHerramienta(
+            herramienta_id=tool.id, solicitud_id=row.id, origen="machine", reportado_como=row.tipo,
+            maquina_codigo=row.maquina_codigo, numero_parte=row.numero_parte, estacion=row.estacion,
+            setup_id=row.setup_id, tn=row.tn, categoria=row.categoria, life=tool.life,
+            creado_por=actor, creado_en=now,
+        )
+        db.add(incident)
+    else:
+        incident.actualizado_por = actor
+        incident.actualizado_en = now
+    incident.operador = fields["operador"]
+    incident.turno = fields["turno"]
+    incident.causa = fields["causa"]
+    incident.momento = fields["momento"]
+    if descripcion:
+        incident.descripcion = descripcion
+    if hallazgo:
+        incident.hallazgo = hallazgo
+    return incident
+
+
+def _incident_read(incident):
+    return {
+        "id": incident.id,
+        "tool_id": incident.herramienta_id,
+        "request_id": incident.solicitud_id,
+        "origin": incident.origen,
+        "reported_as": incident.reportado_como,
+        "machine": incident.maquina_codigo,
+        "part_number": incident.numero_parte,
+        "station": incident.estacion,
+        "tn": incident.tn,
+        "category": incident.categoria,
+        "life": incident.life,
+        "operator": incident.operador,
+        "shift": incident.turno,
+        "cause": incident.causa,
+        "moment": incident.momento,
+        "description": incident.descripcion,
+        "finding": incident.hallazgo,
+        "created_by": incident.creado_por,
+        "created_at": _iso(incident.creado_en),
+        "updated_by": incident.actualizado_por,
+        "updated_at": _iso(incident.actualizado_en),
+    }
+
+
 def _read_many(db, rows):
     people = _people(db, rows)
     request_ids = [row.id for row in rows]
     services = {}
+    incidents = {}
     if request_ids:
         for event in db.query(ServicioHerramienta).filter(
             ServicioHerramienta.solicitud_id.in_(request_ids)
         ).order_by(ServicioHerramienta.id).all():
             services[event.solicitud_id] = event
+        for incident in db.query(IncidenteHerramienta).filter(
+            IncidenteHerramienta.solicitud_id.in_(request_ids)
+        ).all():
+            incidents[incident.solicitud_id] = incident
     tool_ids = {row.herramienta_id for row in rows if row.herramienta_id}
     tools = {
         tool.id: tool
@@ -197,6 +291,7 @@ def _read_many(db, rows):
                 "done_by": service.realizado_por,
                 "done_at": _iso(service.fecha),
             } if service else None,
+            "incident": _incident_read(incidents[row.id]) if row.id in incidents else None,
             "replacement_tool_id": row.herramienta_nueva_id,
             "destination": row.destino_codigo,
             "requested_by": row.solicitado_por,
@@ -335,6 +430,10 @@ def create_service_request(item: ServiceRequestCreate):
                     detail=f"Tool {tool.id} is recorded in {tool.ubicacion or 'an unknown location'}, not on {code}.",
                 )
 
+        incident_fields = None
+        if tipo == "damage":
+            incident_fields = _incident_fields(db, item.operador or user.username, item.causa, item.momento)
+
         row = SolicitudServicio(
             maquina_codigo=code,
             setup_id=setup.id,
@@ -352,6 +451,8 @@ def create_service_request(item: ServiceRequestCreate):
         )
         db.add(row)
         db.flush()
+        if incident_fields is not None and tool is not None:
+            _save_incident(db, row, tool, incident_fields, user.username, descripcion=note)
         if tool:
             _set_slot(requirement, category, None)
             workflow_api._append_movement(
@@ -447,6 +548,73 @@ def resolve_program_problem(request_id: int, item: ServiceResolve):
         db.close()
 
 
+@router.post("/service-requests/{request_id}/incident")
+def record_tool_incident(request_id: int, item: IncidentRecord):
+    """Tool Crib records what it found when it has the tool: who was on the machine, the cause and when it happened."""
+    user = _user()
+    _require_toolcrib(user)
+    finding = item.hallazgo.strip()
+    if len(finding) < 3:
+        raise HTTPException(status_code=422, detail="Write what Tool Crib found on the tool")
+    description = (item.descripcion or "").strip()
+    if len(finding) > MAX_NOTE_LENGTH or len(description) > MAX_NOTE_LENGTH:
+        raise HTTPException(status_code=422, detail=f"Notes are limited to {MAX_NOTE_LENGTH} characters")
+    db = workflow_api.SessionLocal()
+    try:
+        row = _get(db, request_id)
+        if row.estado not in ("collected", "replaced") or not row.herramienta_id \
+                or row.tipo in ("tool_request", "program_problem"):
+            raise HTTPException(status_code=409, detail="Record the incident once Tool Crib has the tool")
+        tool = db.query(Herramienta).filter(Herramienta.id == row.herramienta_id).with_for_update().one()
+        fields = _incident_fields(db, item.operador, item.causa, item.momento)
+        _save_incident(db, row, tool, fields, user.username, descripcion=description or None, hallazgo=finding)
+        db.commit()
+        return _read_many(db, [row])[0]
+    except HTTPException:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@router.get("/tool-incidents")
+def list_tool_incidents(tool_id: Optional[str] = None, limit: int = 200):
+    """Incident history (damage and escalations) for analysis."""
+    db = workflow_api.SessionLocal()
+    try:
+        query = db.query(IncidenteHerramienta)
+        if tool_id:
+            query = query.filter(IncidenteHerramienta.herramienta_id == scan_codes.tool_code(tool_id).upper())
+        rows = query.order_by(IncidenteHerramienta.id.desc()).limit(max(1, min(limit, 1000))).all()
+        return [_incident_read(row) for row in rows]
+    finally:
+        db.close()
+
+
+@router.get("/operators")
+def list_operators():
+    """Active Manufacturing users, to say who was on the machine when something happened."""
+    user = _user()
+    if not ({"service.request", "service.view"} & set(user.permissions)):
+        raise HTTPException(status_code=403, detail=f"Your role ({user.role}) is not allowed to do this")
+    db = workflow_api.SessionLocal()
+    try:
+        rows = db.query(Usuario).filter(
+            Usuario.activo.is_(True), Usuario.role.in_(OPERATOR_ROLES)
+        ).order_by(Usuario.full_name, Usuario.username).all()
+        return [
+            {
+                "username": person.username,
+                "full_name": person.full_name or person.username,
+                "employee_number": person.employee_number,
+                "shift": person.shift,
+            }
+            for person in rows
+        ]
+    finally:
+        db.close()
+
+
 @router.get("/service-requests")
 def list_service_requests(state: str = "active", machine: Optional[str] = None, limit: int = 100):
     if state not in {"active", "closed", "all"}:
@@ -499,6 +667,60 @@ def _require_attendant(user, row):
         )
 
 
+def _service_destination(db, row, tool, code):
+    """Where a recovered tool can go: work needs a service location; only a return goes straight to a rack."""
+    destination = workflow_api._location(db, scan_codes.location_code(code), COLLECT_DESTINATIONS)
+    if row.tipo != "return" and destination.tipo not in SERVICE_LOCATIONS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A tool sent for {row.tipo} goes to a service location (TOGU, Maintenance or Workshop), "
+                   f"not to '{destination.codigo}'. It goes to a rack once the result is recorded.",
+        )
+    workflow_api._require_home_rack(db, tool, destination)
+    if destination.tipo == "togu" and db.query(Herramienta.id).filter(
+        Herramienta.ubicacion == destination.codigo,
+        Herramienta.id != tool.id,
+    ).first():
+        raise HTTPException(status_code=409, detail=f"TOGU '{destination.codigo}' is occupied")
+    return destination
+
+
+@router.post("/service-requests/{request_id}/relocate")
+def relocate_service_tool(request_id: int, item: ServiceCollect):
+    """A recovered tool that is not in a service location yet (for example, left in a rack) goes to one so its result can be recorded."""
+    user = _user()
+    _require_toolcrib(user)
+    db = workflow_api.SessionLocal()
+    try:
+        row = _get(db, request_id)
+        if row.estado not in ("collected", "replaced") or not row.herramienta_id or row.tipo in ("tool_request", "return", "program_problem"):
+            raise HTTPException(status_code=409, detail="This request has no tool in service")
+        if db.query(ServicioHerramienta.id).filter(ServicioHerramienta.solicitud_id == row.id).first():
+            raise HTTPException(status_code=409, detail="The result of this service is already recorded")
+        tool = db.query(Herramienta).filter(Herramienta.id == row.herramienta_id).with_for_update().one()
+        current = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
+        if current and current.tipo in SERVICE_LOCATIONS:
+            raise HTTPException(status_code=409, detail=f"Tool {tool.id} is already in {current.codigo}")
+        destination = _service_destination(db, row, tool, item.destino_codigo)
+        if tool.estado != "baja":
+            tool.estado = COLLECT_TOOL_STATUS.get(row.tipo) or workflow_api.SERVICE_STATUS_BY_LOCATION[destination.tipo]
+        detail = f"{_folio(row)}: moved to {destination.codigo} to record the {row.tipo} result"
+        if item.nota and item.nota.strip():
+            detail += f" - {item.nota.strip()}"
+        workflow_api._append_movement(
+            db, tool, tool.ubicacion, destination.codigo, f"service_relocate_{row.tipo}",
+            user.username, details=detail, setup_id=row.setup_id,
+        )
+        row.destino_codigo = destination.codigo
+        db.commit()
+        return _read_many(db, [row])[0]
+    except HTTPException:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 @router.post("/service-requests/{request_id}/collect")
 def collect_service_tool(request_id: int, item: ServiceCollect):
     """Tool Crib recovered the old tool from the machine: record where it goes."""
@@ -517,14 +739,7 @@ def collect_service_tool(request_id: int, item: ServiceCollect):
                 status_code=409,
                 detail=f"Tool {tool.id} is recorded in {tool.ubicacion or 'an unknown location'}, not on {row.maquina_codigo}.",
             )
-        destination = workflow_api._location(db, scan_codes.location_code(item.destino_codigo), COLLECT_DESTINATIONS)
-        workflow_api._require_home_rack(db, tool, destination)
-        if destination.tipo == "togu" and db.query(Herramienta.id).filter(
-            Herramienta.ubicacion == destination.codigo,
-            Herramienta.id != tool.id,
-        ).first():
-            raise HTTPException(status_code=409, detail=f"TOGU '{destination.codigo}' is occupied")
-
+        destination = _service_destination(db, row, tool, item.destino_codigo)
         workflow_api._status_on_move(tool, "machine", destination.tipo)
         forced_status = COLLECT_TOOL_STATUS.get(row.tipo)
         if forced_status and (tool.estado or "disponible") != "baja":

@@ -151,6 +151,38 @@ export interface ServiceRequest {
   cancel_reason: string | null;
   same_tool?: boolean;
   restored?: boolean;
+  incident: ToolIncident | null;
+}
+
+export interface ToolIncident {
+  id: number;
+  tool_id: string;
+  request_id: number | null;
+  origin: string;
+  reported_as: string | null;
+  machine: string | null;
+  part_number: string | null;
+  station: string | null;
+  tn: string | null;
+  category: string | null;
+  life: string | null;
+  operator: string | null;
+  shift: string | null;
+  cause: string | null;
+  moment: string | null;
+  description: string | null;
+  finding: string | null;
+  created_by: string;
+  created_at: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+export interface OperatorOption {
+  username: string;
+  full_name: string;
+  employee_number: string | null;
+  shift: string | null;
 }
 
 export type ServiceRequestType = "sharpening" | "inspection" | "replacement" | "damage" | "performance" | "return" | "tool_request" | "program_problem";
