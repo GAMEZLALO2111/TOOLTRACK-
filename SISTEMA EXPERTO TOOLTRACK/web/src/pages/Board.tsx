@@ -91,7 +91,7 @@ export function BoardPage({ tv = false }: { tv?: boolean }) {
 
       {error && <div className="note note-warn">⚠ {error} {board ? "Showing the last data received; retrying automatically." : ""}</div>}
       {board && <Summary counts={board.resumen} total={total} />}
-      {!tv && <p className="legend">Traffic light by the hours left on the running part: red &lt; 2 h · yellow 2–4 h · green &gt; 4 h. Click a card to see its queue.</p>}
+      {!tv && <p className="legend">Red &lt; 2 h · yellow 2–4 h · green &gt; 4 h left on the running part</p>}
       {!board && !error && <p className="muted">Loading the board…</p>}
 
       <div className="grid">

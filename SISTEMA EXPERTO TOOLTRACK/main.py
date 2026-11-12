@@ -1019,7 +1019,9 @@ def listar_inventario(
             base = base.filter(Herramienta.categoria == categoria.strip().lower())
         if estado:
             base = base.filter(Herramienta.estado == estado.strip().lower())
-        if ubicacion:
+        if ubicacion == "-":
+            base = base.filter(Herramienta.ubicacion.is_(None) | (Herramienta.ubicacion == ""))
+        elif ubicacion:
             base = base.filter(Herramienta.ubicacion == ubicacion.strip())
         if vinculo == "linked":
             base = base.filter(HerramientaCatalogo.variante_id.isnot(None))

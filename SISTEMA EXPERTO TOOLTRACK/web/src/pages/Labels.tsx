@@ -37,8 +37,8 @@ export function LabelsPage() {
       <div className="board-bar no-print">
         <h1>QR labels</h1>
         <div className="bar-right">
-          <button className="btn" onClick={() => go("/kitting")}>
-            ← Kitting
+          <button className="btn" onClick={() => go("/tools")}>
+            ← Tools
           </button>
           <button className="btn btn-primary" onClick={() => window.print()} disabled={shown.length === 0}>
             Print {shown.length} label{shown.length === 1 ? "" : "s"}
@@ -53,10 +53,6 @@ export function LabelsPage() {
             </button>
           ))}
         </div>
-        <p className="muted small">
-          Print one per {kind} and stick it where it is scanned. Machine labels are scanned at the machine to confirm a delivery.
-          {kind === "cart" ? " Cart labels are not read by the system yet; they identify the cart physically." : ""} Select some to print only those; with none selected, all are printed.
-        </p>
         <ErrorNote message={error} />
         <div className="chips pick-chips">
           {items.map((l) => (

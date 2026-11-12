@@ -3,6 +3,7 @@ import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { Dialog, ErrorNote } from "../components/Dialog";
 import { Chip } from "../components/MachineCard";
+import { MachineLink, ToolLink } from "../components/Links";
 import { ScanInput } from "../components/ScanInput";
 import { causeLabel, IncidentFields, incidentMissing, momentLabel, when, type IncidentValues } from "../components/Service";
 import { DAMAGE_CAUSES, TICKET_STATE_CLASS, TICKET_STATE_LABEL, TOOL_STATE_LABEL } from "../labels";
@@ -92,7 +93,6 @@ function NewTicketDialog({ machines, onClose, onDone }: { machines: LocationRow[
   return (
     <Dialog title="New maintenance ticket" onClose={onClose} footer={<Footer busy={busy} label="Open ticket" onClose={onClose} onSubmit={() => void submit()} />}>
       <form className="form" onSubmit={(event) => void submit(event)}>
-        <p className="note note-info">Use this for a tool Tool Crib already holds. For a tool still on a machine, open the request in Requests and press Send to Maintenance.</p>
         <label>
           Tool
           <ScanInput className="big-input" value={toolId} onValue={(value) => setToolId(value)} placeholder="Scan the tool, or type its ID" autoFocus />
@@ -102,14 +102,12 @@ function NewTicketDialog({ machines, onClose, onDone }: { machines: LocationRow[
             <input type="radio" name="origin" checked={fromMachine} onChange={() => setOrigin("machine")} />
             <span>
               <strong>Came from a machine</strong>
-              <span className="muted small">Record the machine, part number, station and who was on it.</span>
             </span>
           </label>
           <label className={`svc-option${!fromMachine ? " selected" : ""}`}>
             <input type="radio" name="origin" checked={!fromMachine} onChange={() => setOrigin("toolcrib")} />
             <span>
               <strong>Found in Tool Crib</strong>
-              <span className="muted small">Damage noticed in a rack, at the TOGU or in a return.</span>
             </span>
           </label>
         </div>
@@ -237,14 +235,12 @@ function EvaluateDialog({ ticket, onClose, onDone }: { ticket: MaintenanceTicket
             <input type="radio" name="repairable" checked={repairable === true} onChange={() => setRepairable(true)} />
             <span>
               <strong>Can be repaired</strong>
-              <span className="muted small">The ticket stays open until you release the tool.</span>
             </span>
           </label>
           <label className={`svc-option${repairable === false ? " selected" : ""}`}>
             <input type="radio" name="repairable" checked={repairable === false} onChange={() => setRepairable(false)} />
             <span>
               <strong>Cannot be repaired</strong>
-              <span className="muted small">The ticket closes and the tool stays damaged in Maintenance until it is retired.</span>
             </span>
           </label>
         </div>
@@ -280,7 +276,6 @@ function ReleaseDialog({ ticket, onClose, onDone }: { ticket: MaintenanceTicket;
           Work done
           <textarea rows={3} maxLength={500} value={work} onChange={(event) => setWork(event.target.value)} autoFocus />
         </label>
-        <p className="muted small">The tool becomes available and stays in Maintenance until Tool Crib picks it up.</p>
         <ErrorNote message={error} />
       </div>
     </Dialog>
@@ -363,7 +358,6 @@ export function MaintenancePage() {
           )}
         </div>
       </div>
-      <p className="muted">Tickets are opened by Tool Crib. The technician receives the tool, evaluates it, repairs it and releases it; Tool Crib then picks it up from Maintenance.</p>
       <div className="summary">
         <span className="chip sum lvl-ROJO">{counts.open} waiting</span>
         <span className="chip sum lvl-AMARILLO">{counts.evaluating} being evaluated</span>
@@ -397,7 +391,9 @@ export function MaintenancePage() {
                       </div>
                     </td>
                     <td>
-                      <strong>{ticket.tool_id}</strong>
+                      <strong>
+                        <ToolLink id={ticket.tool_id} />
+                      </strong>
                       <div className="muted small">
                         TN {ticket.tn ?? "—"}
                         {ticket.category ? ` · ${ticket.category === "punzon" ? "Punch" : "Die"}` : ""}
@@ -410,7 +406,14 @@ export function MaintenancePage() {
                       <div className="warn-text small">“{ticket.finding}”</div>
                       {incident && (
                         <div className="muted small">
-                          {incident.machine ? `${incident.machine}${incident.part_number ? ` · ${incident.part_number}` : ""}${incident.station ? ` · station ${incident.station}` : ""}` : "Found in Tool Crib"}
+                          {incident.machine ? (
+                            <>
+                              <MachineLink code={incident.machine} />
+                              {`${incident.part_number ? ` · ${incident.part_number}` : ""}${incident.station ? ` · station ${incident.station}` : ""}`}
+                            </>
+                          ) : (
+                            "Found in Tool Crib"
+                          )}
                           <div>
                             {causeLabel(incident.cause)} · {momentLabel(incident.moment)}
                             {incident.operator ? ` · ${incident.operator}` : ""}

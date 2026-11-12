@@ -2018,6 +2018,63 @@ class WorkflowApiTests(unittest.TestCase):
             file_api.get_tool_file("NOPE")
         self.assertEqual(missing.exception.status_code, 404)
 
+    def test_a_tool_with_no_recorded_location_gets_its_first_rack_by_scanning_and_then_can_be_kitted(self):
+        import tool_tracking_api as tracking
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        session = self.session_factory()
+        try:
+            tool = session.query(Herramienta).filter_by(id="P100B").one()
+            tool.ubicacion = None
+            session.commit()
+        finally:
+            session.close()
+
+        placed = tracking.store_tool_in_rack("R1", tracking.RackStore(tool_id="p100b", realizado_por="op", captura="scan"))
+        self.assertEqual((placed["kind"], placed["from"], placed["to"]), ("placement", None, "R1"))
+        session = self.session_factory()
+        try:
+            self.assertEqual(session.query(Herramienta).filter_by(id="P100B").one().ubicacion, "R1")
+            movement = session.query(MovimientoHerramienta).filter_by(herramienta_id="P100B").one()
+            self.assertEqual((movement.tipo, movement.origen_codigo, movement.destino_codigo, movement.captura), ("placed_in_rack", None, "R1", "scan"))
+        finally:
+            session.close()
+        # Once it has a rack it is an ordinary stored tool: there is nothing more to store.
+        with self.assertRaises(HTTPException) as again:
+            tracking.store_tool_in_rack("R1", tracking.RackStore(tool_id="P100B", realizado_por="op"))
+        self.assertEqual(again.exception.status_code, 409)
+
+    def test_a_damaged_tool_with_no_location_cannot_be_placed_and_kitting_explains_the_missing_rack(self):
+        import tool_tracking_api as tracking
+
+        new_content, kit = self._create_new_setup_kit()
+        self._create_tool("P300B", "300", "punzon")
+        self._create_tool("P300X", "300", "punzon")
+        session = self.session_factory()
+        try:
+            for tool_id, state in (("P300B", "danado"), ("P300X", "disponible")):
+                tool = session.query(Herramienta).filter_by(id=tool_id).one()
+                tool.ubicacion = None
+                tool.estado = state
+            session.commit()
+        finally:
+            session.close()
+        with self.assertRaises(HTTPException) as damaged:
+            tracking.store_tool_in_rack("R1", tracking.RackStore(tool_id="P300B", realizado_por="op"))
+        self.assertEqual(damaged.exception.status_code, 409)
+        self.assertIn("no location", damaged.exception.detail)
+
+        with self.assertRaises(HTTPException) as unplaced:
+            workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(herramienta_id="P300X", realizado_por="op"))
+        self.assertEqual(unplaced.exception.status_code, 409)
+        self.assertIn("no rack recorded", unplaced.exception.detail)
+
+        # After its first placement the same scan works.
+        tracking.store_tool_in_rack("R1", tracking.RackStore(tool_id="P300X", realizado_por="op"))
+        scanned = workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(herramienta_id="P300X", realizado_por="op"))
+        self.assertTrue(any(item.get("tool_id") == "P300X" or item.get("herramienta_nueva_id") == "P300X" for item in scanned["components"]))
+
     def test_service_request_install_requires_the_setup_it_was_opened_on(self):
         import service_requests_api as service
 

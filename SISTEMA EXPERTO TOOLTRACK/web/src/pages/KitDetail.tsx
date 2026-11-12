@@ -121,7 +121,7 @@ export function KitDetailPage({ kitId }: { kitId: string }) {
               {delivered.pending_pickups_created > 0 ? (
                 <p>
                   <strong>{delivered.pending_pickups_created}</strong> outgoing tool(s) are waiting to be picked up from the machine.{" "}
-                  <button className="btn btn-primary" onClick={() => go("/kitting/pending")}>
+                  <button className="btn btn-primary" onClick={() => go("/kitting/returns")}>
                     Go to pending pickups
                   </button>
                 </p>
@@ -310,13 +310,12 @@ function DeliveryPanel({ kit, qr, onDelivered }: { kit: Kit; qr: KitQr; onDelive
           <div className="label-code">{qr.scan_value}</div>
         </div>
         <form onSubmit={confirm} className="form">
-          <p className="muted small">At the machine: scan the machine QR first, then the kit QR.</p>
           <label>
-            Machine QR (or code)
+            1 · Machine QR (or code)
             <input value={machineScan} onChange={(event) => setMachineScan(event.target.value)} placeholder={`TOOLTRACK-MACHINE:${kit.machine}`} autoComplete="off" />
           </label>
           <label>
-            Kit QR
+            2 · Kit QR
             <input value={kitScan} onChange={(event) => setKitScan(event.target.value)} autoComplete="off" />
           </label>
           <ErrorNote message={error} />
@@ -384,13 +383,22 @@ function ComponentTable({ rows, onChoose }: { rows: KitComponent[]; onChoose?: (
 
 function ChooseDialog({ kit, component, onClose, onChosen }: { kit: Kit; component: KitComponent; onClose: () => void; onChosen: (kit: Kit) => void }) {
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
+  const [unplaced, setUnplaced] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api<Candidate[]>("GET", `/workflow/kits/${encodeURIComponent(kit.id)}/components/${component.component_id}/candidates`)
-      .then(setCandidates)
+      .then((rows) => {
+        setCandidates(rows);
+        if (rows.length === 0) {
+          // Tools of this TN that exist but have no rack recorded are the usual reason nothing shows up.
+          api<{ items: { tn: string | null; estado: string }[] }>("GET", `/inventario/herramientas?q=${encodeURIComponent(component.tn)}&categoria=${component.category}&ubicacion=-&limit=200`)
+            .then((page) => setUnplaced(page.items.filter((row) => row.tn === component.tn && row.estado === "disponible").length))
+            .catch(() => setUnplaced(0));
+        }
+      })
       .catch((caught) => setError(caught instanceof ApiError ? caught.message : "Could not load the available tools."));
-  }, [kit.id, component.component_id]);
+  }, [kit.id, component.component_id, component.tn, component.category]);
 
   async function pick(candidate: Candidate) {
     setError(null);
@@ -405,7 +413,20 @@ function ChooseDialog({ kit, component, onClose, onChosen }: { kit: Kit; compone
     <Dialog title={`${component.tn} · ${CATEGORY_LABEL[component.category] ?? component.category} (station ${component.station ?? "—"})`} onClose={onClose} wide>
       <ErrorNote message={error} />
       {!candidates && !error && <p className="muted">Loading…</p>}
-      {candidates && candidates.length === 0 && <p className="note note-warn">No available tools in the racks match this TN{component.category === "matriz" ? " and clearance" : ""}.</p>}
+      {candidates && candidates.length === 0 && (
+        <div className="note note-warn">
+          No tool of TN {component.tn} is in a rack{component.category === "matriz" ? " with the right clearance" : ""}.
+          {unplaced > 0 && (
+            <>
+              {" "}
+              {unplaced} in stock {unplaced === 1 ? "has" : "have"} no rack recorded.{" "}
+              <button className="link-btn" onClick={() => go("/tools/store")}>
+                Place them in a rack
+              </button>
+            </>
+          )}
+        </div>
+      )}
       {candidates && candidates.length > 0 && (
         <div className="table-wrap">
           <table className="table">

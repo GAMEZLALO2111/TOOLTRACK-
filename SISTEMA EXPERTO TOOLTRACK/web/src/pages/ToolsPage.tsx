@@ -1,29 +1,30 @@
 import { useAuth } from "../auth";
 import { go } from "../router";
-import { ReturnsTab, StoreTab } from "./ToolTrackingActions";
+import { LabelsPage } from "./Labels";
+import { StoreTab } from "./ToolTrackingActions";
 import { ToolFilePage } from "./ToolFile";
 import { ToolsList } from "./Tools";
 
-/** Tools: one list of every physical tool, the tool file behind each row, and the scan-and-store shortcuts. */
+/** Tools: one list of every physical tool, the tool file behind each row, and the scan-and-store shortcut. */
 export function ToolsPage({ sub }: { sub: string }) {
   const { can } = useAuth();
 
-  if (sub === "store" || sub === "returns") {
-    const allowed = sub === "store" ? can("tools.store") : can("kitting.view");
+  if (sub === "store") {
     return (
       <section className="page">
         <div className="board-bar">
-          <h1>{sub === "store" ? "Store in rack" : "Machine returns"}</h1>
+          <h1>Store in rack</h1>
           <div className="bar-right">
             <button className="btn" onClick={() => go("/tools")}>
               ← Tools
             </button>
           </div>
         </div>
-        {!allowed ? <p className="note note-info">Your role cannot use this.</p> : sub === "store" ? <StoreTab /> : <ReturnsTab />}
+        {can("tools.store") ? <StoreTab /> : <p className="note note-info">Your role cannot use this.</p>}
       </section>
     );
   }
+  if (sub === "labels") return can("kitting.view") ? <LabelsPage /> : <p className="note note-info">Your role cannot use this.</p>;
   if (sub) return <ToolFilePage toolId={decodeURIComponent(sub)} />;
 
   return (
@@ -37,14 +38,9 @@ export function ToolsPage({ sub }: { sub: string }) {
             </button>
           )}
           {can("kitting.view") && (
-            <>
-              <button className="btn" onClick={() => go("/tools/returns")}>
-                Machine returns
-              </button>
-              <button className="btn" onClick={() => go("/kitting/pending")}>
-                Pending pickups
-              </button>
-            </>
+            <button className="btn" onClick={() => go("/tools/labels")}>
+              QR labels
+            </button>
           )}
         </div>
       </div>

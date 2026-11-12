@@ -1,3 +1,5 @@
+import { MachineLink, ToolLink } from "./Links";
+
 export interface RecordColumn {
   key: string;
   label: string;
@@ -5,6 +7,9 @@ export interface RecordColumn {
 }
 
 export type RecordRow = Record<string, string | number | null>;
+
+const TOOL_KEYS = ["tool", "replacement"];
+const MACHINE_KEYS = ["machine"];
 
 /** Rows of a record list. Columns marked export-only appear in the Excel file but not on screen. */
 export function RecordTable({ columns, rows }: { columns: RecordColumn[]; rows: RecordRow[] }) {
@@ -27,7 +32,7 @@ export function RecordTable({ columns, rows }: { columns: RecordColumn[]; rows: 
                 const text = value === null || value === undefined || value === "" ? "—" : String(value);
                 return (
                   <td key={column.key} title={text.length > 40 ? text : undefined} className={text.length > 40 ? "cell-clip" : undefined}>
-                    {text}
+                    {TOOL_KEYS.includes(column.key) && text !== "—" ? <ToolLink id={text} /> : MACHINE_KEYS.includes(column.key) && text !== "—" ? <MachineLink code={text} /> : text}
                   </td>
                 );
               })}

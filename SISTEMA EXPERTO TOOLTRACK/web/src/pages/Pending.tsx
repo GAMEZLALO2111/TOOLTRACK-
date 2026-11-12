@@ -4,13 +4,12 @@ import { useAuth } from "../auth";
 import { ErrorNote } from "../components/Dialog";
 import { Chip } from "../components/MachineCard";
 import { CATEGORY_LABEL } from "../labels";
-import { go } from "../router";
 import type { LocationRow, Pending } from "../types";
 import { usePoll } from "../usePoll";
 
 const DESTINATION_TYPES = ["rack", "togu", "maintenance"];
 
-export function PendingPage() {
+export function PendingList() {
   const { can } = useAuth();
   const canMove = can("tools.move");
   const [rows, setRows] = useState<Pending[]>([]);
@@ -54,19 +53,7 @@ export function PendingPage() {
   }
 
   return (
-    <section className="page">
-      <div className="board-bar">
-        <h1>Pending pickups</h1>
-        <div className="bar-right">
-          <button className="btn" onClick={() => go("/kitting")}>
-            ← Kitting
-          </button>
-          <button className="btn" onClick={() => void load()}>
-            Refresh
-          </button>
-        </div>
-      </div>
-      <p className="muted">Tools that came off a machine during a changeover. Record where each one is stored after you physically pick it up.</p>
+    <div>
       <ErrorNote message={error} />
       {message && <div className="note note-info">✔ {message}</div>}
       {rows.length === 0 && !error && <p className="note note-info">Nothing is waiting to be picked up.</p>}
@@ -125,6 +112,6 @@ export function PendingPage() {
           </table>
         </div>
       )}
-    </section>
+    </div>
   );
 }

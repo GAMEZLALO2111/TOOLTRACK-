@@ -814,6 +814,15 @@ textarea:disabled {
   flex: none;
   min-width: 0;
 }
+.id-link {
+  color: var(--navy);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+.id-link:hover {
+  text-decoration-style: solid;
+}
 .cell-clip {
   max-width: 280px;
   overflow: hidden;

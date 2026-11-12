@@ -41,9 +41,6 @@ export function CatalogTab() {
 
   return (
     <div>
-      <p className="muted">
-        The catalog says which tool numbers exist: each TN has one or more sizes (a geometry type), and each size has punch and die variants (a die per clearance). Physical tools link to a variant.
-      </p>
       <div className="summary">
         <span className="chip sum lvl-VERDE">{tns.length} tool numbers</span>
         <span className="chip sum lvl-PARO">{configs.length} TN/size configurations</span>

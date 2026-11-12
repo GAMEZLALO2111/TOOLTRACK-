@@ -1236,6 +1236,11 @@ def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None, capture=None
         Ubicacion.activa.is_(True),
     ).first()
     if not rack:
+        if not tool.ubicacion:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Tool {tool.id} has no rack recorded yet. Place it in its rack with Tools > Store in rack and try again.",
+            )
         raise HTTPException(status_code=409, detail="The tool is not available in an active rack")
     clearance_range = clearance_range_for_thickness(Decimal(
         db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one().thickness

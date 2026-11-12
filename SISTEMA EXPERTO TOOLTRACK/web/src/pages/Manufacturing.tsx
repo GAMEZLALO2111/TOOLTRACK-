@@ -171,9 +171,7 @@ function RequestDialog({ machine, station, component, onClose, onDone }: Request
           <Fact label="TN" value={station.tn} />
           {component.tool_id && <Fact label="Tool on the machine" value={component.tool_id} />}
         </div>
-        {emptyPosition ? (
-          <p className="note note-info">This position has no tool. Tool Crib will bring one with TN {station.tn} ({CATEGORY_NAME[component.category].toLowerCase()}).</p>
-        ) : (
+        {!emptyPosition && (
           <>
             <div className="muted small">What do you need?</div>
             <div className="svc-options">
@@ -182,7 +180,6 @@ function RequestDialog({ machine, station, component, onClose, onDone }: Request
                   <input type="radio" name="service-type" value={option.value} checked={type === option.value} onChange={() => setType(option.value)} />
                   <span>
                     <strong>{option.label}</strong>
-                    <span className="muted small">{option.help}</span>
                   </span>
                 </label>
               ))}
@@ -252,9 +249,6 @@ function RegisterDialog({ machine, station, component, onClose, onDone }: Reques
           <Fact label="Position" value={`Station ${station.station} · ${CATEGORY_NAME[component.category]}`} />
           <Fact label="Required TN" value={station.tn} />
         </div>
-        <p className="note note-info">
-          Use this once for a tool that is already mounted here but not recorded. Scan its label or type its ID; it must be a {CATEGORY_NAME[component.category].toLowerCase()} with TN {station.tn}.
-        </p>
         <ScanInput className="big-input" value={toolId} onValue={(value, mode) => { setToolId(value); setCapture(mode); }} placeholder="Scan the tool, or type its ID" autoFocus aria-label="Tool ID" />
         <ErrorNote message={error} />
       </form>
@@ -318,7 +312,6 @@ function ProgramProblemDialog({ workspace, onClose, onDone }: { workspace: Manuf
               <input type="radio" name="program-problem" value={option.value} checked={problem === option.value} onChange={() => setProblem(option.value)} />
               <span>
                 <strong>{option.label}</strong>
-                <span className="muted small">{option.help}</span>
               </span>
             </label>
           ))}
@@ -340,7 +333,6 @@ function ProgramProblemDialog({ workspace, onClose, onDone }: { workspace: Manuf
           {problem === "other" ? "Describe the problem (required)" : "Notes (optional)"}
           <textarea rows={3} maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} />
         </label>
-        <p className="note note-info">It goes to the same queue as tool requests; Tool Crib or Engineering will take it.</p>
         <ErrorNote message={error} />
       </form>
     </Dialog>
@@ -387,9 +379,6 @@ function ReceiveDialog({ request, onClose, onDone }: { request: ServiceRequest; 
           <Fact label="Position" value={positionLabel(request)} />
           {request.tool_id && <Fact label="Tool removed" value={request.tool_id} />}
         </div>
-        <p className="note note-info">
-          Scan the label of the tool Tool Crib gave you, or type its ID. It can be the same tool or another one with TN {request.tn}. Mount it, then confirm.
-        </p>
         <ScanInput className="big-input" value={toolId} onValue={(value, mode) => { setToolId(value); setCapture(mode); }} placeholder="Scan the tool, or type its ID" autoFocus aria-label="Tool ID" />
         <ErrorNote message={error} />
       </form>
@@ -562,7 +551,6 @@ export function ManufacturingPage({ route }: { route: Route }) {
           </button>
         </div>
       </div>
-      <p className="muted">What is running on your machine, its part number data, and the tools it needs. Ask Tool Crib for any tool from here.</p>
 
       <ErrorNote message={machinesError} />
       <ErrorNote message={workspaceError} />
@@ -592,7 +580,6 @@ export function ManufacturingPage({ route }: { route: Route }) {
               <Fact label="Machine type" value={workspace.machine_type} />
               <Fact label="Building · line" value={[workspace.building, workspace.line].filter(Boolean).join(" · ")} />
             </div>
-            <p className="muted small">Based on the setup registered in MIRA. Production status and downtime are reported in MES.</p>
           </div>
 
           {workspace.part_number && (
@@ -632,9 +619,7 @@ export function ManufacturingPage({ route }: { route: Route }) {
           <div className="machine-section-head">
             <div>
               <h2>Stations and tools</h2>
-              <p className="muted small">
-                {canRequest ? "Select a tool to request an action from Tool Crib." : "Your role can view the tools but not send requests."}
-              </p>
+              {!canRequest && <p className="muted small">Your role can view the tools but not send requests.</p>}
             </div>
           </div>
           {!workspace.stations.length ? (
@@ -645,11 +630,6 @@ export function ManufacturingPage({ route }: { route: Route }) {
             </p>
           ) : (
             <>
-              {workspace.requirements_source === "program" && (
-                <p className="note note-info">
-                  These stations come from the part number program. Register the tools already mounted on the machine once, then you can request service on them.
-                </p>
-              )}
               <div className="table-wrap">
                 <table className="table">
                   <thead>

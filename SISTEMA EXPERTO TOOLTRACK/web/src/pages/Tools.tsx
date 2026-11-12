@@ -118,6 +118,7 @@ export function ToolsList() {
         </select>
         <select value={location} onChange={(event) => setLocation(event.target.value)} aria-label="Location">
           <option value="">All locations</option>
+          <option value="-">No location</option>
           {places.map((l) => (
             <option key={l.codigo} value={l.codigo}>
               {l.codigo}

@@ -53,7 +53,6 @@ function LogTab() {
 
   return (
     <div>
-      <p className="muted">Every load or revision of a program: who, when, why and what changed. Shows the latest 500.</p>
       <div className="filters">
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter by part number" aria-label="Filter the log" autoFocus />
       </div>

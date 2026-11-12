@@ -4,9 +4,10 @@ import { useAuth } from "../auth";
 import { Dialog, ErrorNote } from "../components/Dialog";
 import { ReasonDialog } from "../components/ReasonDialog";
 import { LocationPicker } from "../components/LocationPicker";
+import { MachineLink, ToolLink } from "../components/Links";
 import { ScanInput } from "../components/ScanInput";
 import { sameCode, toolCode, type Capture } from "../scan";
-import { ABNORMAL_REBAJE, canSendToMaintenance, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, positionLabel, problemLabel, RequestChip, WAIT_LATE_MIN, WAIT_WARN_MIN, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
+import { ABNORMAL_REBAJE, canSendToMaintenance, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, positionLabel, problemLabel, RequestChip, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
 import { SERVICE_TYPE_LABEL, TICKET_STATE_LABEL, TOOL_STATE_LABEL } from "../labels";
 import type { LocationRow, ServiceRequest } from "../types";
 import { usePoll } from "../usePoll";
@@ -19,11 +20,6 @@ const VIEWS = [
   { value: "all", label: "All" },
 ];
 const SERVICE_PLACES = ["togu", "maintenance", "workshop"];
-const COLLECT_HINT: Record<string, string> = {
-  sharpening: "The tool will be marked as being sharpened.",
-  damage: "The tool will be marked as damaged.",
-  return: "The request closes once the tool is recorded; the position stays empty.",
-};
 
 function CollectDialog({ request, destinations, relocate, onClose, onDone }: { request: ServiceRequest; destinations: LocationRow[]; relocate?: boolean; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
   const [destination, setDestination] = useState("");
@@ -76,9 +72,7 @@ function CollectDialog({ request, destinations, relocate, onClose, onDone }: { r
           </div>
         </div>
         {request.note && <p className="note note-warn">Operator note: {request.note}</p>}
-        {relocate && <p className="note note-warn">The tool is not in a service location, so its result cannot be recorded. Move it to the place where the work is done.</p>}
         <LocationPicker label={request.type === "return" ? "Where does the tool go?" : "Which service location?"} options={allowed} value={destination} onChange={setDestination} autoFocus showType />
-        {!relocate && COLLECT_HINT[request.type] && <p className="muted small">{COLLECT_HINT[request.type]}</p>}
         <label>
           Notes (optional)
           <input value={note} onChange={(event) => setNote(event.target.value)} maxLength={200} />
@@ -225,9 +219,6 @@ function StoreDialog({ request, racks, onClose, onDone }: { request: ServiceRequ
       }
     >
       <form className="form" onSubmit={(event) => void submit(event)}>
-        <p className="note note-info">
-          The machine already has its replacement. Store {request.tool_id} in its rack to close the request. It is only accepted in its own rack.
-        </p>
         <LocationPicker label="Rack" options={racks} value={rack} onChange={setRack} autoFocus />
         <label>
           Scan the tool
@@ -301,7 +292,6 @@ function IncidentDialog({ request, toMaintenance = false, onClose, onDone }: { r
           </div>
         </div>
         {request.note && <p className="note note-warn">Manufacturing said: {request.note}</p>}
-        {toMaintenance && <p className="note note-info">The tool moves to Maintenance. Bring a replacement to the machine as usual; the technician records the repair in the ticket.</p>}
         <IncidentFields values={values} onChange={setValues} />
         <label>
           {toMaintenance ? "What Tool Crib found (the reason for the ticket)" : "What Tool Crib found"}
@@ -480,7 +470,6 @@ export function ServiceRequestsPage() {
           </button>
         </div>
       </div>
-      <p className="muted">Requests from Manufacturing. Tool Crib presses Attending and goes to the machine; Engineering takes program problems. Rows turn amber after {WAIT_WARN_MIN} min and red after {WAIT_LATE_MIN} min without being closed.</p>
       <div className="summary">
         <span className="chip sum lvl-ROJO">{counts.open} waiting</span>
         <span className="chip sum lvl-AMARILLO">{counts.attending} attending</span>
@@ -519,15 +508,29 @@ export function ServiceRequestsPage() {
                       <div className="muted small">{SERVICE_TYPE_LABEL[request.type] ?? request.type}</div>
                     </td>
                     <td>
-                      <strong>{request.machine}</strong>
+                      <strong>
+                        <MachineLink code={request.machine} />
+                      </strong>
                       <div className="muted small">{request.part_number ?? "—"}</div>
                     </td>
                     <td>
                       {positionLabel(request)}
                       <div className="muted small">
-                        {isProgram
-                          ? problemLabel(request.problem)
-                          : `${request.tool_id ?? "No tool: bring one"}${request.replacement_tool_id ? ` → ${request.replacement_tool_id}` : ""}`}
+                        {isProgram ? (
+                          problemLabel(request.problem)
+                        ) : request.tool_id ? (
+                          <>
+                            <ToolLink id={request.tool_id} />
+                            {request.replacement_tool_id && (
+                              <>
+                                {" → "}
+                                <ToolLink id={request.replacement_tool_id} />
+                              </>
+                            )}
+                          </>
+                        ) : (
+                          "No tool: bring one"
+                        )}
                       </div>
                       {request.note && <div className="warn-text small">“{request.note}”</div>}
                       {request.incident && <IncidentSummary incident={request.incident} />}

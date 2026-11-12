@@ -271,7 +271,6 @@ export function MachinesPage({ code }: { code: string | null }) {
         <div className="machine-section-head">
           <div>
             <h2>Stations</h2>
-            <p className="muted small">Station status and dimensions are used to warn about setup mismatches.</p>
           </div>
         </div>
         {can("machine.manage") && machine.activa && (
@@ -357,7 +356,6 @@ export function MachinesPage({ code }: { code: string | null }) {
           <button className="btn" onClick={() => void load()}>Refresh</button>
         </div>
       </div>
-      <p className="muted">Live machine status, active part number, setup thickness and open kitting activity.</p>
       <ErrorNote message={error} />
       {message && <div className="note note-info">{message}</div>}
       <div className="filters">
@@ -468,7 +466,6 @@ function ProfileEditor({ machine, onSaved }: { machine: MachineProfile; onSaved:
       <div className="form-actions">
         <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save profile"}</button>
       </div>
-      <p className="muted small">Use a machine type that matches the saved programs (4 Index, 2 Index or 45 STA).</p>
     </form>
   );
 }

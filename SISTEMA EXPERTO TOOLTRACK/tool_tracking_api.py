@@ -493,6 +493,21 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
             raise HTTPException(status_code=404, detail=f"Tool '{item.tool_id}' is not in the inventory")
         workflow_api._require_home_rack(db, tool, rack)
         workflow_api._require_no_open_ticket(db, tool)
+        if not tool.ubicacion:
+            # The inventory never recorded where this tool is: this scan is its first placement.
+            status = tool.estado or "disponible"
+            if status != "disponible":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Tool {tool.id} is '{workflow_api.TOOL_STATUS_LABELS.get(status, status)}' and has no location; "
+                           "it cannot be placed in a rack until it is available.",
+                )
+            workflow_api._append_movement(
+                db, tool, None, rack.codigo, "placed_in_rack", item.realizado_por,
+                details="First placement: the tool had no recorded location", capture=capture,
+            )
+            db.commit()
+            return {"tool_id": tool.id, "tn": tool.tn, "from": None, "to": rack.codigo, "kind": "placement"}
         origin = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
         if not origin or origin.tipo not in {"machine", "togu", "maintenance", "workshop"}:
             raise HTTPException(

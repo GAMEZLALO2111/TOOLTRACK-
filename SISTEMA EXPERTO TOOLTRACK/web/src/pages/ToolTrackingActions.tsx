@@ -51,7 +51,12 @@ export function StoreTab() {
         resultado: result || null,
         captura: capture,
       });
-      const text = response.kind === "baja" ? `✔ ${response.tool_id} retired (it does not go back to a rack).` : `✔ ${response.tool_id} (TN ${response.tn}) stored: ${response.from} → ${response.to}`;
+      const text =
+        response.kind === "baja"
+          ? `✔ ${response.tool_id} retired (it does not go back to a rack).`
+          : response.kind === "placement"
+            ? `✔ ${response.tool_id} (TN ${response.tn}) placed in ${response.to} · first location`
+            : `✔ ${response.tool_id} (TN ${response.tn}) stored: ${response.from} → ${response.to}`;
       setLog([{ ok: true, text }, ...log].slice(0, 12));
       setToolId("");
       setResult("");
@@ -66,7 +71,6 @@ export function StoreTab() {
 
   return (
     <form className="panel" onSubmit={submit}>
-      <p className="muted">Choose the rack and scan each tool that comes back (from a machine, pickups, TOGU, maintenance or the workshop). It is only accepted in its own rack.</p>
       <div className="form two-col">
         <LocationPicker label="1. Rack" options={racks} value={rack} onChange={(code) => { setRack(code); input.current?.focus(); }} />
         <label>
@@ -168,7 +172,6 @@ export function ReturnsTab() {
   const tools = data?.tools ?? [];
   return (
     <div>
-      <p className="muted">See what is mounted on a machine and send tools back: to their rack, to sharpening (TOGU or workshop) or to maintenance if they are damaged.</p>
       <div className="start-row">
         <select
           value={machine}
