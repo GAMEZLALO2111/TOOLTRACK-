@@ -1,6 +1,7 @@
 import { AuthProvider, useAuth } from "./auth";
 import { BoardPage } from "./pages/Board";
 import { KitDetailPage } from "./pages/KitDetail";
+import { PickSheetPage } from "./pages/PickSheet";
 import { KittingPage } from "./pages/Kitting";
 import { LoginPage } from "./pages/Login";
 import { ReturnsPage } from "./pages/Returns";
@@ -46,6 +47,7 @@ function Shell() {
   ].filter((tab) => tab.show);
 
   const kitMatch = route.path.match(/^\/kitting\/kit\/([^/]+)$/);
+  const sheetMatch = route.path.match(/^\/kitting\/kit\/([^/]+)\/sheet$/);
   // /tracking and /inventory are the earlier addresses of Tools and Catalog.
   const toolsMatch = route.path.match(/^\/tools(?:\/(.+))?$/);
   const oldTrackingMatch = route.path.match(/^\/tracking(?:\/([a-z]+))?$/);
@@ -63,6 +65,7 @@ function Shell() {
   else if (route.path === "/requests" && can("service.view")) page = <ServiceRequestsPage />
   else if (route.path === "/maintenance" && can("maintenance.view")) page = <MaintenancePage />
   else if (recordsMatch && can("records.view")) page = <RecordsPage kind={recordsMatch[1] ?? ""} />
+  else if (sheetMatch && can("kitting.view")) page = <PickSheetPage kitId={decodeURIComponent(sheetMatch[1])} />;
   else if (kitMatch && can("kitting.view")) page = <KitDetailPage kitId={decodeURIComponent(kitMatch[1])} />;
   else if (returnsRoute && can("kitting.view")) page = <ReturnsPage />;
   else if (route.path === "/kitting/labels" && can("kitting.view")) page = <ToolsPage sub="labels" />;

@@ -1180,45 +1180,114 @@ def list_component_candidates(kit_id: str, component_id: int):
         ).first()
         if not kit or not component:
             raise HTTPException(status_code=404, detail="Kit component not found")
-        if component.accion == "keep":
-            return []
-        requirement = db.query(RequisitoSetup).filter(
-            RequisitoSetup.id == component.requisito_id
-        ).one()
-        setup = db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one()
-        clearance_range = clearance_range_for_thickness(Decimal(setup.thickness))
-        query = (
-            db.query(Herramienta)
-            .join(Ubicacion, Ubicacion.codigo == Herramienta.ubicacion)
-            .filter(
-                Herramienta.tn == requirement.tn,
-                Ubicacion.tipo == "rack",
-                Ubicacion.activa.is_(True),
-            )
+        return _component_candidates(db, kit, component)
+    finally:
+        db.close()
+
+
+def _component_candidates(db, kit, component):
+    if component.accion == "keep":
+        return []
+    requirement = db.query(RequisitoSetup).filter(
+        RequisitoSetup.id == component.requisito_id
+    ).one()
+    setup = db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one()
+    clearance_range = clearance_range_for_thickness(Decimal(setup.thickness))
+    query = (
+        db.query(Herramienta)
+        .join(Ubicacion, Ubicacion.codigo == Herramienta.ubicacion)
+        .filter(
+            Herramienta.tn == requirement.tn,
+            Ubicacion.tipo == "rack",
+            Ubicacion.activa.is_(True),
         )
-        tools = query.order_by(Herramienta.id).all()
-        candidates = []
-        for tool in tools:
-            if _category(tool) != component.categoria or (tool.estado or "disponible") != "disponible":
-                continue
-            reserved = db.query(ReservaHerramienta).filter(
-                ReservaHerramienta.herramienta_id == tool.id,
-                ReservaHerramienta.surtido_id != kit_id,
-            ).first()
-            if reserved:
-                continue
-            if component.categoria == "matriz" and clearance_range and not _clearance_in_range(tool, clearance_range):
-                continue
-            candidates.append({
-                "id": tool.id,
-                "tn": tool.tn,
-                "type": tool.type,
-                "size": tool.size,
-                "clearance": tool.clearance,
-                "life": tool.life,
-                "location": tool.ubicacion,
+    )
+    tools = query.order_by(Herramienta.id).all()
+    candidates = []
+    for tool in tools:
+        if _category(tool) != component.categoria or (tool.estado or "disponible") != "disponible":
+            continue
+        reserved = db.query(ReservaHerramienta).filter(
+            ReservaHerramienta.herramienta_id == tool.id,
+            ReservaHerramienta.surtido_id != kit.id,
+        ).first()
+        if reserved:
+            continue
+        if component.categoria == "matriz" and clearance_range and not _clearance_in_range(tool, clearance_range):
+            continue
+        candidates.append({
+            "id": tool.id,
+            "tn": tool.tn,
+            "type": tool.type,
+            "size": tool.size,
+            "clearance": tool.clearance,
+            "life": tool.life,
+            "location": tool.ubicacion,
+        })
+    return candidates
+
+
+@router.get("/kits/{kit_id}/pick-sheet")
+def get_pick_sheet(kit_id: str):
+    db = SessionLocal()
+    try:
+        kit = db.query(Surtido).filter(Surtido.id == kit_id).first()
+        if not kit:
+            raise HTTPException(status_code=404, detail="Kit not found")
+        summary = _kit_read(db, kit)
+        rows = (
+            db.query(ComponenteSurtido, RequisitoSetup)
+            .join(RequisitoSetup, RequisitoSetup.id == ComponenteSurtido.requisito_id)
+            .filter(
+                ComponenteSurtido.surtido_id == kit.id,
+                ComponenteSurtido.accion != "keep",
+                ComponenteSurtido.estado == "missing",
+            )
+            .all()
+        )
+        suggested_ids = set()
+        items = []
+        for component, requirement in rows:
+            candidates = [
+                candidate for candidate in _component_candidates(db, kit, component)
+                if candidate["id"] not in suggested_ids
+            ]
+            chosen = candidates[:3]
+            if chosen:
+                suggested_ids.add(chosen[0]["id"])
+            items.append({
+                "station": requirement.station,
+                "tn": requirement.tn,
+                "angle": requirement.angle,
+                "category": component.categoria,
+                "clearance_min": summary["clearance_min"] if component.categoria == "matriz" else None,
+                "clearance_max": summary["clearance_max"] if component.categoria == "matriz" else None,
+                "suggested": chosen[0] if chosen else None,
+                "alternates": chosen[1:],
             })
-        return candidates
+
+        def sort_key(item):
+            suggested = item["suggested"]
+            return (
+                suggested is None,
+                suggested["location"] if suggested else "",
+                item["tn"],
+                item["category"],
+                item["station"] or "",
+            )
+
+        items.sort(key=sort_key)
+        return {
+            "kit_id": kit.id,
+            "machine": summary["machine"],
+            "cart": summary["cart"],
+            "part_number": summary["part_number"],
+            "thickness": summary["thickness"],
+            "clearance_min": summary["clearance_min"],
+            "clearance_max": summary["clearance_max"],
+            "created_at": summary["created_at"],
+            "items": items,
+        }
     finally:
         db.close()
 

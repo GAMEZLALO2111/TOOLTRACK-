@@ -2136,6 +2136,37 @@ class WorkflowApiTests(unittest.TestCase):
             workflow_api.refresh_kit(kit["id"], workflow_api.SurtidoAction(realizado_por="op"))
         self.assertEqual(closed.exception.status_code, 409)
 
+    def test_pick_sheet_lists_what_is_missing_by_rack_with_alternates(self):
+        _, kit = self._create_new_setup_kit()
+        self._create_tool("D300B", "300", "matriz", "0.021")
+        self._create_tool("D300C", "300", "matriz", "0.030")
+        session = self.session_factory()
+        try:
+            session.query(Herramienta).filter_by(id="D300B").one().ubicacion = "R2"
+            session.commit()
+        finally:
+            session.close()
+
+        sheet = workflow_api.get_pick_sheet(kit["id"])
+        self.assertEqual((sheet["part_number"], sheet["clearance_min"], sheet["clearance_max"]), ("NEW", "0.018", "0.022"))
+        rows = {(row["tn"], row["category"]): row for row in sheet["items"]}
+        self.assertEqual(set(rows), {("100", "matriz"), ("300", "punzon"), ("300", "matriz")})
+        die = rows[("300", "matriz")]
+        self.assertEqual(die["suggested"]["id"], "D300")
+        self.assertEqual([tool["id"] for tool in die["alternates"]], ["D300B"])
+        self.assertEqual((die["clearance_min"], die["clearance_max"]), ("0.018", "0.022"))
+        self.assertIsNone(rows[("300", "punzon")]["clearance_min"])
+        racks = [row["suggested"]["location"] for row in sheet["items"]]
+        self.assertEqual(racks, sorted(racks))
+
+        workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(herramienta_id="P300", realizado_por="op"))
+        after = workflow_api.get_pick_sheet(kit["id"])
+        self.assertEqual(len(after["items"]), 2)
+
+        with self.assertRaises(HTTPException) as missing:
+            workflow_api.get_pick_sheet("nope")
+        self.assertEqual(missing.exception.status_code, 404)
+
     def test_service_request_install_requires_the_setup_it_was_opened_on(self):
         import service_requests_api as service
 

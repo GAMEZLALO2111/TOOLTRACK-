@@ -112,6 +112,11 @@ export function KitDetailPage({ kitId }: { kitId: string }) {
           <button className="btn" disabled={busy} onClick={() => void refresh()}>
             Refresh
           </button>
+          {kit && (kit.state === "preparing" || kit.state === "paused") && (
+            <button className="btn" onClick={() => go(`/kitting/kit/${encodeURIComponent(kitId)}/sheet`)}>
+              Print pick sheet
+            </button>
+          )}
         </div>
       </div>
       <ErrorNote message={error} />

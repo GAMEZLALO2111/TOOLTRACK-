@@ -132,6 +132,7 @@ ROUTE_RULES = {
     ("GET", "/workflow/kits/{kit_id}"): "kitting.view",
     ("GET", "/workflow/kits"): "kitting.view",
     ("GET", "/workflow/kits/{kit_id}/components/{component_id}/candidates"): "kitting.view",
+    ("GET", "/workflow/kits/{kit_id}/pick-sheet"): "kitting.view",
     ("POST", "/workflow/kits/{kit_id}/scan"): "kitting.operate",
     ("POST", "/workflow/kits/{kit_id}/components/{component_id}/select"): "kitting.operate",
     ("POST", "/workflow/kits/{kit_id}/pause"): "kitting.operate",

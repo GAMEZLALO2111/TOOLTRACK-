@@ -401,6 +401,27 @@ export interface Candidate {
   location: string;
 }
 
+export interface PickSheet {
+  kit_id: string;
+  machine: string;
+  cart: string;
+  part_number: string | null;
+  thickness: string | null;
+  clearance_min: string | null;
+  clearance_max: string | null;
+  created_at: string;
+  items: {
+    station: string | null;
+    tn: string;
+    angle: string | null;
+    category: string;
+    clearance_min: string | null;
+    clearance_max: string | null;
+    suggested: Candidate | null;
+    alternates: Candidate[];
+  }[];
+}
+
 export interface KitQr {
   kit_id: string;
   machine: string;

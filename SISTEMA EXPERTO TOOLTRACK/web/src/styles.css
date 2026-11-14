@@ -1065,6 +1065,13 @@ textarea:disabled {
   }
 }
 @media print {
+  @page {
+    size: landscape;
+    margin: 10mm;
+  }
+  .pick-sheet {
+    width: 100%;
+  }
   body {
     background: #fff;
   }
@@ -1345,4 +1352,39 @@ textarea:disabled {
     max-height: 92vh;
     border-radius: 14px 14px 0 0;
   }
+}
+
+.pick-sheet {
+  background: #fff;
+  color: #000;
+  padding: 8px 4px;
+}
+.pick-head h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+.pick-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 28px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+.pick-table th,
+.pick-table td {
+  border: 1px solid #333;
+  padding: 8px 10px;
+  vertical-align: top;
+  font-size: 14px;
+}
+.pick-table tr {
+  break-inside: avoid;
+}
+.pick-box {
+  font-size: 26px;
+  width: 36px;
+  text-align: center;
+}
+.pick-write {
+  min-width: 150px;
 }
