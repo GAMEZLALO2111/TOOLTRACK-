@@ -137,6 +137,7 @@ ROUTE_RULES = {
     ("POST", "/workflow/kits/{kit_id}/pause"): "kitting.operate",
     ("POST", "/workflow/kits/{kit_id}/resume"): "kitting.operate",
     ("POST", "/workflow/kits/{kit_id}/cancel"): "kitting.operate",
+    ("POST", "/workflow/kits/{kit_id}/refresh"): "kitting.operate",
     ("POST", "/workflow/kits/{kit_id}/qr"): "kitting.operate",
     ("POST", "/workflow/delivery/scan"): "kitting.operate",
     ("GET", "/workflow/machines/running"): "setup.view",

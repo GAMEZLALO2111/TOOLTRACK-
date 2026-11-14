@@ -2075,6 +2075,67 @@ class WorkflowApiTests(unittest.TestCase):
         scanned = workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(herramienta_id="P300X", realizado_por="op"))
         self.assertTrue(any(item.get("tool_id") == "P300X" or item.get("herramienta_nueva_id") == "P300X" for item in scanned["components"]))
 
+    def test_kit_shows_part_and_clearance_range_and_refresh_follows_a_changed_program(self):
+        new_content, kit = self._create_new_setup_kit()
+        self.assertEqual((kit["part_number"], kit["thickness"]), ("NEW", "0.119"))
+        self.assertEqual((kit["clearance_min"], kit["clearance_max"]), ("0.018", "0.022"))
+
+        with self.assertRaises(HTTPException) as no_program:
+            workflow_api.refresh_kit(kit["id"], workflow_api.SurtidoAction(realizado_por="op"))
+        self.assertEqual(no_program.exception.status_code, 409)
+
+        session = self.session_factory()
+        try:
+            session.add(Maquina(codigo="M1", tipo_maquina="4 Index", edificio="B1"))
+            session.add(ProgramaParte(
+                numero_parte="NEW", tipo_maquina="4I", familia="F", tipo_programa="NPI", revision=1,
+                nombre_archivo="new.stp", drawing_name="NEW", material="Steel", thickness="0.119",
+                contenido=new_content, contenido_hash="h", requisitos_json="[]",
+                actualizado_por="eng", actualizado_en=workflow_api.utcnow(),
+            ))
+            session.commit()
+        finally:
+            session.close()
+        for scan in ("P300", "D300", "D100N"):
+            workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(herramienta_id=scan, realizado_por="op"))
+
+        unchanged = workflow_api.refresh_kit(kit["id"], workflow_api.SurtidoAction(realizado_por="op"))
+        self.assertFalse(unchanged["changed"])
+
+        # Engineering drops TN 300 and adds TN 500 on a new revision of the program.
+        changed_content = setup_text("NEW", "0.119", [("301", "100", "0"), ("305", "500", "45")])
+        session = self.session_factory()
+        try:
+            session.query(ProgramaParte).filter_by(numero_parte="NEW").one().contenido = changed_content
+            session.commit()
+        finally:
+            session.close()
+        refreshed = workflow_api.refresh_kit(kit["id"], workflow_api.SurtidoAction(realizado_por="op"))
+        self.assertTrue(refreshed["changed"])
+        self.assertEqual(refreshed["kept"], 1)
+        self.assertEqual(sorted(row["tool_id"] for row in refreshed["returned"]), ["D300", "P300"])
+        self.assertTrue(all(row["to"] == "R1" for row in refreshed["returned"]))
+        self.assertEqual([(row["tn"], row["station"]) for row in refreshed["added"]], [("500", "305")])
+        self.assertEqual([(row["tn"], row["station"]) for row in refreshed["removed"]], [("300", "303")])
+
+        by_key = {(row["tn"], row["category"]): row for row in refreshed["kit"]["components"]}
+        self.assertEqual((by_key[("100", "matriz")]["tool_id"], by_key[("100", "matriz")]["state"]), ("D100N", "ready"))
+        self.assertEqual(by_key[("500", "punzon")]["state"], "missing")
+        self.assertNotIn(("300", "punzon"), by_key)
+
+        session = self.session_factory()
+        try:
+            self.assertEqual({row.id: row.ubicacion for row in session.query(Herramienta).filter(Herramienta.id.in_(("P300", "D300", "D100N")))},
+                             {"P300": "R1", "D300": "R1", "D100N": "C1"})
+            self.assertEqual(session.query(MovimientoHerramienta).filter_by(tipo="kit_refresh_returned").count(), 2)
+        finally:
+            session.close()
+
+        workflow_api.cancel_kit(kit["id"], workflow_api.SurtidoAction(realizado_por="op"))
+        with self.assertRaises(HTTPException) as closed:
+            workflow_api.refresh_kit(kit["id"], workflow_api.SurtidoAction(realizado_por="op"))
+        self.assertEqual(closed.exception.status_code, 409)
+
     def test_service_request_install_requires_the_setup_it_was_opened_on(self):
         import service_requests_api as service
 

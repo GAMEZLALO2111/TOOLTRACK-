@@ -9,7 +9,7 @@ import { ScanInput } from "../components/ScanInput";
 import { toolCode, type Capture } from "../scan";
 import { ACTION_LABEL, CATEGORY_LABEL, COMPONENT_STATE_LABEL, KIT_STATE_CLASS, KIT_STATE_LABEL } from "../labels";
 import { go } from "../router";
-import type { Candidate, DeliveryResult, Kit, KitComponent, KitQr } from "../types";
+import type { Candidate, DeliveryResult, Kit, KitComponent, KitQr, KitRefreshResult } from "../types";
 import { usePoll } from "../usePoll";
 
 type Reasoned = "pause" | "cancel" | null;
@@ -24,6 +24,8 @@ export function KitDetailPage({ kitId }: { kitId: string }) {
   const [choosing, setChoosing] = useState<KitComponent | null>(null);
   const [qr, setQr] = useState<KitQr | null>(null);
   const [delivered, setDelivered] = useState<DeliveryResult | null>(null);
+  const [refreshed, setRefreshed] = useState<KitRefreshResult | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -82,25 +84,46 @@ export function KitDetailPage({ kitId }: { kitId: string }) {
     }
   }
 
+  async function refresh() {
+    setNotice(null);
+    if (!(open || kit?.state === "ready") || !canOperate) return void load();
+    setBusy(true);
+    setActionError(null);
+    try {
+      const result = await api<KitRefreshResult>("POST", `/workflow/kits/${encodeURIComponent(kitId)}/refresh`, { realizado_por: "web" });
+      setKit(result.kit);
+      if (result.changed) setRefreshed(result);
+      else setNotice("The program has not changed since this kit started.");
+    } catch (caught) {
+      setActionError(caught instanceof ApiError ? caught.message : "The kit could not be refreshed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="page">
       <div className="board-bar">
-        <h1>{kit ? `Kit for ${kit.machine}` : "Kit"}</h1>
+        <h1>{kit ? `Kit for ${kit.machine}${kit.part_number ? ` · ${kit.part_number}` : ""}` : "Kit"}</h1>
         <div className="bar-right">
           <button className="btn" onClick={() => go("/kitting")}>
             ← Kitting
           </button>
-          <button className="btn" onClick={() => void load()}>
+          <button className="btn" disabled={busy} onClick={() => void refresh()}>
             Refresh
           </button>
         </div>
       </div>
       <ErrorNote message={error} />
+      {notice && <div className="note note-info">✔ {notice}</div>}
       {!kit && !error && <p className="muted">Loading…</p>}
 
       {kit && (
         <>
           <div className="panel kit-head">
+            <Stat label="Part number" value={<strong>{kit.part_number ?? "—"}</strong>} />
+            <Stat label="Thickness" value={kit.thickness ? `${kit.thickness} in` : "—"} />
+            <Stat label="Die clearance" value={<strong>{kit.clearance_min && kit.clearance_max ? `${kit.clearance_min} – ${kit.clearance_max}` : "—"}</strong>} />
             <Stat label="Cart" value={<strong>{kit.cart}</strong>} />
             <Stat label="Status" value={<Chip text={KIT_STATE_LABEL[kit.state]} className={KIT_STATE_CLASS[kit.state]} />} />
             <Stat label="Progress" value={<strong>{done}/{needed.length}</strong>} />
@@ -177,7 +200,7 @@ export function KitDetailPage({ kitId }: { kitId: string }) {
           )}
 
           <h2 className="section-title">Tools to pick ({needed.length})</h2>
-          <ComponentTable rows={needed} onChoose={open && canOperate ? setChoosing : undefined} />
+          <ComponentTable rows={needed} clearance={kit.clearance_min && kit.clearance_max ? `${kit.clearance_min} – ${kit.clearance_max}` : null} onChoose={open && canOperate ? setChoosing : undefined} />
           {kept.length > 0 && (
             <details className="kept">
               <summary>Tools that stay on the machine ({kept.length})</summary>
@@ -187,6 +210,7 @@ export function KitDetailPage({ kitId }: { kitId: string }) {
         </>
       )}
 
+      {refreshed && <RefreshDialog result={refreshed} onClose={() => setRefreshed(null)} />}
       {reasoned && kit && (
         <ReasonDialog
           title={reasoned === "pause" ? "Pause kit" : "Cancel kit"}
@@ -333,7 +357,58 @@ function DeliveryPanel({ kit, qr, onDelivered }: { kit: Kit; qr: KitQr; onDelive
   );
 }
 
-function ComponentTable({ rows, onChoose }: { rows: KitComponent[]; onChoose?: (component: KitComponent) => void }) {
+function RefreshDialog({ result, onClose }: { result: KitRefreshResult; onClose: () => void }) {
+  return (
+    <Dialog title="Kit refreshed from the program" onClose={onClose} footer={<button className="btn btn-primary" onClick={onClose}>OK</button>}>
+      <div className="form">
+        {result.returned.length > 0 && (
+          <div className="note note-warn">
+            <strong>Put back in the rack</strong>
+            <ul>
+              {result.returned.map((row) => (
+                <li key={row.tool_id}>
+                  {row.tool_id} → {row.to ?? "its rack"} (TN {row.tn}, {CATEGORY_LABEL[row.category] ?? row.category}
+                  {row.station ? `, station ${row.station}` : ""})
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {result.added.length > 0 && (
+          <div className="note note-info">
+            <strong>New positions</strong>
+            <ul>
+              {result.added.map((row) => (
+                <li key={`${row.tn}-${row.angle}`}>
+                  TN {row.tn}
+                  {row.angle ? ` · ${row.angle}°` : ""} · station {row.station ?? "—"}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {result.removed.length > 0 && (
+          <div className="note note-info">
+            <strong>Positions no longer needed</strong>
+            <ul>
+              {result.removed.map((row) => (
+                <li key={`${row.tn}-${row.angle}`}>
+                  TN {row.tn}
+                  {row.angle ? ` · ${row.angle}°` : ""} · station {row.station ?? "—"}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <p>
+          <strong>{result.kept}</strong> tool(s) already on the cart still apply and stay.
+        </p>
+      </div>
+    </Dialog>
+  );
+}
+
+function ComponentTable({ rows, onChoose, clearance }: { rows: KitComponent[]; onChoose?: (component: KitComponent) => void; clearance?: string | null }) {
   if (rows.length === 0) return <p className="muted">Nothing to pick for this change.</p>;
   return (
     <div className="table-wrap">
@@ -344,6 +419,7 @@ function ComponentTable({ rows, onChoose }: { rows: KitComponent[]; onChoose?: (
             <th>TN</th>
             <th>Angle</th>
             <th>Part</th>
+            {clearance !== undefined && <th>Clearance</th>}
             <th>Action</th>
             <th>Tool</th>
             <th className="hide-sm">From</th>
@@ -360,6 +436,7 @@ function ComponentTable({ rows, onChoose }: { rows: KitComponent[]; onChoose?: (
               </td>
               <td>{c.angle ?? "—"}</td>
               <td>{CATEGORY_LABEL[c.category] ?? c.category}</td>
+              {clearance !== undefined && <td>{c.category === "matriz" ? clearance ?? "—" : "—"}</td>}
               <td>{ACTION_LABEL[c.action] ?? c.action}</td>
               <td>{c.tool_id ?? "—"}</td>
               <td className="hide-sm muted">{c.source_location ?? "—"}</td>

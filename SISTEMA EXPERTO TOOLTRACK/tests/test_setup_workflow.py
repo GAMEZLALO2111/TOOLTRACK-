@@ -123,21 +123,43 @@ class SetupWorkflowTests(unittest.TestCase):
             {("30236.116", "45"), ("30236.116", "90")},
         )
 
-    def test_thickness_bands_include_lower_exclude_upper_and_close_last_upper(self):
+    def test_exact_thickness_bands_include_lower_exclude_upper_and_close_last_upper(self):
+        exact = Decimal("0")
         self.assertEqual(
-            clearance_range_for_thickness(Decimal("0.020")),
+            clearance_range_for_thickness(Decimal("0.020"), exact),
             (Decimal("0.004"), Decimal("0.006")),
         )
         self.assertEqual(
-            clearance_range_for_thickness(Decimal("0.036")),
+            clearance_range_for_thickness(Decimal("0.036"), exact),
             (Decimal("0.006"), Decimal("0.008")),
         )
         self.assertEqual(
-            clearance_range_for_thickness(Decimal("0.120")),
+            clearance_range_for_thickness(Decimal("0.120"), exact),
             (Decimal("0.018"), Decimal("0.022")),
         )
-        self.assertIsNone(clearance_range_for_thickness(Decimal("0.019")))
-        self.assertIsNone(clearance_range_for_thickness(Decimal("0.121")))
+        self.assertIsNone(clearance_range_for_thickness(Decimal("0.019"), exact))
+        self.assertIsNone(clearance_range_for_thickness(Decimal("0.121"), exact))
+
+    def test_thickness_tolerance_of_five_thousandths_widens_the_clearance_range(self):
+        # 0.075 touches 0.070-0.080: the 0.059-0.074 band and the 0.074-0.104 band.
+        self.assertEqual(
+            clearance_range_for_thickness(Decimal("0.075")),
+            (Decimal("0.012"), Decimal("0.018")),
+        )
+        # Far from any band edge the range does not change.
+        self.assertEqual(
+            clearance_range_for_thickness(Decimal("0.090")),
+            (Decimal("0.014"), Decimal("0.018")),
+        )
+        # One thousandth over the edge no longer jumps to another range on its own.
+        self.assertEqual(clearance_range_for_thickness(Decimal("0.073")), (Decimal("0.012"), Decimal("0.018")))
+        self.assertEqual(clearance_range_for_thickness(Decimal("0.074")), (Decimal("0.012"), Decimal("0.018")))
+        # Both sides of 0.036 and the outer edges of the table.
+        self.assertEqual(clearance_range_for_thickness(Decimal("0.036")), (Decimal("0.004"), Decimal("0.008")))
+        self.assertEqual(clearance_range_for_thickness(Decimal("0.019")), (Decimal("0.004"), Decimal("0.006")))
+        self.assertEqual(clearance_range_for_thickness(Decimal("0.121")), (Decimal("0.018"), Decimal("0.022")))
+        self.assertIsNone(clearance_range_for_thickness(Decimal("0.014")))
+        self.assertIsNone(clearance_range_for_thickness(Decimal("0.126")))
 
 
 if __name__ == "__main__":

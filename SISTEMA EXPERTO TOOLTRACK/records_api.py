@@ -63,6 +63,7 @@ MOVEMENT_LABEL = {
     "maintenance_received": "Received by Maintenance",
     "maintenance_released": "Repaired and released by Maintenance",
     "maintenance_unrepairable": "Maintenance: cannot be repaired",
+    "kit_refresh_returned": "Back to its rack: the kit was refreshed",
     "placed_in_rack": "Placed in a rack (first location)",
     "rack_to_cart_for_kit": "Taken from the rack to the cart",
     "kit_selection_reversed": "Cart selection undone",

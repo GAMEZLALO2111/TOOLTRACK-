@@ -13,6 +13,8 @@ THICKNESS_CLEARANCE_BANDS = (
     (Decimal("0.074"), Decimal("0.104"), Decimal("0.014"), Decimal("0.018")),
     (Decimal("0.104"), Decimal("0.120"), Decimal("0.018"), Decimal("0.022")),
 )
+# A sheet thickness may be off by this much either way before it needs a different clearance.
+THICKNESS_TOLERANCE = Decimal("0.005")
 
 STATION_PATTERN = re.compile(r"^\d+s?$", re.IGNORECASE)
 NUMBER_PATTERN = re.compile(r"^\d+(?:\.\d+)?$")
@@ -185,14 +187,23 @@ def validate_setup_requirements(setup: ParsedSetup) -> None:
         )
 
 
-def clearance_range_for_thickness(thickness: Decimal):
-    for index, (lower, upper, clearance_min, clearance_max) in enumerate(
-        THICKNESS_CLEARANCE_BANDS
-    ):
-        is_last_band = index == len(THICKNESS_CLEARANCE_BANDS) - 1
-        if lower <= thickness and (thickness < upper or (is_last_band and thickness == upper)):
-            return clearance_min, clearance_max
-    return None
+def clearance_range_for_thickness(thickness: Decimal, tolerance: Decimal = THICKNESS_TOLERANCE):
+    """Clearance range accepted for a sheet thickness.
+
+    A thickness may be off by `tolerance` either way, so the accepted range is the union of every band
+    touched by [thickness - tolerance, thickness + tolerance]. With tolerance 0 it is the exact band.
+    """
+    low = thickness - tolerance
+    high = thickness + tolerance
+    last = len(THICKNESS_CLEARANCE_BANDS) - 1
+    touched = [
+        (clearance_min, clearance_max)
+        for index, (lower, upper, clearance_min, clearance_max) in enumerate(THICKNESS_CLEARANCE_BANDS)
+        if lower <= high and (low < upper or (index == last and low <= upper))
+    ]
+    if not touched:
+        return None
+    return min(item[0] for item in touched), max(item[1] for item in touched)
 
 
 def compare_setup_requirements(current: ParsedSetup, new: ParsedSetup):

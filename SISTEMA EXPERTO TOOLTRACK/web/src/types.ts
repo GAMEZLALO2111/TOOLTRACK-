@@ -371,11 +371,24 @@ export interface Kit {
   cart: string;
   state: KitState;
   reason: string | null;
+  part_number: string | null;
+  thickness: string | null;
+  clearance_min: string | null;
+  clearance_max: string | null;
   qr_token: string | null;
   created_at: string;
   delivered_at: string | null;
   components: KitComponent[];
   warnings?: string[];
+}
+
+export interface KitRefreshResult {
+  kit: Kit;
+  changed: boolean;
+  kept: number;
+  returned: { tool_id: string; to: string | null; station: string | null; tn: string; category: string }[];
+  added: { station: string | null; tn: string; angle: string | null }[];
+  removed: { station: string | null; tn: string; angle: string | null }[];
 }
 
 export interface Candidate {
