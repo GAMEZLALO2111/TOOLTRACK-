@@ -7,9 +7,12 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 import auth
+import shifts
 import workflow_api
 from models.inventory import (
     Base,
+    BitacoraPrograma,
+    DemandaPlaneacion,
     EstadoMaquina,
     Herramienta,
     Maquina,
@@ -19,6 +22,7 @@ from models.inventory import (
     ReservaHerramienta,
     RequisitoSetup,
     Setup,
+    SolicitudServicio,
     Surtido,
     Ubicacion,
     Usuario,
@@ -562,17 +566,19 @@ class WorkflowApiTests(unittest.TestCase):
                 workflow_api._require_available(tool)
             finally:
                 session.close()
-        tracking.change_tool_status("P100", tracking.ToolStatusChange(estado="baja", realizado_por="op"))
-        with self.assertRaises(HTTPException):
-            tracking.change_tool_status("P100", tracking.ToolStatusChange(estado="disponible", realizado_por="op"))
+        with self.assertRaises(HTTPException) as one_click:
+            tracking.change_tool_status("P100", tracking.ToolStatusChange(estado="baja", realizado_por="op"))
+        self.assertEqual(one_click.exception.status_code, 409)
+        self.assertEqual(tracking.locate_tools(q="P100")[0]["estado"], "danado")
 
         tracking.return_machine_tools("M1", tracking.MachineReturn(
             tool_ids=["D100"], motivo="dano", destino_codigo="MT1", realizado_por="op"
         ))
-        result = tracking.store_tool_in_rack(
-            "R1", tracking.RackStore(tool_id="D100", realizado_por="op", resultado="baja")
-        )
-        self.assertEqual(result["kind"], "baja")
+        with self.assertRaises(HTTPException) as store_baja:
+            tracking.store_tool_in_rack(
+                "R1", tracking.RackStore(tool_id="D100", realizado_por="op", resultado="baja")
+            )
+        self.assertEqual(store_baja.exception.status_code, 409)
         self.assertEqual(tracking.locate_tools(q="D100")[0]["location"], "MT1")
 
     def test_guided_current_new_comparison_starts_and_delivers_kit_without_baseline_ids(self):
@@ -1142,6 +1148,8 @@ class WorkflowApiTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as taken:
             service.attend_service_request(request["id"])
         self.assertEqual(taken.exception.status_code, 409)
+        # Tool Crib screens are shared: another Tool Crib account may record the steps; Manufacturing may not.
+        self._as("op1", "PUNCHING_OPERATOR")
         with self.assertRaises(HTTPException) as other_user:
             service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
         self.assertEqual(other_user.exception.status_code, 403)
@@ -1268,31 +1276,59 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(self._slot_state("201", "punzon")["tool_id"], "P100")
 
     def test_retiring_a_tool_keeps_the_position_waiting_until_a_replacement_arrives(self):
+        import retirement_api as retirement
         import service_requests_api as service
 
         self._baseline()
         self._create_tool("P100B", "100", "punzon")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        self._ensure_user("mt1", role="MAINTENANCE_TECHNICIAN")
         request = self._open_request(tipo="damage", note="Broken tip")
         self._as("tc1", "TOOLCRIB_OPERATOR")
         service.attend_service_request(request["id"])
         service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="MT1"))
+        with self.assertRaises(HTTPException) as one_click:
+            service.finish_tool_service(request["id"], service.ServiceFinish(resultado="retired", nota="Beyond repair"))
+        self.assertEqual(one_click.exception.status_code, 409)
         with self.assertRaises(HTTPException) as no_reason:
-            service.finish_tool_service(request["id"], service.ServiceFinish(resultado="retired"))
+            retirement.propose_retirement(retirement.RetirementCreate(
+                request_id=request["id"], hallazgo="x", causa="collision", momento="production",
+            ))
         self.assertEqual(no_reason.exception.status_code, 422)
-        waiting = service.finish_tool_service(request["id"], service.ServiceFinish(resultado="retired", nota="Beyond repair"))
-        self.assertEqual((waiting["state"], waiting["tool_status"]), ("collected", "baja"))
+        proposal = retirement.propose_retirement(retirement.RetirementCreate(
+            request_id=request["id"], hallazgo="Beyond repair", causa="collision", momento="production",
+        ))
+        self.assertEqual((proposal["folio"], proposal["state"], proposal["tool_status"]), ("BJ-00001", "pending", "danado"))
+        self.assertEqual((proposal["incident"]["machine"], proposal["incident"]["station"]), ("M1", "201"))
+        with self.assertRaises(HTTPException) as locked:
+            service.finish_tool_service(request["id"], service.ServiceFinish(resultado="ready", nota="Fixed"))
+        self.assertEqual(locked.exception.status_code, 409)
         self._as("op1", "PUNCHING_OPERATOR")
         with self.assertRaises(HTTPException) as retired_tool:
             service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100"))
         self.assertEqual(retired_tool.exception.status_code, 409)
         closed = service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))
-        self.assertEqual(closed["state"], "closed")
+        self.assertEqual((closed["state"], closed["retirement"]["state"]), ("closed", "pending"))
 
-    def test_retiring_the_old_tool_after_a_replacement_closes_the_request(self):
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as own_role:
+            retirement.approve_retirement(proposal["id"], retirement.RetirementDecision())
+        self.assertEqual(own_role.exception.status_code, 403)
+        self._as("mt1", "MAINTENANCE_TECHNICIAN")
+        approved = retirement.approve_retirement(proposal["id"], retirement.RetirementDecision(nota="Confirmed"))
+        self.assertEqual((approved["state"], approved["tool_status"], approved["resolved_by"]), ("approved", "baja", "mt1"))
+        with self.assertRaises(HTTPException) as decided:
+            retirement.approve_retirement(proposal["id"], retirement.RetirementDecision())
+        self.assertEqual(decided.exception.status_code, 409)
+
+    def test_proposing_the_retirement_after_a_replacement_closes_the_request(self):
+        import retirement_api as retirement
         import service_requests_api as service
 
         self._baseline()
         self._create_tool("P100B", "100", "punzon")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        self._ensure_user("sup1", role="TOOLCRIB_SUPERVISOR")
         request = self._open_request(tipo="damage", note="Cracked")
         self._as("tc1", "TOOLCRIB_OPERATOR")
         service.attend_service_request(request["id"])
@@ -1302,9 +1338,61 @@ class WorkflowApiTests(unittest.TestCase):
             service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))["state"], "replaced",
         )
         self._as("tc1", "TOOLCRIB_OPERATOR")
-        closed = service.finish_tool_service(request["id"], service.ServiceFinish(resultado="retired", nota="Cracked, discarded"))
-        self.assertEqual(closed["state"], "closed")
-        self.assertEqual(closed["tool_status"], "baja")
+        proposal = retirement.propose_retirement(retirement.RetirementCreate(
+            request_id=request["id"], hallazgo="Cracked, discarded", causa="collision", momento="production",
+        ))
+        self.assertEqual(service.list_service_requests(state="all", machine=None, limit=10)[0]["state"], "closed")
+        self._as("sup1", "TOOLCRIB_SUPERVISOR")
+        self.assertEqual(
+            retirement.approve_retirement(proposal["id"], retirement.RetirementDecision())["tool_status"], "baja",
+        )
+
+    def test_retirement_of_a_tool_in_toolcrib_is_decided_by_someone_else_and_a_rejection_restores_it(self):
+        import maintenance_api as maint
+        import retirement_api as retirement
+
+        self._baseline()
+        self._create_tool("P300", "300", "punzon")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        self._ensure_user("sup1", role="TOOLCRIB_SUPERVISOR")
+        self._ensure_user("mt1", role="MAINTENANCE_TECHNICIAN")
+        base = dict(hallazgo="Worn out at the rack", causa="unknown", momento="unknown", tool_id="P300", origen="toolcrib")
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as operator:
+            retirement.propose_retirement(retirement.RetirementCreate(**base))
+        self.assertEqual(operator.exception.status_code, 403)
+
+        self._as("sup1", "TOOLCRIB_SUPERVISOR")
+        proposal = retirement.propose_retirement(retirement.RetirementCreate(**base))
+        self.assertEqual((proposal["state"], proposal["tool_status"], proposal["proposed_by"]), ("pending", "danado", "sup1"))
+        with self.assertRaises(HTTPException) as again:
+            retirement.propose_retirement(retirement.RetirementCreate(**base))
+        self.assertEqual(again.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as ticket:
+            maint.create_ticket(maint.TicketCreate(**base))
+        self.assertEqual(ticket.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as own:
+            retirement.approve_retirement(proposal["id"], retirement.RetirementDecision())
+        self.assertEqual(own.exception.status_code, 403)
+
+        self._as("mt1", "MAINTENANCE_TECHNICIAN")
+        with self.assertRaises(HTTPException) as no_note:
+            retirement.reject_retirement(proposal["id"], retirement.RetirementDecision())
+        self.assertEqual(no_note.exception.status_code, 422)
+        rejected = retirement.reject_retirement(proposal["id"], retirement.RetirementDecision(nota="Still usable"))
+        self.assertEqual((rejected["state"], rejected["tool_status"]), ("rejected", "disponible"))
+        self.assertEqual(retirement.list_retirements(state="pending", tool_id=None, limit=10), [])
+        self.assertEqual(len(retirement.list_retirements(state="closed", tool_id="P300", limit=10)), 1)
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        second = retirement.propose_retirement(retirement.RetirementCreate(**base))
+        self._as("mt1", "MAINTENANCE_TECHNICIAN")
+        self.assertEqual(retirement.approve_retirement(second["id"], retirement.RetirementDecision())["tool_status"], "baja")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as retired:
+            retirement.propose_retirement(retirement.RetirementCreate(**base))
+        self.assertEqual(retired.exception.status_code, 409)
 
     def test_service_request_can_install_the_same_tool_after_sharpening(self):
         import service_requests_api as service
@@ -1445,7 +1533,7 @@ class WorkflowApiTests(unittest.TestCase):
             machine="M1", requirement_id=self._requirement_id("202"), category="punzon", tipo="damage",
             tool_id="P200", nota="Worn out", causa="normal_wear", momento="production",
         ))
-        self.assertEqual((second["incident"]["operator"], second["incident"]["shift"]), ("op1", "Turno 1"))
+        self.assertEqual((second["incident"]["operator"], second["incident"]["shift"]), ("op1", shifts.shift_for(workflow_api.utcnow())))
         listed = service.list_tool_incidents(tool_id="p100", limit=10)
         self.assertEqual([row["tool_id"] for row in listed], ["P100"])
 
@@ -1852,12 +1940,92 @@ class WorkflowApiTests(unittest.TestCase):
         incident = machine_ticket["incident"]
         self.assertEqual(
             (incident["origin"], incident["machine"], incident["part_number"], incident["station"], incident["operator"], incident["shift"]),
-            ("machine", "M1", "ABC-1", "201", "op1", "Turno 1"),
+            ("machine", "M1", "ABC-1", "201", "op1", shifts.shift_for(workflow_api.utcnow())),
         )
         self.assertEqual(len(maint.list_tickets(state="all", tool_id=None, limit=10)), 2)
         with self.assertRaises(HTTPException) as bad_state:
             maint.list_tickets(state="weird", tool_id=None, limit=10)
         self.assertEqual(bad_state.exception.status_code, 422)
+
+    def test_an_unrepairable_ticket_leads_to_a_retirement_and_a_tool_in_a_request_is_retired_from_it(self):
+        import maintenance_api as maint
+        import retirement_api as retirement
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("P300", "300", "punzon")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        self._ensure_user("mt1", role="MAINTENANCE_TECHNICIAN")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        ticket = maint.create_ticket(maint.TicketCreate(
+            hallazgo="Chipped edge", causa="unknown", momento="unknown", tool_id="P300", origen="toolcrib",
+        ))
+        with self.assertRaises(HTTPException) as open_ticket:
+            retirement.propose_retirement(retirement.RetirementCreate(ticket_id=ticket["id"], hallazgo="Not repairable"))
+        self.assertEqual(open_ticket.exception.status_code, 409)
+        self._as("mt1", "MAINTENANCE_TECHNICIAN")
+        maint.receive_ticket(ticket["id"], maint.TicketReceive(tool_id="P300"))
+        maint.evaluate_ticket(ticket["id"], maint.TicketEvaluate(diagnostico="Cracked through", reparable=False))
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as no_reason:
+            retirement.propose_retirement(retirement.RetirementCreate(ticket_id=ticket["id"], hallazgo="x"))
+        self.assertEqual(no_reason.exception.status_code, 422)
+        proposal = retirement.propose_retirement(retirement.RetirementCreate(
+            ticket_id=ticket["id"], hallazgo="Maintenance found it unrepairable",
+        ))
+        self.assertEqual((proposal["state"], proposal["tool_status"], proposal["incident"]["origin"]), ("pending", "danado", "toolcrib"))
+        self._as("mt1", "MAINTENANCE_TECHNICIAN")
+        self.assertEqual(retirement.approve_retirement(proposal["id"], retirement.RetirementDecision())["tool_status"], "baja")
+
+        request = self._open_request()
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        base = dict(hallazgo="Worn out", causa="normal_wear", momento="production", tool_id="P100", origen="toolcrib")
+        with self.assertRaises(HTTPException) as by_tool:
+            retirement.propose_retirement(retirement.RetirementCreate(**base))
+        self.assertIn(request["folio"], by_tool.exception.detail)
+        with self.assertRaises(HTTPException) as ticket_by_tool:
+            maint.create_ticket(maint.TicketCreate(**base))
+        self.assertIn(request["folio"], ticket_by_tool.exception.detail)
+
+    def test_management_dashboard_summarizes_downtime_response_damage_and_plan(self):
+        import demandas_api
+        import insights_api
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        self._plan()
+        original = demandas_api.SessionLocal
+        demandas_api.SessionLocal = self.session_factory
+        self.addCleanup(setattr, demandas_api, "SessionLocal", original)
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        request = self._open_request(tipo="damage", note="Broken tip")
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self._as("op1", "PUNCHING_OPERATOR")
+        service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))
+
+        with self.assertRaises(HTTPException) as bad_period:
+            insights_api.overview(days=45)
+        self.assertEqual(bad_period.exception.status_code, 422)
+        data = insights_api.overview(days=30)
+        kpis = {item["key"]: item for item in data["kpis"]}
+        self.assertEqual((kpis["requests"]["value"], kpis["incidents"]["value"], kpis["downtime"]["unit"]), (1, 1, "h"))
+        self.assertEqual(kpis["on_target"]["value"], 100.0)
+        self.assertEqual(data["damage_by_cause"][0]["key"], "collision")
+        self.assertEqual(data["damage_by_cause"][0]["cumulative"], 100.0)
+        self.assertEqual(data["downtime_by_machine"][0]["label"], "M1")
+        self.assertEqual(sum(day["requests"] for day in data["daily"]), 1)
+        self.assertEqual(len(data["daily"]), 30)
+        self.assertEqual(data["inventory"]["total"], len(data["inventory"]["status"]) and data["inventory"]["total"])
+        self.assertEqual(data["plan"]["planned_pieces"], 100)
+        self.assertEqual(data["plan"]["machines_total"], 1)
+        self.assertTrue(any("waiting for tools" in note for note in data["insights"]))
+        self.assertEqual(data["tools_attention"][0]["tool_id"], "P100")
 
     def test_records_list_each_kind_apart_filter_and_download_to_excel(self):
         import io
@@ -1890,7 +2058,7 @@ class WorkflowApiTests(unittest.TestCase):
         self._as("sup1", "TOOLCRIB_SUPERVISOR")
         kinds = {kind["key"]: kind for kind in records.list_records()}
         self.assertEqual(
-            list(kinds), ["movements", "requests", "incidents", "tickets", "services", "programs", "audit"],
+            list(kinds), ["movements", "requests", "incidents", "tickets", "retirements", "services", "programs", "audit"],
         )
         self.assertEqual([group["value"] for group in kinds["movements"]["groups"]],
                          ["kitting_machine", "service_maintenance", "storage_status"])
@@ -1941,7 +2109,7 @@ class WorkflowApiTests(unittest.TestCase):
         )
         incident = fetch("incidents", tool="P100")["rows"][0]
         self.assertEqual((incident["operator"], incident["shift"], incident["cause"], incident["moment"], incident["request"], incident["ticket"]),
-                         ("OP1", "Turno 1", "Collision", "During setup", "SR-00001", "MT-00001"))
+                         ("OP1", shifts.shift_for(workflow_api.utcnow()), "Collision", "During setup", "SR-00001", "MT-00001"))
         ticket = fetch("tickets")["rows"][0]
         self.assertEqual((ticket["folio"], ticket["state"], ticket["tool"], ticket["machine"], ticket["part_number"]),
                          ("MT-00001", "Waiting for the technician", "P100", "M1", "CURRENT"))
@@ -1969,7 +2137,7 @@ class WorkflowApiTests(unittest.TestCase):
         workbook = load_workbook(io.BytesIO(records.download_workbook(date_from=None, date_to=None).body))
         self.assertEqual(workbook.sheetnames, [
             "Mov - Kitting and machine", "Mov - Service and Maintenance", "Mov - Storage and status",
-            "Service requests", "Damage incidents", "Maintenance tickets", "Sharpening and repairs",
+            "Service requests", "Damage incidents", "Maintenance tickets", "Retirements", "Sharpening and repairs",
             "Part number changes", "System audit", "Info",
         ])
         self.assertEqual(workbook["Mov - Service and Maintenance"].max_row, 4)
@@ -1995,7 +2163,9 @@ class WorkflowApiTests(unittest.TestCase):
             (full["tool"]["id"], full["tool"]["tn"], full["tool"]["estado"], full["where"]["location"]),
             ("P100", "100", "danado", "MT1"),
         )
-        self.assertEqual(list(full["sections"]), ["movements", "requests", "incidents", "tickets", "services"])
+        self.assertEqual(
+            list(full["sections"]), ["movements", "requests", "incidents", "tickets", "retirements", "services"],
+        )
         self.assertEqual(full["summary"]["open_ticket"], "MT-00001")
         self.assertEqual((full["summary"]["incidents"], full["summary"]["tickets"], full["summary"]["requests"]), (1, 1, 1))
         self.assertEqual(full["summary"]["movements"], full["sections"]["movements"]["total"])
@@ -2166,6 +2336,207 @@ class WorkflowApiTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as missing:
             workflow_api.get_pick_sheet("nope")
         self.assertEqual(missing.exception.status_code, 404)
+
+    def test_shifts_follow_the_clock_and_a_login_lasts_until_the_shift_ends(self):
+        from datetime import datetime, timezone
+
+        def utc(hour, minute=0):
+            return datetime(2026, 11, 14, hour, minute).astimezone(timezone.utc).replace(tzinfo=None)
+
+        for hour, minute, expected in ((7, 0, "Turno 1"), (14, 59, "Turno 1"), (15, 0, "Turno 2"),
+                                       (22, 59, "Turno 2"), (23, 0, "Turno 3"), (3, 0, "Turno 3"), (6, 59, "Turno 3")):
+            self.assertEqual(shifts.shift_for(utc(hour, minute)), expected, f"{hour}:{minute:02d}")
+        self.assertEqual(shifts.shift_end(utc(10)), utc(15))
+        self.assertEqual(shifts.shift_end(utc(15)), utc(23))
+        self.assertEqual(shifts.shift_end(utc(23, 30)), datetime(2026, 11, 15, 7).astimezone(timezone.utc).replace(tzinfo=None))
+        self.assertEqual(shifts.shift_end(utc(3)), utc(7))
+
+    def _plan(self, produced=0):
+        session = self.session_factory()
+        try:
+            session.add(Maquina(codigo="M1", tipo_maquina="4 Index", edificio="B1"))
+            session.add(DemandaPlaneacion(
+                maquina_codigo="M1", numero_parte="NEXT-PART", cantidad=100, piezas_producidas=produced, orden=1,
+                orden_trabajo="WO-1", creado_por="plan", creado_en=workflow_api.utcnow(), actualizado_en=workflow_api.utcnow(),
+            ))
+            session.commit()
+            return session.query(DemandaPlaneacion).one().id
+        finally:
+            session.close()
+
+    def test_an_operator_logs_into_a_machine_and_only_then_records_pieces_and_requests_the_next_part(self):
+        import demandas_api
+        import machine_operators_api as ops
+        import service_requests_api as service
+
+        self._baseline()
+        demand_id = self._plan()
+        original = demandas_api.SessionLocal
+        demandas_api.SessionLocal = self.session_factory
+        self.addCleanup(setattr, demandas_api, "SessionLocal", original)
+        self._ensure_user("op1")
+        self._ensure_user("op2")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as not_on_machine:
+            ops.request_part_number("M1", ops.PartRequestCreate(demand_id=demand_id))
+        self.assertEqual(not_on_machine.exception.status_code, 403)
+        with self.assertRaises(HTTPException) as no_produced:
+            demandas_api.actualizar_demanda(demand_id, demandas_api.DemandaUpdate(piezas_producidas=10))
+        self.assertEqual(no_produced.exception.status_code, 403)
+        with self.assertRaises(HTTPException) as no_quantity:
+            demandas_api.actualizar_demanda(demand_id, demandas_api.DemandaUpdate(cantidad=50))
+        self.assertEqual(no_quantity.exception.status_code, 403)
+
+        mine = ops.take_machine("m1")
+        self.assertEqual((mine["machine"], mine["username"], mine["shift"]), ("M1", "op1", shifts.shift_for(workflow_api.utcnow())))
+        self._as("op2", "PUNCHING_OPERATOR")
+        ops.take_machine("M1")
+        board = next(m for m in demandas_api.demandas_board("B1")["maquinas"] if m["maquina"] == "M1")
+        self.assertEqual(sorted(row["username"] for row in board["operadores"]), ["op1", "op2"])
+        self.assertEqual(board["demandas"][0]["orden_trabajo"], "WO-1")
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        demandas_api.actualizar_demanda(demand_id, demandas_api.DemandaUpdate(piezas_producidas=10))
+        with self.assertRaises(HTTPException) as too_many:
+            demandas_api.actualizar_demanda(demand_id, demandas_api.DemandaUpdate(piezas_producidas=101))
+        self.assertEqual(too_many.exception.status_code, 400)
+
+        request = ops.request_part_number("M1", ops.PartRequestCreate(demand_id=demand_id))
+        self.assertEqual((request["type"], request["state"], request["part_number"], request["work_order"], request["quantity"]),
+                         ("part_request", "open", "NEXT-PART", "WO-1", 100))
+        with self.assertRaises(HTTPException) as twice:
+            ops.request_part_number("M1", ops.PartRequestCreate(demand_id=demand_id))
+        self.assertEqual(twice.exception.status_code, 409)
+        board = next(m for m in demandas_api.demandas_board("B1")["maquinas"] if m["maquina"] == "M1")
+        self.assertEqual(board["demandas"][0]["solicitud_parte"]["folio"], request["folio"])
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        with self.assertRaises(HTTPException) as toolcrib_cannot:
+            ops.request_part_number("M1", ops.PartRequestCreate(demand_id=demand_id))
+        self.assertEqual(toolcrib_cannot.exception.status_code, 403)
+        attended = service.attend_service_request(request["id"], service.ServiceAttend(atendido_por="tc1"))
+        self.assertEqual(attended["attended_by"], "tc1")
+        with self.assertRaises(HTTPException) as no_tool:
+            service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self.assertEqual(no_tool.exception.status_code, 409)
+        closed = service.resolve_program_problem(request["id"], service.ServiceResolve(resolucion="Kit started"))
+        self.assertEqual(closed["state"], "closed")
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        ops.leave_machine("M1")
+        with self.assertRaises(HTTPException) as left:
+            demandas_api.actualizar_demanda(demand_id, demandas_api.DemandaUpdate(piezas_producidas=20))
+        self.assertEqual(left.exception.status_code, 403)
+        self.assertEqual(ops.my_machine(), None)
+
+    def test_planning_edits_the_uph_with_a_reason_and_the_hours_follow_it(self):
+        import demandas_api
+        import programs_api
+
+        self._baseline()
+        session = self.session_factory()
+        try:
+            program = session.query(ProgramaParte).filter_by(numero_parte="TYEH-1193217_01-SW").first()
+            if program is None:
+                program = ProgramaParte(
+                    numero_parte="TYEH-1193217_01-SW", tipo_maquina="4I", familia="Family A", tipo_programa="NPI",
+                    revision=1, nombre_archivo="a.stp", contenido="x", contenido_hash="h", requisitos_json="[]",
+                    actualizado_por="eng", actualizado_en=workflow_api.utcnow(), piezas_blank=2, cycle_time_s=30,
+                    cycle_con_lead_s=210, uph_teorico=34.3,
+                )
+                session.add(program)
+            session.commit()
+        finally:
+            session.close()
+        self._ensure_user("plan1", role="PLANNING")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+        part = "TYEH-1193217_01-SW"
+
+        self._as("plan1", "PLANNING")
+        with self.assertRaises(HTTPException) as no_reason:
+            programs_api.edit_program_uph("4I", part, programs_api.ProgramUph(uph=40, motivo=" "))
+        self.assertEqual(no_reason.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as bad_value:
+            programs_api.edit_program_uph("4I", part, programs_api.ProgramUph(uph=0, motivo="Measured on the floor"))
+        self.assertEqual(bad_value.exception.status_code, 422)
+        saved = programs_api.edit_program_uph("4I", part, programs_api.ProgramUph(uph=40, motivo="Measured on the floor", usuario="plan1"))
+        self.assertEqual((saved["planeacion"]["uph_teorico"], saved["planeacion"]["uph_editado"], saved["planeacion"]["uph_efectivo"]), (34.3, 40.0, 40.0))
+        session = self.session_factory()
+        try:
+            program = session.query(ProgramaParte).filter_by(numero_parte=part).one()
+            self.assertEqual(demandas_api._hr(program, 400), 10.0)
+        finally:
+            session.close()
+        with self.assertRaises(HTTPException) as same:
+            programs_api.edit_program_uph("4I", part, programs_api.ProgramUph(uph=40, motivo="Again"))
+        self.assertEqual(same.exception.status_code, 409)
+        restored = programs_api.edit_program_uph("4I", part, programs_api.ProgramUph(uph=None, motivo="Back to the program", usuario="plan1"))
+        self.assertEqual((restored["planeacion"]["uph_editado"], restored["planeacion"]["uph_efectivo"]), (None, 34.3))
+        session = self.session_factory()
+        try:
+            log = session.query(BitacoraPrograma).filter_by(numero_parte=part, accion="uph").order_by(BitacoraPrograma.id).all()
+            self.assertEqual([row.detalle.split(" (")[0] for row in log], ["UPH 34.3 -> 40.0", "UPH 40.0 -> 34.3"])
+            self.assertEqual(log[0].motivo, "Measured on the floor")
+        finally:
+            session.close()
+
+    def test_toolcrib_picks_who_attends_on_a_shared_screen_and_the_three_times_are_kept(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._create_tool("P100B", "100", "punzon")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR", full_name="Tool Crib One")
+        self._ensure_user("tc2", role="TOOLCRIB_OPERATOR", full_name="Tool Crib Two")
+        self._ensure_user("sup1", role="TOOLCRIB_SUPERVISOR", full_name="Super Visor")
+        self._ensure_user("tc_off", role="TOOLCRIB_OPERATOR", active=False)
+        request = self._open_request()
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        listed = service.list_toolcrib_users()
+        self.assertEqual([row["username"] for row in listed], ["sup1", "tc1", "tc2"])
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as denied:
+            service.list_toolcrib_users()
+        self.assertEqual(denied.exception.status_code, 403)
+
+        # The screen is logged in as tc1 but the person attending is tc2.
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        for bad in ("ghost", "tc_off", "op1"):
+            with self.assertRaises(HTTPException, msg=bad) as invalid:
+                service.attend_service_request(request["id"], service.ServiceAttend(atendido_por=bad))
+            self.assertEqual(invalid.exception.status_code, 422, bad)
+        attending = service.attend_service_request(request["id"], service.ServiceAttend(atendido_por="TC2"))
+        self.assertEqual((attending["attended_by"], attending["attended_by_name"]), ("tc2", "Tool Crib Two"))
+        with self.assertRaises(HTTPException) as taken:
+            service.attend_service_request(request["id"], service.ServiceAttend(atendido_por="tc1"))
+        self.assertEqual(taken.exception.status_code, 409)
+
+        # Only a supervisor can hand it to someone else, and the first attention time is kept.
+        first_attended_at = attending["attended_at"]
+        self._as("sup1", "TOOLCRIB_SUPERVISOR")
+        handed = service.attend_service_request(request["id"], service.ServiceAttend(atendido_por="tc1"))
+        self.assertEqual((handed["attended_by"], handed["attended_at"]), ("tc1", first_attended_at))
+
+        collected = service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self.assertEqual(collected["collected_by"], "tc1")
+        self.assertIsNone(collected["received_at"])
+        self.assertIsNone(collected["attention_min"])
+
+        session = self.session_factory()
+        try:
+            row = session.query(SolicitudServicio).filter_by(id=request["id"]).one()
+            now = workflow_api.utcnow()
+            row.solicitado_en = now - timedelta(minutes=30)
+            row.atendido_en = now - timedelta(minutes=22)
+            session.commit()
+        finally:
+            session.close()
+        self._as("op1", "PUNCHING_OPERATOR")
+        received = service.install_service_tool(request["id"], service.ServiceInstall(tool_id="P100B"))
+        self.assertEqual((received["wait_min"], received["attention_min"], received["downtime_min"]), (8, 22, 30))
+        self.assertIsNotNone(received["received_at"])
 
     def test_service_request_install_requires_the_setup_it_was_opened_on(self):
         import service_requests_api as service

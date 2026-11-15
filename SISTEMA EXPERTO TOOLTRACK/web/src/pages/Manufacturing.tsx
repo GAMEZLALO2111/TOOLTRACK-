@@ -11,12 +11,14 @@ import { KIT_STATE_LABEL, PROGRAM_PROBLEMS, SERVICE_TYPE_LABEL, SERVICE_TYPES, T
 import { go, type Route } from "../router";
 import type { ManufacturingMachineOption, ManufacturingWorkspace, ServiceRequest } from "../types";
 import { usePoll } from "../usePoll";
+import { useBoard } from "../useBoard";
+import { MACHINE_KEY, MachineOperatorBar, requestNextPart, useOnMachine } from "../components/MachineOperatorBar";
+import { QueueDialog } from "../components/QueueDialog";
 import { fmt } from "./ProgramUpload";
 
 type Station = ManufacturingWorkspace["stations"][number];
 type Component = Station["components"][number];
 
-const MACHINE_KEY = "mira.machine";
 const CATEGORY_NAME = { punzon: "Punch", matriz: "Die" };
 
 function Fact({ label, value }: { label: string; value: string | number | null | undefined }) {
@@ -404,6 +406,8 @@ export function ManufacturingPage({ route }: { route: Route }) {
   const [cancelling, setCancelling] = useState<ServiceRequest | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [machineScan, setMachineScan] = useState("");
+  const [planOpen, setPlanOpen] = useState(false);
+  const { board, reload: reloadBoard } = useBoard(workspace?.building ?? "B1");
 
   const loadMachines = useCallback(async () => {
     try {
@@ -518,6 +522,21 @@ export function ManufacturingPage({ route }: { route: Route }) {
   const requests = workspace?.service_requests ?? [];
   const openRequests = requests.filter((request) => ["open", "attending", "collected"].includes(request.state));
   const who = session?.fullName || session?.username || "";
+  const onMachine = useOnMachine(workspace?.operators);
+  const planMachine = can("demand.view") ? (board?.maquinas.find((item) => item.maquina === workspace?.machine) ?? null) : null;
+
+  async function requestKit(demandId: number) {
+    if (!workspace) return;
+    setActionError(null);
+    try {
+      await requestNextPart(workspace.machine, demandId);
+      setMessage("Kit requested. Tool Crib has it in its queue.");
+      setTick((value) => value + 1);
+      void reloadBoard();
+    } catch (caught) {
+      setActionError(caught instanceof ApiError ? caught.message : "The request could not be sent.");
+    }
+  }
 
   return (
     <section className="page">
@@ -580,7 +599,41 @@ export function ManufacturingPage({ route }: { route: Route }) {
               <Fact label="Machine type" value={workspace.machine_type} />
               <Fact label="Building · line" value={[workspace.building, workspace.line].filter(Boolean).join(" · ")} />
             </div>
+            <MachineOperatorBar code={workspace.machine} operators={workspace.operators ?? []} onChanged={() => { setMessage(null); setTick((value) => value + 1); void reloadBoard(); }} />
+            {can("machine.operate") && !onMachine && (
+              <p className="note note-warn">Take this machine to record its produced pieces and to request its next part number.</p>
+            )}
           </div>
+
+          {planMachine && (
+            <div className="panel">
+              <div className="machine-section-head" style={{ margin: 0 }}>
+                <h2>Plan of {workspace.machine}</h2>
+                <button className="btn" onClick={() => setPlanOpen(true)}>
+                  Full plan{onMachine ? " and produced pieces" : ""}
+                </button>
+              </div>
+              {planMachine.demandas.filter((d) => d.pendiente > 0).slice(0, 4).map((demand) => (
+                <div key={demand.id} className="plan-line">
+                  <strong>{demand.numero_parte}</strong>
+                  {demand.orden_trabajo && <span className="plan-row-wo"> · WO {demand.orden_trabajo}</span>}
+                  <span className="muted">
+                    {" "}
+                    · {demand.piezas_producidas}/{demand.cantidad} pcs{demand.hr_pendiente !== null ? ` · ${demand.hr_pendiente.toFixed(1)} h left` : ""}
+                  </span>{" "}
+                  {demand.es_actual && <span className="chip tag-dark">RUNNING</span>}
+                  {demand.es_siguiente && <span className="chip tag-slate">NEXT</span>}
+                  {demand.solicitud_parte && <span className="chip st-kitting">Kit requested</span>}
+                  {onMachine && demand.estado === "NO INICIADO" && !demand.solicitud_parte && (
+                    <button className="btn btn-primary" onClick={() => void requestKit(demand.id)}>
+                      Request kit
+                    </button>
+                  )}
+                </div>
+              ))}
+              {planMachine.demandas.filter((d) => d.pendiente > 0).length === 0 && <p className="muted">Nothing is planned for this machine.</p>}
+            </div>
+          )}
 
           {workspace.part_number && (
             <div className="panel">
@@ -783,6 +836,20 @@ export function ManufacturingPage({ route }: { route: Route }) {
         <RegisterDialog machine={workspace.machine} station={registering.station} component={registering.component} onClose={() => setRegistering(null)} onDone={registered} />
       )}
       {receiving && <ReceiveDialog request={receiving} onClose={() => setReceiving(null)} onDone={received} />}
+      {planOpen && planMachine && (
+        <QueueDialog
+          machine={planMachine}
+          marks={board?.marcas ?? []}
+          onClose={() => setPlanOpen(false)}
+          onChanged={() => {
+            void reloadBoard();
+            setTick((value) => value + 1);
+          }}
+          onKit={() => undefined}
+          onAdd={() => undefined}
+          onEdit={() => undefined}
+        />
+      )}
       {cancelling && (
         <ReasonDialog
           title={`Cancel ${cancelling.folio}`}

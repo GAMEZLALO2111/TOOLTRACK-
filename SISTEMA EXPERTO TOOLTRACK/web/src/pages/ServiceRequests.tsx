@@ -7,10 +7,11 @@ import { LocationPicker } from "../components/LocationPicker";
 import { MachineLink, ToolLink } from "../components/Links";
 import { ScanInput } from "../components/ScanInput";
 import { sameCode, toolCode, type Capture } from "../scan";
-import { ABNORMAL_REBAJE, canSendToMaintenance, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, positionLabel, problemLabel, RequestChip, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
-import { SERVICE_TYPE_LABEL, TICKET_STATE_LABEL, TOOL_STATE_LABEL } from "../labels";
-import type { LocationRow, ServiceRequest } from "../types";
+import { ABNORMAL_REBAJE, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, positionLabel, problemLabel, RequestChip, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
+import { RETIREMENT_STATE_LABEL, SERVICE_TYPE_LABEL, TICKET_STATE_LABEL, TOOL_STATE_LABEL } from "../labels";
+import type { LocationRow, ServiceRequest, ToolCribUser } from "../types";
 import { usePoll } from "../usePoll";
+import { go } from "../router";
 
 const DESTINATION_TYPES = ["rack", "togu", "maintenance", "workshop"];
 const SUPERVISOR_ROLES = ["TOOLCRIB_SUPERVISOR", "SYSTEM_ADMIN"];
@@ -83,34 +84,127 @@ function CollectDialog({ request, destinations, relocate, onClose, onDone }: { r
   );
 }
 
-function FinishDialog({ request, onClose, onDone }: { request: ServiceRequest; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
-  const [result, setResult] = useState<"ready" | "retired">("ready");
+function AttendDialog({ request, onClose, onDone }: { request: ServiceRequest; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
+  const { session } = useAuth();
+  const [people, setPeople] = useState<ToolCribUser[]>([]);
+  const [who, setWho] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<ToolCribUser[]>("GET", "/workflow/toolcrib-users")
+      .then((list) => {
+        setPeople(list);
+        setWho(list.some((person) => person.username === session?.username) ? (session?.username ?? "") : "");
+      })
+      .catch((caught) => setError(caught instanceof ApiError ? caught.message : "Could not load the Tool Crib list."));
+  }, [session?.username]);
+
+  async function submit() {
+    if (!who) return setError("Choose who from Tool Crib is attending.");
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/attend`, { atendido_por: who }));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Could not take the request.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`Who is attending · ${request.folio}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Back
+          </button>
+          <button className="btn btn-primary" onClick={() => void submit()} disabled={busy}>
+            {busy ? "Saving…" : "Attend"}
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        <label>
+          Tool Crib
+          <select value={who} onChange={(event) => setWho(event.target.value)} autoFocus>
+            <option value="">Choose…</option>
+            {people.map((person) => (
+              <option key={person.username} value={person.username}>
+                {person.full_name}
+                {person.shift ? ` · ${person.shift}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <ErrorNote message={error} />
+      </div>
+    </Dialog>
+  );
+}
+
+type Outcome = "ready" | "maintenance" | "retirement";
+
+function FinishDialog({ request, onClose, onDone }: { request: ServiceRequest; onClose: () => void; onDone: (request: ServiceRequest, outcome: Outcome) => void }) {
+  const existing = request.incident;
+  const [outcome, setOutcome] = useState<Outcome>("ready");
   const [rebaje, setRebaje] = useState("");
   const [justification, setJustification] = useState("");
   const [note, setNote] = useState("");
+  const [values, setValues] = useState<IncidentValues>({ operator: existing?.operator ?? "", cause: existing?.cause ?? "", moment: existing?.moment ?? "" });
+  const [finding, setFinding] = useState(existing?.finding ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const sharpening = request.type === "sharpening";
-  const needsNote = result === "retired" || request.type === "damage" || request.type === "performance";
+  const needsNote = request.type === "damage" || request.type === "performance";
   const amount = rebaje.trim() === "" ? null : Number(rebaje);
   const abnormal = amount !== null && Number.isFinite(amount) && amount > ABNORMAL_REBAJE;
+  const OUTCOMES: { value: Outcome; label: string }[] = [
+    { value: "ready", label: sharpening ? "Sharpened, ready for use" : "Repaired or fine, ready for use" },
+    { value: "maintenance", label: "Needs Maintenance" },
+    ...(sharpening ? [] : [{ value: "retirement" as Outcome, label: "Cannot be used: retire it" }]),
+  ];
 
   async function submit() {
-    if (result === "ready" && sharpening && amount === null) return setError("Record how much was ground off (0 if nothing was removed).");
+    setError(null);
+    if (outcome !== "ready") {
+      const missing = incidentMissing(values);
+      if (missing) return setError(missing);
+      if (finding.trim().length < 3) return setError(outcome === "retirement" ? "Write why the tool should be retired." : "Write what Tool Crib found on the tool.");
+      setBusy(true);
+      try {
+        await api("POST", outcome === "retirement" ? "/workflow/retirements" : "/workflow/maintenance/tickets", {
+          operador: values.operator,
+          causa: values.cause,
+          momento: values.moment,
+          hallazgo: finding.trim(),
+          request_id: request.id,
+        });
+        onDone(request, outcome);
+      } catch (caught) {
+        setError(caught instanceof ApiError ? caught.message : "It could not be saved.");
+        setBusy(false);
+      }
+      return;
+    }
+    if (sharpening && amount === null) return setError("Record how much was ground off (0 if nothing was removed).");
     if (amount !== null && (!Number.isFinite(amount) || amount < 0)) return setError("The amount ground off must be a number, 0 or more.");
     if (abnormal && justification.trim().length < 10) return setError(`More than ${ABNORMAL_REBAJE.toFixed(3)} in. is abnormal: explain what happened.`);
-    if (needsNote && !note.trim()) return setError(result === "retired" ? "Explain why the tool is retired." : "Describe what was found and repaired.");
+    if (needsNote && !note.trim()) return setError("Describe what was found and repaired.");
     setBusy(true);
-    setError(null);
     try {
       onDone(
         await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/finish-service`, {
-          resultado: result,
+          resultado: "ready",
           rebaje: amount,
           justificacion: justification.trim() || null,
           nota: note.trim() || null,
         }),
+        "ready",
       );
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "The result could not be saved.");
@@ -120,15 +214,15 @@ function FinishDialog({ request, onClose, onDone }: { request: ServiceRequest; o
 
   return (
     <Dialog
-      title={`Service result · ${request.folio}`}
+      title={`Result · ${request.folio}`}
       onClose={onClose}
       footer={
         <>
           <button className="btn" onClick={onClose} disabled={busy}>
             Back
           </button>
-          <button className={`btn ${result === "retired" ? "btn-danger" : "btn-primary"}`} onClick={() => void submit()} disabled={busy}>
-            {busy ? "Saving…" : result === "retired" ? "Retire the tool" : "Save result"}
+          <button className={`btn ${outcome === "retirement" ? "btn-danger" : "btn-primary"}`} onClick={() => void submit()} disabled={busy}>
+            {busy ? "Saving…" : outcome === "ready" ? "Save result" : outcome === "maintenance" ? "Open ticket" : "Propose retirement"}
           </button>
         </>
       }
@@ -151,31 +245,45 @@ function FinishDialog({ request, onClose, onDone }: { request: ServiceRequest; o
           </div>
         </div>
         {request.note && <p className="note note-warn">Operator note: {request.note}</p>}
-        <label className="check">
-          <input type="radio" name="finish-result" checked={result === "ready"} onChange={() => setResult("ready")} /> Ready for use
-        </label>
-        <label className="check">
-          <input type="radio" name="finish-result" checked={result === "retired"} onChange={() => setResult("retired")} /> Retire the tool (it does not come back)
-        </label>
-        {result === "ready" && (
-          <label>
-            Ground off (in.){sharpening ? "" : " (optional)"}
-            <input inputMode="decimal" value={rebaje} onChange={(event) => setRebaje(event.target.value)} placeholder="e.g. 0.015" autoFocus />
-          </label>
-        )}
-        {abnormal && (
+        <div className="svc-options">
+          {OUTCOMES.map((option) => (
+            <label key={option.value} className={`svc-option${outcome === option.value ? " selected" : ""}`}>
+              <input type="radio" name="outcome" checked={outcome === option.value} onChange={() => { setOutcome(option.value); setError(null); }} />
+              <span>
+                <strong>{option.label}</strong>
+              </span>
+            </label>
+          ))}
+        </div>
+        {outcome === "ready" ? (
           <>
-            <p className="note note-warn">More than {ABNORMAL_REBAJE.toFixed(3)} in. was ground off. That is abnormal, so it needs a good justification.</p>
             <label>
-              Justification (required)
-              <textarea rows={2} maxLength={500} value={justification} onChange={(event) => setJustification(event.target.value)} />
+              Ground off (in.){sharpening ? "" : " (optional)"}
+              <input inputMode="decimal" value={rebaje} onChange={(event) => setRebaje(event.target.value)} placeholder="e.g. 0.015" autoFocus />
+            </label>
+            {abnormal && (
+              <>
+                <p className="note note-warn">More than {ABNORMAL_REBAJE.toFixed(3)} in. was ground off. That is abnormal, so it needs a good justification.</p>
+                <label>
+                  Justification (required)
+                  <textarea rows={2} maxLength={500} value={justification} onChange={(event) => setJustification(event.target.value)} />
+                </label>
+              </>
+            )}
+            <label>
+              {needsNote ? "What was found and repaired? (required)" : "Notes (optional)"}
+              <textarea rows={2} maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} />
+            </label>
+          </>
+        ) : (
+          <>
+            <IncidentFields values={values} onChange={setValues} />
+            <label>
+              {outcome === "retirement" ? "Why the tool should be retired (required)" : "What Tool Crib found (the reason for the ticket)"}
+              <textarea rows={3} maxLength={500} value={finding} onChange={(event) => setFinding(event.target.value)} />
             </label>
           </>
         )}
-        <label>
-          {result === "retired" ? "Why is it retired? (required)" : needsNote ? "What was found and repaired? (required)" : "Notes (optional)"}
-          <textarea rows={2} maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} />
-        </label>
         <ErrorNote message={error} />
       </div>
     </Dialog>
@@ -232,7 +340,7 @@ function StoreDialog({ request, racks, onClose, onDone }: { request: ServiceRequ
   );
 }
 
-function IncidentDialog({ request, toMaintenance = false, onClose, onDone }: { request: ServiceRequest; toMaintenance?: boolean; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
+function IncidentDialog({ request, onClose, onDone }: { request: ServiceRequest; onClose: () => void; onDone: (request: ServiceRequest) => void }) {
   const existing = request.incident;
   const [values, setValues] = useState<IncidentValues>({ operator: existing?.operator ?? "", cause: existing?.cause ?? "", moment: existing?.moment ?? "" });
   const [finding, setFinding] = useState(existing?.finding ?? "");
@@ -245,23 +353,24 @@ function IncidentDialog({ request, toMaintenance = false, onClose, onDone }: { r
     if (finding.trim().length < 3) return setError("Write what Tool Crib found on the tool.");
     setBusy(true);
     setError(null);
-    const body = { operador: values.operator, causa: values.cause, momento: values.moment, hallazgo: finding.trim() };
     try {
-      if (toMaintenance) {
-        await api("POST", "/workflow/maintenance/tickets", { ...body, request_id: request.id });
-        onDone(request);
-      } else {
-        onDone(await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/incident`, body));
-      }
+      onDone(
+        await api<ServiceRequest>("POST", `/workflow/service-requests/${request.id}/incident`, {
+          operador: values.operator,
+          causa: values.cause,
+          momento: values.moment,
+          hallazgo: finding.trim(),
+        }),
+      );
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : toMaintenance ? "The ticket could not be opened." : "The incident could not be saved.");
+      setError(caught instanceof ApiError ? caught.message : "The incident could not be saved.");
       setBusy(false);
     }
   }
 
   return (
     <Dialog
-      title={toMaintenance ? `Send to Maintenance · ${request.folio}` : `Incident · ${request.folio}`}
+      title={`Incident · ${request.folio}`}
       onClose={onClose}
       footer={
         <>
@@ -269,7 +378,7 @@ function IncidentDialog({ request, toMaintenance = false, onClose, onDone }: { r
             Back
           </button>
           <button className="btn btn-primary" onClick={() => void submit()} disabled={busy}>
-            {busy ? "Saving…" : toMaintenance ? "Open ticket" : "Save incident"}
+            {busy ? "Saving…" : "Save incident"}
           </button>
         </>
       }
@@ -294,7 +403,7 @@ function IncidentDialog({ request, toMaintenance = false, onClose, onDone }: { r
         {request.note && <p className="note note-warn">Manufacturing said: {request.note}</p>}
         <IncidentFields values={values} onChange={setValues} />
         <label>
-          {toMaintenance ? "What Tool Crib found (the reason for the ticket)" : "What Tool Crib found"}
+          What Tool Crib found
           <textarea rows={3} maxLength={500} value={finding} onChange={(event) => setFinding(event.target.value)} autoFocus />
         </label>
         <ErrorNote message={error} />
@@ -342,8 +451,8 @@ function ResolveDialog({ request, onClose, onDone }: { request: ServiceRequest; 
             <strong>{request.machine}</strong>
           </div>
           <div>
-            <div className="muted small">Problem</div>
-            <strong>{problemLabel(request.problem)}</strong>
+            <div className="muted small">{request.type === "part_request" ? "Part number" : "Problem"}</div>
+            <strong>{request.type === "part_request" ? request.part_number : problemLabel(request.problem)}</strong>
           </div>
         </div>
         {request.note && <p className="note note-warn">Operator note: {request.note}</p>}
@@ -372,7 +481,7 @@ export function ServiceRequestsPage() {
   const [finishing, setFinishing] = useState<ServiceRequest | null>(null);
   const [storing, setStoring] = useState<ServiceRequest | null>(null);
   const [recording, setRecording] = useState<ServiceRequest | null>(null);
-  const [ticketing, setTicketing] = useState<ServiceRequest | null>(null);
+  const [choosing, setChoosing] = useState<ServiceRequest | null>(null);
   const [relocating, setRelocating] = useState<ServiceRequest | null>(null);
   const [cancelling, setCancelling] = useState<ServiceRequest | null>(null);
 
@@ -408,6 +517,7 @@ export function ServiceRequestsPage() {
   }, [rows]);
 
   async function attend(request: ServiceRequest) {
+    if (request.type !== "program_problem") return setChoosing(request);
     setBusyId(request.id);
     setError(null);
     setMessage(null);
@@ -498,6 +608,7 @@ export function ServiceRequestsPage() {
                 const minutes = waitMinutes(request);
                 const waitingForTool = isWaitingForTool(request);
                 const isProgram = request.type === "program_problem";
+                const isPart = request.type === "part_request";
                 const mine = request.attended_by === session?.username || SUPERVISOR_ROLES.includes(session?.role ?? "");
                 const canTake = canAttend && (isProgram || canHandleTools);
                 const toolReady = request.service?.result === "ready" && request.tool_status === "disponible";
@@ -518,6 +629,8 @@ export function ServiceRequestsPage() {
                       <div className="muted small">
                         {isProgram ? (
                           problemLabel(request.problem)
+                        ) : isPart ? (
+                          "Prepare the kit for this machine"
                         ) : request.tool_id ? (
                           <>
                             <ToolLink id={request.tool_id} />
@@ -546,12 +659,19 @@ export function ServiceRequestsPage() {
                       <div className="muted small">
                         {waitingForTool && <strong className="wait-text">Waiting {waitText(minutes)}</strong>}
                         {request.state === "attending" && ` · ${request.attended_by_name}`}
+                        {request.attended_by_name && request.state !== "attending" && request.state !== "open" && request.state !== "cancelled" && (
+                          <div>Attended by {request.attended_by_name}</div>
+                        )}
+                        {request.type !== "program_problem" && request.wait_min !== null && request.attention_min !== null && (
+                          <div>
+                            Tool Crib: {request.wait_min} min to respond{request.attention_min !== null ? ` · ${request.attention_min} min of attention` : ""}
+                            {request.downtime_min !== null ? ` · ${request.downtime_min} min without tool` : ""}
+                          </div>
+                        )}
                         {(request.state === "collected" || request.state === "replaced") && request.tool_id && (
                           <div>
                             {request.service
-                              ? request.service.result === "retired"
-                                ? `${request.tool_id} retired`
-                                : `${request.tool_id} ready in ${request.tool_location ?? "—"}${request.service.rebaje !== null ? ` · ${request.service.rebaje.toFixed(3)} in. ground off` : ""}`
+                              ? `${request.tool_id} ready in ${request.tool_location ?? "—"}${request.service.rebaje !== null ? ` · ${request.service.rebaje.toFixed(3)} in. ground off` : ""}`
                               : `${request.tool_id} in ${request.tool_location ?? "—"} · ${TOOL_STATE_LABEL[request.tool_status ?? ""] ?? request.tool_status ?? ""}`}
                             {request.service?.abnormal && <span className="warn-text"> · abnormal</span>}
                           </div>
@@ -559,6 +679,11 @@ export function ServiceRequestsPage() {
                         {request.ticket && (
                           <div>
                             Maintenance {request.ticket.folio} · {TICKET_STATE_LABEL[request.ticket.state] ?? request.ticket.state}
+                          </div>
+                        )}
+                        {request.retirement && (
+                          <div>
+                            Retirement {request.retirement.folio} · {RETIREMENT_STATE_LABEL[request.retirement.state] ?? request.retirement.state}
                           </div>
                         )}
                         {request.replacement_tool_id && request.state === "replaced" && <div>On the machine: {request.replacement_tool_id}</div>}
@@ -572,19 +697,14 @@ export function ServiceRequestsPage() {
                           Attending
                         </button>
                       )}
-                      {canTake && request.state === "attending" && !isProgram && request.type !== "tool_request" && mine && (
+                      {canTake && request.state === "attending" && !isProgram && !isPart && request.type !== "tool_request" && (
                         <button className="btn btn-primary" onClick={() => setCollecting(request)}>
                           Tool collected…
                         </button>
                       )}
-                      {canHandleTools && (request.state === "collected" || request.state === "replaced") && !isProgram && request.type !== "tool_request" && !request.ticket && (
-                        <button className={`btn ${request.incident ? "" : "btn-primary"}`} onClick={() => setRecording(request)}>
-                          {request.incident ? "Edit incident…" : "Record incident…"}
-                        </button>
-                      )}
-                      {canHandleTools && canSendToMaintenance(request) && (
-                        <button className="btn" onClick={() => setTicketing(request)}>
-                          Send to Maintenance…
+                      {canHandleTools && (request.state === "collected" || request.state === "replaced") && !isProgram && !isPart && request.type !== "tool_request" && !request.ticket && !request.retirement && request.incident && request.service === null && (
+                        <button className="btn" onClick={() => setRecording(request)}>
+                          Edit incident…
                         </button>
                       )}
                       {canHandleTools && needsServiceResult(request) && inServicePlace(request) && (
@@ -602,7 +722,12 @@ export function ServiceRequestsPage() {
                           Store in rack…
                         </button>
                       )}
-                      {canTake && request.state === "attending" && isProgram && mine && (
+                      {canHandleTools && request.state === "attending" && isPart && (
+                        <button className="btn btn-primary" onClick={() => go("/kitting", { machine: request.machine, part: request.part_number ?? "" })}>
+                          Start kit…
+                        </button>
+                      )}
+                      {canTake && request.state === "attending" && (isProgram ? mine : isPart) && (
                         <button className="btn btn-primary" onClick={() => setResolving(request)}>
                           Resolve…
                         </button>
@@ -640,14 +765,31 @@ export function ServiceRequestsPage() {
         <FinishDialog
           request={finishing}
           onClose={() => setFinishing(null)}
-          onDone={(request) => {
+          onDone={(request, outcome) => {
             setFinishing(null);
             setMessage(
-              request.service?.result === "retired"
-                ? `${request.tool_id} retired.`
-                : request.state === "collected"
-                  ? `${request.tool_id} is ready. Take it back to ${request.machine} or send another tool of TN ${request.tn}.`
-                  : `${request.tool_id} is ready. Store it in its rack to close ${request.folio}.`,
+              outcome === "retirement"
+                ? `Retirement of ${request.tool_id} proposed. A supervisor or the technician has to approve it.`
+                : outcome === "maintenance"
+                  ? `${request.tool_id} is in Maintenance. ${request.state === "collected" ? `Bring a tool with TN ${request.tn} to ${request.machine}; Manufacturing scans it to close ${request.folio}.` : `${request.folio} is closed.`}`
+                  : request.state === "collected"
+                    ? `${request.tool_id} is ready. Take it back to ${request.machine} or send another tool of TN ${request.tn}.`
+                    : `${request.tool_id} is ready. Store it in its rack to close ${request.folio}.`,
+            );
+            void load();
+          }}
+        />
+      )}
+      {choosing && (
+        <AttendDialog
+          request={choosing}
+          onClose={() => setChoosing(null)}
+          onDone={(request) => {
+            setChoosing(null);
+            setMessage(
+              request.type === "part_request"
+                ? `${request.attended_by_name ?? request.attended_by} is preparing the kit of ${request.part_number} for ${request.machine}. Use «Start kit…».`
+                : `${request.attended_by_name ?? request.attended_by} is attending ${request.folio}. Go to ${request.machine} for ${request.tool_id ?? `a TN ${request.tn} tool`}.`,
             );
             void load();
           }}
@@ -672,18 +814,6 @@ export function ServiceRequestsPage() {
           onDone={(request) => {
             setRecording(null);
             setMessage(`Incident of ${request.tool_id} saved.`);
-            void load();
-          }}
-        />
-      )}
-      {ticketing && (
-        <IncidentDialog
-          request={ticketing}
-          toMaintenance
-          onClose={() => setTicketing(null)}
-          onDone={(request) => {
-            setTicketing(null);
-            setMessage(`${request.tool_id} is in Maintenance. ${request.state === "collected" ? `Bring a tool with TN ${request.tn} to ${request.machine}; Manufacturing scans it to close ${request.folio}.` : `${request.folio} is closed.`}`);
             void load();
           }}
         />

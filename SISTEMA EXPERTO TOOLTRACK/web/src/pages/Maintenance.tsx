@@ -6,9 +6,9 @@ import { Chip } from "../components/MachineCard";
 import { MachineLink, ToolLink } from "../components/Links";
 import { ScanInput } from "../components/ScanInput";
 import { causeLabel, IncidentFields, incidentMissing, momentLabel, when, type IncidentValues } from "../components/Service";
-import { DAMAGE_CAUSES, TICKET_STATE_CLASS, TICKET_STATE_LABEL, TOOL_STATE_LABEL } from "../labels";
+import { DAMAGE_CAUSES, RETIREMENT_STATE_CLASS, RETIREMENT_STATE_LABEL, TICKET_STATE_CLASS, TICKET_STATE_LABEL, TOOL_STATE_LABEL } from "../labels";
 import { sameCode, toolCode, type Capture } from "../scan";
-import type { LocationRow, MaintenanceTicket } from "../types";
+import type { LocationRow, MaintenanceTicket, Retirement } from "../types";
 import { usePoll } from "../usePoll";
 
 const VIEWS = [
@@ -30,6 +30,16 @@ function Footer({ busy, label, onClose, onSubmit, danger = false }: { busy: bool
   );
 }
 
+export function RetireToolDialog({ toolId, onClose, onDone }: { toolId: string; onClose: () => void; onDone: () => void }) {
+  const [machines, setMachines] = useState<LocationRow[]>([]);
+  useEffect(() => {
+    api<LocationRow[]>("GET", "/workflow/locations")
+      .then((all) => setMachines(all.filter((item) => item.activa && item.tipo === "machine").sort((a, b) => a.codigo.localeCompare(b.codigo))))
+      .catch(() => setMachines([]));
+  }, []);
+  return <NewTicketDialog machines={machines} retirement initialTool={toolId} onClose={onClose} onDone={onDone} />;
+}
+
 function TicketFacts({ ticket }: { ticket: MaintenanceTicket }) {
   return (
     <div className="facts">
@@ -49,9 +59,9 @@ function TicketFacts({ ticket }: { ticket: MaintenanceTicket }) {
   );
 }
 
-function NewTicketDialog({ machines, onClose, onDone }: { machines: LocationRow[]; onClose: () => void; onDone: (ticket: MaintenanceTicket) => void }) {
-  const [toolId, setToolId] = useState("");
-  const [origin, setOrigin] = useState<"machine" | "toolcrib">("machine");
+export function NewTicketDialog({ machines, retirement = false, initialTool = "", onClose, onDone }: { machines: LocationRow[]; retirement?: boolean; initialTool?: string; onClose: () => void; onDone: (ticket: MaintenanceTicket) => void }) {
+  const [toolId, setToolId] = useState(initialTool);
+  const [origin, setOrigin] = useState<"machine" | "toolcrib">(initialTool ? "toolcrib" : "machine");
   const [machine, setMachine] = useState("");
   const [partNumber, setPartNumber] = useState("");
   const [station, setStation] = useState("");
@@ -67,12 +77,12 @@ function NewTicketDialog({ machines, onClose, onDone }: { machines: LocationRow[
     if (fromMachine && !machine) return setError("Choose the machine the tool came from.");
     const missing = incidentMissing(fromMachine ? values : { ...values, operator: "-" });
     if (missing) return setError(missing);
-    if (finding.trim().length < 3) return setError("Write what Tool Crib found on the tool.");
+    if (finding.trim().length < 3) return setError(retirement ? "Write why the tool should be retired." : "Write what Tool Crib found on the tool.");
     setBusy(true);
     setError(null);
     try {
       onDone(
-        await api<MaintenanceTicket>("POST", "/workflow/maintenance/tickets", {
+        await api<MaintenanceTicket>("POST", retirement ? "/workflow/retirements" : "/workflow/maintenance/tickets", {
           tool_id: toolId,
           origen: origin,
           machine: fromMachine ? machine : null,
@@ -85,13 +95,13 @@ function NewTicketDialog({ machines, onClose, onDone }: { machines: LocationRow[
         }),
       );
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "The ticket could not be opened.");
+      setError(caught instanceof ApiError ? caught.message : retirement ? "The retirement could not be proposed." : "The ticket could not be opened.");
       setBusy(false);
     }
   }
 
   return (
-    <Dialog title="New maintenance ticket" onClose={onClose} footer={<Footer busy={busy} label="Open ticket" onClose={onClose} onSubmit={() => void submit()} />}>
+    <Dialog title={retirement ? "Retire a tool" : "New maintenance ticket"} onClose={onClose} footer={<Footer busy={busy} label={retirement ? "Propose retirement" : "Open ticket"} danger={retirement} onClose={onClose} onSubmit={() => void submit()} />}>
       <form className="form" onSubmit={(event) => void submit(event)}>
         <label>
           Tool
@@ -136,7 +146,7 @@ function NewTicketDialog({ machines, onClose, onDone }: { machines: LocationRow[
         )}
         <IncidentFields values={values} onChange={setValues} showOperator={fromMachine} />
         <label>
-          What Tool Crib found (the reason for the ticket)
+          {retirement ? "Why the tool should be retired" : "What Tool Crib found (the reason for the ticket)"}
           <textarea rows={3} maxLength={500} value={finding} onChange={(event) => setFinding(event.target.value)} />
         </label>
         <ErrorNote message={error} />
@@ -282,11 +292,13 @@ function ReleaseDialog({ ticket, onClose, onDone }: { ticket: MaintenanceTicket;
   );
 }
 
-export function MaintenancePage() {
+function TicketsPanel() {
   const { can } = useAuth();
   const canOperate = can("maintenance.operate");
   const canOpen = can("service.attend") && can("tools.move");
+  const canRetire = canOpen;
   const [view, setView] = useState("active");
+  const [retiring, setRetiring] = useState<MaintenanceTicket | null>(null);
   const [rows, setRows] = useState<MaintenanceTicket[] | null>(null);
   const [machines, setMachines] = useState<LocationRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -332,14 +344,14 @@ export function MaintenancePage() {
     setReceiving(null);
     setEvaluating(null);
     setReleasing(null);
+    setRetiring(null);
     setMessage(text);
     void load();
   }
 
   return (
-    <section className="page">
+    <div>
       <div className="board-bar">
-        <h1>Maintenance</h1>
         <div className="bar-right">
           <select value={view} onChange={(event) => setView(event.target.value)} aria-label="Show">
             {VIEWS.map((option) => (
@@ -434,6 +446,11 @@ export function MaintenancePage() {
                         {ticket.received_by && `${ticket.received_by_name ?? ticket.received_by}`}
                         {ticket.closed_at && ` · ${when(ticket.closed_at)}`}
                       </div>
+                      {ticket.retirement && (
+                        <div className="muted small">
+                          Retirement {ticket.retirement.folio} · {RETIREMENT_STATE_LABEL[ticket.retirement.state] ?? ticket.retirement.state}
+                        </div>
+                      )}
                     </td>
                     <td className="row-actions">
                       {canOperate && ticket.state === "open" && (
@@ -449,6 +466,11 @@ export function MaintenancePage() {
                       {canOperate && ticket.state === "repairing" && (
                         <button className="btn btn-primary" onClick={() => setReleasing(ticket)}>
                           Release…
+                        </button>
+                      )}
+                      {canRetire && ticket.result === "unrepairable" && ticket.tool_status === "danado" && (!ticket.retirement || ticket.retirement.state === "rejected") && (
+                        <button className="btn btn-danger" onClick={() => setRetiring(ticket)}>
+                          Retire…
                         </button>
                       )}
                     </td>
@@ -471,6 +493,272 @@ export function MaintenancePage() {
         />
       )}
       {releasing && <ReleaseDialog ticket={releasing} onClose={() => setReleasing(null)} onDone={(ticket) => done(`${ticket.tool_id} released. Tool Crib can pick it up from ${ticket.tool_location}.`)} />}
+      {retiring && <RetireTicketDialog ticket={retiring} onClose={() => setRetiring(null)} onDone={() => done(`Retirement of ${retiring.tool_id} proposed. A supervisor or the technician has to approve it.`)} />}
+    </div>
+  );
+}
+
+function RetireTicketDialog({ ticket, onClose, onDone }: { ticket: MaintenanceTicket; onClose: () => void; onDone: () => void }) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (reason.trim().length < 3) return setError("Write why the tool should be retired.");
+    setBusy(true);
+    setError(null);
+    try {
+      await api("POST", "/workflow/retirements", { ticket_id: ticket.id, hallazgo: reason.trim() });
+      onDone();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The retirement could not be proposed.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog title={`Retire · ${ticket.folio}`} onClose={onClose} footer={<Footer busy={busy} label="Propose retirement" danger onClose={onClose} onSubmit={() => void submit()} />}>
+      <div className="form">
+        <TicketFacts ticket={ticket} />
+        {ticket.diagnosis && <p className="note note-info">Maintenance diagnosis: {ticket.diagnosis}</p>}
+        <label>
+          Why the tool should be retired (required)
+          <textarea rows={3} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} autoFocus />
+        </label>
+        <ErrorNote message={error} />
+      </div>
+    </Dialog>
+  );
+}
+
+function RetirementDecisionDialog({ retirement, approve, onClose, onDone }: { retirement: Retirement; approve: boolean; onClose: () => void; onDone: (retirement: Retirement) => void }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (!approve && note.trim().length < 3) return setError("Say why the retirement is rejected.");
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await api<Retirement>("POST", `/workflow/retirements/${retirement.id}/${approve ? "approve" : "reject"}`, { nota: note.trim() || null }));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The decision could not be saved.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`${approve ? "Approve" : "Reject"} · ${retirement.folio}`}
+      onClose={onClose}
+      footer={<Footer busy={busy} label={approve ? "Approve retirement" : "Reject retirement"} danger={approve} onClose={onClose} onSubmit={() => void submit()} />}
+    >
+      <div className="form">
+        <div className="facts">
+          <div>
+            <div className="muted small">Tool</div>
+            <strong>{retirement.tool_id}</strong>
+          </div>
+          <div>
+            <div className="muted small">TN</div>
+            <strong>{retirement.tn ?? "—"}</strong>
+          </div>
+          <div>
+            <div className="muted small">Reason</div>
+            <strong>{retirement.reason}</strong>
+          </div>
+        </div>
+        <p className="note note-warn">{approve ? "The tool is retired for good." : "The tool goes back to the state it had."}</p>
+        <label>
+          {approve ? "Note (optional)" : "Why is it rejected? (required)"}
+          <textarea rows={2} maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} autoFocus />
+        </label>
+        <ErrorNote message={error} />
+      </div>
+    </Dialog>
+  );
+}
+
+function RetirementsPanel() {
+  const { session, can } = useAuth();
+  const canDecide = can("retirements.approve");
+  const canPropose = can("service.attend") && can("tools.move");
+  const [view, setView] = useState("pending");
+  const [rows, setRows] = useState<Retirement[] | null>(null);
+  const [machines, setMachines] = useState<LocationRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [deciding, setDeciding] = useState<{ retirement: Retirement; approve: boolean } | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setRows(await api<Retirement[]>("GET", `/workflow/retirements?state=${view}`));
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Could not load the retirements.");
+    }
+  }, [view]);
+  usePoll(load, 15000);
+
+  useEffect(() => {
+    setRows(null);
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!canPropose) return;
+    api<LocationRow[]>("GET", "/workflow/locations")
+      .then((all) => setMachines(all.filter((item) => item.activa && item.tipo === "machine").sort((a, b) => a.codigo.localeCompare(b.codigo))))
+      .catch(() => setMachines([]));
+  }, [canPropose]);
+
+  function done(text: string) {
+    setCreating(false);
+    setDeciding(null);
+    setMessage(text);
+    void load();
+  }
+
+  return (
+    <div>
+      <div className="board-bar">
+        <div className="bar-right">
+          <select value={view} onChange={(event) => setView(event.target.value)} aria-label="Show">
+            <option value="pending">Waiting for approval</option>
+            <option value="closed">Decided</option>
+            <option value="all">All</option>
+          </select>
+          <button className="btn" onClick={() => void load()}>
+            Refresh
+          </button>
+          {canPropose && (
+            <button className="btn btn-primary" onClick={() => setCreating(true)}>
+              Retire a tool
+            </button>
+          )}
+        </div>
+      </div>
+      <ErrorNote message={error} />
+      {message && <div className="note note-info">✔ {message}</div>}
+      {rows && rows.length === 0 && !error && <p className="note note-info">{view === "pending" ? "No retirements waiting." : "Nothing to show."}</p>}
+      {rows && rows.length > 0 && (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Retirement</th>
+                <th>Tool</th>
+                <th>What happened</th>
+                <th>Status</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const incident = row.incident;
+                const own = row.proposed_by === session?.username;
+                return (
+                  <tr key={row.id} className={row.state === "pending" ? "" : "inactive"}>
+                    <td>
+                      <strong>{row.folio}</strong>
+                      <div className="muted small">{row.request_folio ? `From ${row.request_folio}` : "Proposed by hand"}</div>
+                      <div className="muted small">
+                        {row.proposed_by_name ?? row.proposed_by} · {when(row.proposed_at)}
+                      </div>
+                    </td>
+                    <td>
+                      <strong>
+                        <ToolLink id={row.tool_id} />
+                      </strong>
+                      <div className="muted small">
+                        TN {row.tn ?? "—"}
+                        {row.category ? ` · ${row.category === "punzon" ? "Punch" : "Die"}` : ""}
+                      </div>
+                      <div className="muted small">
+                        {row.tool_location ?? "—"} · {TOOL_STATE_LABEL[row.tool_status ?? ""] ?? row.tool_status ?? ""}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="warn-text small">“{row.reason}”</div>
+                      {incident && (
+                        <div className="muted small">
+                          {incident.machine ? (
+                            <>
+                              <MachineLink code={incident.machine} />
+                              {`${incident.part_number ? ` · ${incident.part_number}` : ""}${incident.station ? ` · station ${incident.station}` : ""}`}
+                            </>
+                          ) : (
+                            "Found in Tool Crib"
+                          )}
+                          <div>
+                            {causeLabel(incident.cause)} · {momentLabel(incident.moment)}
+                            {incident.operator ? ` · ${incident.operator}` : ""}
+                            {incident.shift ? ` (${incident.shift})` : ""}
+                          </div>
+                          {incident.reported_as && <div>Reported as {incident.reported_as}</div>}
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <Chip text={RETIREMENT_STATE_LABEL[row.state] ?? row.state} className={RETIREMENT_STATE_CLASS[row.state] ?? ""} />
+                      <div className="muted small">
+                        {row.resolved_by && `${row.resolved_by_name ?? row.resolved_by} · ${when(row.resolved_at)}`}
+                        {row.resolution_note && <div>{row.resolution_note}</div>}
+                      </div>
+                    </td>
+                    <td className="row-actions">
+                      {canDecide && row.state === "pending" && !own && (
+                        <>
+                          <button className="btn btn-danger" onClick={() => setDeciding({ retirement: row, approve: true })}>
+                            Approve…
+                          </button>
+                          <button className="btn" onClick={() => setDeciding({ retirement: row, approve: false })}>
+                            Reject…
+                          </button>
+                        </>
+                      )}
+                      {canDecide && row.state === "pending" && own && <span className="muted small">Someone else decides</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!rows && !error && <p className="muted">Loading retirements…</p>}
+
+      {creating && <NewTicketDialog machines={machines} retirement onClose={() => setCreating(false)} onDone={() => done("Retirement proposed. A supervisor or the technician has to approve it.")} />}
+      {deciding && (
+        <RetirementDecisionDialog
+          retirement={deciding.retirement}
+          approve={deciding.approve}
+          onClose={() => setDeciding(null)}
+          onDone={(retirement) => done(retirement.state === "approved" ? `${retirement.tool_id} retired.` : `${retirement.tool_id} is back in use.`)}
+        />
+      )}
+    </div>
+  );
+}
+
+export function MaintenancePage() {
+  const [tab, setTab] = useState<"tickets" | "retirements">("tickets");
+  return (
+    <section className="page">
+      <div className="board-bar">
+        <h1>Maintenance</h1>
+      </div>
+      <div className="tabs-inline wrap">
+        <button className={`btn${tab === "tickets" ? " btn-primary" : ""}`} onClick={() => setTab("tickets")}>
+          Tickets
+        </button>
+        <button className={`btn${tab === "retirements" ? " btn-primary" : ""}`} onClick={() => setTab("retirements")}>
+          Retirements
+        </button>
+      </div>
+      {tab === "tickets" ? <TicketsPanel /> : <RetirementsPanel />}
     </section>
   );
 }

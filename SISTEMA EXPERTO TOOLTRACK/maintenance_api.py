@@ -17,6 +17,7 @@ import scan_codes
 import service_requests_api as service
 import workflow_api
 from models.inventory import (
+    BajaHerramienta,
     EstadoMaquina,
     Herramienta,
     IncidenteHerramienta,
@@ -24,6 +25,7 @@ from models.inventory import (
     RequisitoSetup,
     ReservaHerramienta,
     ServicioHerramienta,
+    SolicitudServicio,
     TicketMantenimiento,
     Ubicacion,
     Usuario,
@@ -96,6 +98,12 @@ def _read_many(db, tickets):
     tool_ids = {ticket.herramienta_id for ticket in tickets}
     tools = {tool.id: tool for tool in db.query(Herramienta).filter(Herramienta.id.in_(tool_ids)).all()} if tool_ids else {}
     incident_ids = {ticket.incidente_id for ticket in tickets}
+    retirements = {}
+    if incident_ids:
+        for retirement in db.query(BajaHerramienta).filter(
+            BajaHerramienta.incidente_id.in_(incident_ids)
+        ).order_by(BajaHerramienta.id).all():
+            retirements[retirement.incidente_id] = retirement
     incidents = {
         incident.id: incident
         for incident in db.query(IncidenteHerramienta).filter(IncidenteHerramienta.id.in_(incident_ids)).all()
@@ -128,6 +136,10 @@ def _read_many(db, tickets):
             "request_folio": f"SR-{ticket.solicitud_id:05d}" if ticket.solicitud_id else None,
             "finding": ticket.motivo,
             "incident": service._incident_read(incident) if incident else None,
+            "retirement": {
+                "folio": f"BJ-{retirements[ticket.incidente_id].id:05d}",
+                "state": retirements[ticket.incidente_id].estado,
+            } if ticket.incidente_id in retirements else None,
             "created_by": ticket.creado_por,
             "created_by_name": name(ticket.creado_por),
             "created_at": _iso(ticket.creado_en),
@@ -176,7 +188,80 @@ def _require_free(db, tool):
         ).filter((RequisitoSetup.punch_tool_id == tool.id) | (RequisitoSetup.die_tool_id == tool.id)).first()
     )
     if busy:
-        raise HTTPException(status_code=409, detail=f"Tool {tool.id} is reserved or assigned to a machine; it cannot go to Maintenance now")
+        raise HTTPException(status_code=409, detail=f"Tool {tool.id} is reserved or assigned to a machine; it cannot be moved now")
+
+
+class _Case:
+    """What a ticket or a retirement is about: the request or tool, who/why/when, and where it came from."""
+
+    def __init__(self, request, tool, fields, origin, machine):
+        self.request, self.tool, self.fields, self.origin, self.machine = request, tool, fields, origin, machine
+
+
+def open_case(db, item, action):
+    """Validates the tool Tool Crib holds and the incident data; shared by tickets and retirements."""
+    request = None
+    origin = "machine"
+    machine = None
+    if item.request_id:
+        request = service._get(db, item.request_id)
+        if (
+            request.estado not in ("collected", "replaced")
+            or not request.herramienta_id
+            or request.tipo in ("tool_request", "return", "program_problem")
+        ):
+            raise HTTPException(status_code=409, detail=f"{action} once Tool Crib has the tool of this request")
+        if db.query(TicketMantenimiento.id).filter(TicketMantenimiento.solicitud_id == request.id).first():
+            raise HTTPException(status_code=409, detail="This request already has a maintenance ticket")
+        if db.query(ServicioHerramienta.id).filter(ServicioHerramienta.solicitud_id == request.id).first():
+            raise HTTPException(status_code=409, detail="The result of this service is already recorded")
+        tool = db.query(Herramienta).filter(Herramienta.id == request.herramienta_id).with_for_update().one()
+        known = db.query(IncidenteHerramienta).filter(IncidenteHerramienta.solicitud_id == request.id).first()
+        fields = service._incident_fields(db, item.operador or (known.operador if known else None), item.causa, item.momento)
+        return _Case(request, tool, fields, origin, machine)
+
+    tool = scan_codes.find_tool(db, item.tool_id or "", lock=True)
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"Tool '{item.tool_id}' is not in the inventory")
+    origin = (item.origen or "").strip().lower()
+    if origin not in ORIGINS:
+        raise HTTPException(status_code=422, detail="Say where the tool comes from: a machine or Tool Crib")
+    current = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
+    if not current or current.tipo not in TOOLCRIB_LOCATIONS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tool {tool.id} is in {tool.ubicacion or 'an unknown location'}; Tool Crib has to hold it first.",
+        )
+    _require_free(db, tool)
+    open_request = db.query(SolicitudServicio).filter(
+        SolicitudServicio.herramienta_id == tool.id, SolicitudServicio.estado.in_(service.OPEN_STATES),
+    ).first()
+    if open_request:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tool {tool.id} is in the request SR-{open_request.id:05d}; {action[0].lower()}{action[1:]} from that request.",
+        )
+    if origin == "machine":
+        code = scan_codes.machine_code(item.machine or "")
+        if not code:
+            raise HTTPException(status_code=422, detail="Choose the machine the tool came from")
+        machine = workflow_api._location(db, code, {"machine"}).codigo
+    fields = service._incident_fields(db, item.operador, item.causa, item.momento, require_operator=origin == "machine")
+    return _Case(None, tool, fields, origin, machine)
+
+
+def save_case_incident(db, case, item, finding, actor, now):
+    if case.request is not None:
+        return service._save_incident(db, case.request, case.tool, case.fields, actor, hallazgo=finding)
+    incident = IncidenteHerramienta(
+        herramienta_id=case.tool.id, origen=case.origin, reportado_como=None,
+        maquina_codigo=case.machine, numero_parte=(item.part_number or "").strip() or None,
+        estacion=(item.station or "").strip() or None, tn=case.tool.tn, categoria=workflow_api._category(case.tool),
+        life=case.tool.life, operador=case.fields["operador"], turno=case.fields["turno"], causa=case.fields["causa"],
+        momento=case.fields["momento"], hallazgo=finding, creado_por=actor, creado_en=now,
+    )
+    db.add(incident)
+    return incident
 
 
 @router.post("/tickets", status_code=201)
@@ -187,64 +272,19 @@ def create_ticket(item: TicketCreate):
     finding = _text(item.hallazgo, "What Tool Crib found")
     db = workflow_api.SessionLocal()
     try:
-        request = None
-        if item.request_id:
-            request = service._get(db, item.request_id)
-            if (
-                request.estado not in ("collected", "replaced")
-                or not request.herramienta_id
-                or request.tipo in ("tool_request", "return", "program_problem")
-            ):
-                raise HTTPException(status_code=409, detail="Open the ticket once Tool Crib has the tool of this request")
-            if db.query(TicketMantenimiento.id).filter(TicketMantenimiento.solicitud_id == request.id).first():
-                raise HTTPException(status_code=409, detail="This request already has a maintenance ticket")
-            if db.query(ServicioHerramienta.id).filter(ServicioHerramienta.solicitud_id == request.id).first():
-                raise HTTPException(status_code=409, detail="The result of this service is already recorded")
-            tool = db.query(Herramienta).filter(Herramienta.id == request.herramienta_id).with_for_update().one()
-            known = db.query(IncidenteHerramienta).filter(IncidenteHerramienta.solicitud_id == request.id).first()
-            fields = service._incident_fields(db, item.operador or (known.operador if known else None), item.causa, item.momento)
-        else:
-            tool = scan_codes.find_tool(db, item.tool_id or "", lock=True)
-            if not tool:
-                raise HTTPException(status_code=404, detail=f"Tool '{item.tool_id}' is not in the inventory")
-            origin = (item.origen or "").strip().lower()
-            if origin not in ORIGINS:
-                raise HTTPException(status_code=422, detail="Say where the tool comes from: a machine or Tool Crib")
-            current = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
-            if not current or current.tipo not in TOOLCRIB_LOCATIONS:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Tool {tool.id} is in {tool.ubicacion or 'an unknown location'}; Tool Crib has to hold it before it goes to Maintenance.",
-                )
-            _require_free(db, tool)
-            machine = None
-            if origin == "machine":
-                code = scan_codes.machine_code(item.machine or "")
-                if not code:
-                    raise HTTPException(status_code=422, detail="Choose the machine the tool came from")
-                machine = workflow_api._location(db, code, {"machine"}).codigo
-            fields = service._incident_fields(db, item.operador, item.causa, item.momento, require_operator=origin == "machine")
-
+        case = open_case(db, item, "Open the ticket")
+        request, tool = case.request, case.tool
         if (tool.estado or "disponible") == "baja":
             raise HTTPException(status_code=409, detail=f"Tool {tool.id} is retired")
         if db.query(TicketMantenimiento.id).filter(
             TicketMantenimiento.herramienta_id == tool.id, TicketMantenimiento.estado != "closed",
         ).first():
             raise HTTPException(status_code=409, detail=f"Tool {tool.id} already has an open maintenance ticket")
+        workflow_api._require_no_open_ticket(db, tool)
         destination = _maintenance_location(db, item.destino_codigo)
 
         now = workflow_api.utcnow()
-        if request is not None:
-            incident = service._save_incident(db, request, tool, fields, user.username, hallazgo=finding)
-        else:
-            incident = IncidenteHerramienta(
-                herramienta_id=tool.id, origen=origin, reportado_como=None,
-                maquina_codigo=machine, numero_parte=(item.part_number or "").strip() or None,
-                estacion=(item.station or "").strip() or None, tn=tool.tn, categoria=workflow_api._category(tool),
-                life=tool.life, operador=fields["operador"], turno=fields["turno"], causa=fields["causa"],
-                momento=fields["momento"], hallazgo=finding, creado_por=user.username, creado_en=now,
-            )
-            db.add(incident)
+        incident = save_case_incident(db, case, item, finding, user.username, now)
         db.flush()
         ticket = TicketMantenimiento(
             herramienta_id=tool.id, solicitud_id=request.id if request else None, incidente_id=incident.id,

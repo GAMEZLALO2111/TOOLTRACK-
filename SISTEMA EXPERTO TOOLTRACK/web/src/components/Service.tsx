@@ -95,7 +95,8 @@ export function IncidentSummary({ incident }: { incident: ToolIncident }) {
 
 export function RequestChip({ request }: { request: Pick<ServiceRequest, "state"> & Partial<Pick<ServiceRequest, "type">> }) {
   const program = request.type === "program_problem";
-  const text = program && request.state === "open" ? "Waiting for Tool Crib or Engineering" : program && request.state === "attending" ? "Being reviewed" : (SERVICE_STATE_LABEL[request.state] ?? request.state);
+  const part = request.type === "part_request";
+  const text = program && request.state === "open" ? "Waiting for Tool Crib or Engineering" : program && request.state === "attending" ? "Being reviewed" : part && request.state === "attending" ? "Tool Crib is preparing the kit" : (SERVICE_STATE_LABEL[request.state] ?? request.state);
   return <Chip text={text} className={SERVICE_STATE_CLASS[request.state] ?? ""} />;
 }
 
@@ -104,7 +105,10 @@ export function canReceive(request: Pick<ServiceRequest, "state" | "type">): boo
   return request.state === "collected" || (request.type === "tool_request" && request.state === "attending");
 }
 
-export function positionLabel(request: Pick<ServiceRequest, "type" | "station" | "category" | "tn" | "part_number">): string {
+export function positionLabel(request: Pick<ServiceRequest, "type" | "station" | "category" | "tn" | "part_number"> & Partial<Pick<ServiceRequest, "work_order" | "quantity">>): string {
+  if (request.type === "part_request") {
+    return `Part number ${request.part_number ?? "—"}${request.work_order ? ` · WO ${request.work_order}` : ""}${request.quantity ? ` · ${request.quantity} pcs` : ""}`;
+  }
   if (request.type === "program_problem") {
     return `Part number ${request.part_number ?? "—"}${request.station ? ` · station ${request.station}` : ""}`;
   }
@@ -124,27 +128,17 @@ export function isActive(request: Pick<ServiceRequest, "state">): boolean {
 }
 
 /** True while the machine position is still without a tool: that is the time worth watching. */
-export function isWaitingForTool(request: Pick<ServiceRequest, "state">): boolean {
-  return request.state === "open" || request.state === "attending" || request.state === "collected";
+export function isWaitingForTool(request: Pick<ServiceRequest, "state"> & Partial<Pick<ServiceRequest, "type">>): boolean {
+  return request.type !== "part_request" && (request.state === "open" || request.state === "attending" || request.state === "collected");
 }
 
 /** The old tool is physically in service and its result has not been recorded yet (a Maintenance ticket records its own). */
-export function needsServiceResult(request: Pick<ServiceRequest, "state" | "type" | "service" | "tool_status" | "ticket">): boolean {
+export function needsServiceResult(request: Pick<ServiceRequest, "state" | "type" | "service" | "tool_status" | "ticket" | "retirement">): boolean {
   return (
     (request.state === "collected" || request.state === "replaced") &&
     request.service === null &&
     request.ticket === null &&
-    ["sharpening", "damage", "performance", "inspection", "replacement"].includes(request.type)
-  );
-}
-
-/** Tool Crib may send the tool to Maintenance while it holds it and no result was recorded. */
-export function canSendToMaintenance(request: Pick<ServiceRequest, "state" | "type" | "service" | "ticket" | "tool_id">): boolean {
-  return (
-    (request.state === "collected" || request.state === "replaced") &&
-    !!request.tool_id &&
-    request.service === null &&
-    request.ticket === null &&
+    request.retirement === null &&
     ["sharpening", "damage", "performance", "inspection", "replacement"].includes(request.type)
   );
 }

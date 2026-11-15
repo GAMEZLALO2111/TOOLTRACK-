@@ -156,7 +156,7 @@ class ToolLocationWindow(SetupWorkflowWindow):
         state_bar.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(state_bar, text="Herramienta seleccionada:").pack(side=tk.LEFT, padx=(0, 8))
         for label, target in (
-            ("Marcar dañada", "danado"), ("Liberar (disponible)", "disponible"), ("Dar de baja", "baja"),
+            ("Marcar dañada", "danado"), ("Liberar (disponible)", "disponible"),
         ):
             ttk.Button(
                 state_bar, text=label, command=lambda value=target: self.change_selected_status(value)
@@ -229,10 +229,6 @@ class ToolLocationWindow(SetupWorkflowWindow):
             messagebox.showwarning("Selecciona herramienta", "Selecciona una herramienta de la lista.", parent=self.window)
             return
         tool_id = selected[0]
-        if target == "baja" and not messagebox.askyesno(
-            "Dar de baja", f"¿Dar de baja la herramienta {tool_id}? No se podrá volver a surtir.", parent=self.window
-        ):
-            return
         if self._api("POST", f"/tools/{tool_id}/status", {"estado": target, "realizado_por": self.actor}) is not None:
             self.refresh_views()
 
@@ -284,7 +280,7 @@ class ToolLocationWindow(SetupWorkflowWindow):
         self.result_var = tk.StringVar()
         ttk.Combobox(
             form, textvariable=self.result_var, state="readonly", width=22, font=("Segoe UI", 11),
-            values=("Lista para uso", "Dar de baja"),
+            values=("Lista para uso",),
         ).grid(row=2, column=1, padx=8)
         self.rack_status_label = tk.Label(
             body, textvariable=self.rack_status_var, anchor="w", justify=tk.LEFT,
@@ -328,7 +324,7 @@ class ToolLocationWindow(SetupWorkflowWindow):
                 f"{API_URL}/racks/{rack}/store",
                 json={
                     "tool_id": tool_id, "realizado_por": self.actor,
-                    "resultado": {"Lista para uso": "disponible", "Dar de baja": "baja"}.get(self.result_var.get()),
+                    "resultado": {"Lista para uso": "disponible"}.get(self.result_var.get()),
                 },
                 timeout=15,
             )
@@ -346,11 +342,6 @@ class ToolLocationWindow(SetupWorkflowWindow):
             return
         result = response.json()
         self.result_var.set("")
-        if result["kind"] == "baja":
-            self._rack_message(f"✔ {result['tool_id']} dada de baja (no vuelve al rack).", True)
-            self.refresh_views()
-            self.tool_entry.focus_set()
-            return
         self.stored += 1
         self.rack_counter_var.set(f"Guardadas en esta sesión: {self.stored}")
         self._rack_message(f"✔ {result['tool_id']} (TN {result['tn']}) guardada en {result['to']}", True)

@@ -59,10 +59,14 @@ export function MachinesPage({ code }: { code: string | null }) {
     try {
       const [profiles, overview] = await Promise.all([
         api<MachineProfile[]>("GET", "/workflow/machine-profiles"),
-        api<KitOverview>("GET", "/workflow/kitting/overview"),
+        // Roles without kitting access (Punzonado) still see the profiles, without the live kit status.
+        api<KitOverview>("GET", "/workflow/kitting/overview").catch((caught) => {
+          if (caught instanceof ApiError && caught.status === 403) return null;
+          throw caught;
+        }),
       ]);
       setMachines(profiles);
-      setRunning(overview.machines);
+      setRunning(overview?.machines ?? []);
       setError(null);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Could not load the machines.");

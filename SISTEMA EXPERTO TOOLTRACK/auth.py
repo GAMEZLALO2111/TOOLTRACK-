@@ -52,25 +52,31 @@ _OPERATOR = {
 }
 _SUPERVISOR = _OPERATOR | {
     "inventory.edit", "inventory.adjust", "catalog.edit", "locations.manage",
-    "setup.baseline", "demand.mark", "audit.view", "maintenance.operate", "records.view",
+    "setup.baseline", "demand.mark", "audit.view", "maintenance.operate", "records.view", "retirements.approve",
+    "insights.view",
+}
+_PUNCHING = {
+    "manufacturing.view", "service.request", "machine.operate", "demand.view", "demand.progress",
+    # Setup en solo lectura: números de herramienta, máquinas y números de parte.
+    "catalog.view", "program.view", "machine.view", "locations.view",
 }
 ROLE_PERMISSIONS = {
     "TOOLCRIB_OPERATOR": frozenset(_OPERATOR),
     "TOOLCRIB_SUPERVISOR": frozenset(_SUPERVISOR),
     "MAINTENANCE_TECHNICIAN": frozenset({
         "inventory.view", "catalog.view", "locations.view", "maintenance.view",
-        "maintenance.operate", "tools.move", "tools.status", "tools.store",
+        "maintenance.operate", "tools.move", "tools.status", "tools.store", "retirements.approve",
     }),
-    "PUNCHING_OPERATOR": frozenset({"manufacturing.view", "service.request"}),
-    "PUNCHING_TECHNICIAN": frozenset({"manufacturing.view", "service.request"}),
+    "PUNCHING_OPERATOR": frozenset(_PUNCHING),
+    "PUNCHING_TECHNICIAN": frozenset(_PUNCHING),
     "PLANNING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "demand.view",
-        "demand.manage", "demand.mark", "program.view", "machine.view", "setup.view",
+        "demand.manage", "demand.mark", "program.view", "program.uph", "machine.view", "setup.view", "insights.view",
     }),
     "ENGINEERING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "setup.view",
-        "demand.view", "demand.mark", "program.view", "program.manage", "machine.view",
-        "maintenance.view", "audit.view", "service.view", "service.attend", "records.view",
+        "demand.view", "demand.mark", "program.view", "program.manage", "program.uph", "machine.view",
+        "maintenance.view", "audit.view", "service.view", "service.attend", "records.view", "insights.view",
     }),
 }
 # El administrador puede todo lo que existe (incluye operación para poder probar y dar soporte);
@@ -78,7 +84,8 @@ ROLE_PERMISSIONS = {
 ALL_PERMISSIONS = frozenset(set().union(*ROLE_PERMISSIONS.values()) | {
     "user.manage", "machine.manage", "inventory.delete", "demand.manage", "audit.view",
     "locations.manage", "catalog.edit", "setup.baseline", "program.manage", "inventory.edit",
-    "inventory.adjust", "demand.mark", "maintenance.operate", "manufacturing.view",
+    "inventory.adjust", "demand.mark", "maintenance.operate", "manufacturing.view", "program.uph",
+    "machine.operate",
 })
 ROLE_PERMISSIONS["SYSTEM_ADMIN"] = ALL_PERMISSIONS
 
@@ -146,6 +153,11 @@ ROUTE_RULES = {
     ("GET", "/workflow/manufacturing/machines"): "manufacturing.view",
     ("GET", "/workflow/manufacturing/machines/{machine_code}"): "manufacturing.view",
     ("POST", "/workflow/manufacturing/machines/{machine_code}/mounted"): "service.request",
+    ("POST", "/workflow/manufacturing/machines/{machine_code}/take"): "machine.operate",
+    ("POST", "/workflow/manufacturing/machines/{machine_code}/leave"): "machine.operate",
+    ("POST", "/workflow/manufacturing/machines/{machine_code}/part-request"): "machine.operate",
+    ("GET", "/workflow/manufacturing/my-machine"): "machine.operate",
+    ("PUT", "/workflow/programs/{tipo_maquina}/{numero_parte}/uph"): "program.uph",
     ("GET", "/workflow/service-requests"): "service.view",
     ("POST", "/workflow/service-requests"): "service.request",
     ("POST", "/workflow/service-requests/program-problem"): "service.request",
@@ -153,7 +165,12 @@ ROUTE_RULES = {
     ("POST", "/workflow/service-requests/{request_id}/finish-service"): "service.attend",
     ("POST", "/workflow/service-requests/{request_id}/relocate"): "service.attend",
     ("GET", "/workflow/maintenance/tickets"): "maintenance.view",
+    ("GET", "/workflow/retirements"): "maintenance.view",
+    ("POST", "/workflow/retirements"): "service.attend",
+    ("POST", "/workflow/retirements/{retirement_id}/approve"): "retirements.approve",
+    ("POST", "/workflow/retirements/{retirement_id}/reject"): "retirements.approve",
     ("GET", "/records"): "records.view",
+    ("GET", "/insights/overview"): "insights.view",
     ("GET", "/records/workbook"): "records.view",
     ("GET", "/records/{kind_key}"): "records.view",
     ("GET", "/records/{kind_key}/download"): "records.view",
@@ -167,6 +184,7 @@ ROUTE_RULES = {
     ("POST", "/workflow/service-requests/{request_id}/incident"): "service.attend",
     ("GET", "/workflow/operators"): AUTHENTICATED,  # service.request o service.view, se valida en el endpoint
     ("POST", "/workflow/service-requests/{request_id}/attend"): "service.attend",
+    ("GET", "/workflow/toolcrib-users"): AUTHENTICATED,  # service.attend, se valida en el endpoint
     ("POST", "/workflow/service-requests/{request_id}/collect"): "service.attend",
     ("POST", "/workflow/service-requests/{request_id}/install"): "service.request",
     ("POST", "/workflow/service-requests/{request_id}/cancel"): AUTHENTICATED,  # dueño o Tool Crib, se valida en el endpoint

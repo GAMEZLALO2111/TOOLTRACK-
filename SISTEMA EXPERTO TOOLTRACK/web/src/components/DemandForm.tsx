@@ -30,6 +30,7 @@ function CreateForm({ machines, presetMachine, onClose, onSaved }: CreateProps) 
   const [machine, setMachine] = useState(presetMachine ?? "");
   const [part, setPart] = useState("");
   const [quantity, setQuantity] = useState("");
+  const [workOrder, setWorkOrder] = useState("");
   const [parts, setParts] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -57,6 +58,7 @@ function CreateForm({ machines, presetMachine, onClose, onSaved }: CreateProps) 
         maquina_codigo: machine,
         numero_parte: part.trim(),
         cantidad: amount,
+        orden_trabajo: workOrder.trim() || null,
         creado_por: "web",
       });
       onSaved();
@@ -95,6 +97,10 @@ function CreateForm({ machines, presetMachine, onClose, onSaved }: CreateProps) 
           Quantity (pieces)
           <input type="number" inputMode="numeric" min={1} max={1000000} value={quantity} onChange={(event) => setQuantity(event.target.value)} />
         </label>
+        <label>
+          Work order (WO)
+          <input value={workOrder} onChange={(event) => setWorkOrder(event.target.value)} maxLength={40} />
+        </label>
         <ErrorNote message={error} />
         <div className="form-actions">
           <button type="button" className="btn" onClick={onClose}>
@@ -115,6 +121,7 @@ function EditForm({ machine, demand, marks, onClose, onSaved }: EditProps) {
   const canProgress = can("demand.progress");
   const canMark = can("demand.mark");
   const [quantity, setQuantity] = useState(String(demand.cantidad));
+  const [workOrder, setWorkOrder] = useState(demand.orden_trabajo ?? "");
   const [produced, setProduced] = useState(String(demand.piezas_producidas));
   const [mark, setMark] = useState(demand.marca ?? "");
   const [comment, setComment] = useState(demand.comentario ?? "");
@@ -128,6 +135,7 @@ function EditForm({ machine, demand, marks, onClose, onSaved }: EditProps) {
     const done = Number(produced || 0);
     if (!Number.isInteger(qty) || !Number.isInteger(done)) return setError("Quantity and produced must be whole numbers.");
     if (canQty && qty !== demand.cantidad) payload.cantidad = qty;
+    if (canQty && workOrder.trim().toUpperCase() !== (demand.orden_trabajo ?? "")) payload.orden_trabajo = workOrder.trim() || null;
     if (canProgress && done !== demand.piezas_producidas) payload.piezas_producidas = done;
     if (canMark) {
       const newMark = mark || null;
@@ -156,6 +164,10 @@ function EditForm({ machine, demand, marks, onClose, onSaved }: EditProps) {
         <label>
           Quantity (pieces)
           <input type="number" inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value)} disabled={!canQty} />
+        </label>
+        <label>
+          Work order (WO)
+          <input value={workOrder} onChange={(event) => setWorkOrder(event.target.value)} disabled={!canQty} maxLength={40} />
         </label>
         <label>
           Produced (pieces)

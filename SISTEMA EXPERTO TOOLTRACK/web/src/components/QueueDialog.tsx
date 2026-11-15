@@ -4,6 +4,7 @@ import { useAuth } from "../auth";
 import { fmtDuration, LEVEL_LABEL } from "../labels";
 import type { Demand, Machine } from "../types";
 import { ConfirmDialog, Dialog, ErrorNote } from "./Dialog";
+import { MachineOperatorBar, requestNextPart, useOnMachine } from "./MachineOperatorBar";
 import { MarkChip, Progress, StatusChip } from "./MachineCard";
 
 interface Props {
@@ -21,9 +22,12 @@ export function QueueDialog({ machine, onClose, onChanged, onKit, onAdd, onEdit 
   const [error, setError] = useState<string | null>(null);
   const [removing, setRemoving] = useState<Demand | null>(null);
   const [producing, setProducing] = useState<Demand | null>(null);
+  const mine = useOnMachine(machine.operadores);
   const pending = machine.demandas.filter((d) => d.pendiente > 0);
   const done = machine.demandas.filter((d) => d.pendiente === 0);
-  const canEdit = can("demand.manage") || can("demand.mark") || can("demand.progress");
+  const canEdit = can("demand.manage") || can("demand.mark");
+  // Tool Crib and Planning record produced pieces on any machine; an operator only on the one he is logged into.
+  const canProduce = can("demand.progress") && (mine || can("kitting.operate") || can("demand.manage"));
 
   async function run(action: () => Promise<unknown>) {
     setError(null);
@@ -53,9 +57,11 @@ export function QueueDialog({ machine, onClose, onChanged, onKit, onAdd, onEdit 
         <div className="q-main">
           <div className="q-title">
             <strong>{demand.numero_parte}</strong>
+            {demand.orden_trabajo && <span className="plan-row-wo">WO {demand.orden_trabajo}</span>}
             <StatusChip status={demand.estado} />
             {demand.es_actual && <span className="chip tag-dark">CURRENT</span>}
             {demand.es_siguiente && <span className="chip tag-slate">NEXT</span>}
+            {demand.solicitud_parte && <span className="chip st-kitting">Kit requested</span>}
             <MarkChip mark={demand.marca} />
           </div>
           <div className="muted">
@@ -71,7 +77,12 @@ export function QueueDialog({ machine, onClose, onChanged, onKit, onAdd, onEdit 
               Kit
             </button>
           )}
-          {can("demand.progress") && (
+          {!finished && mine && demand.estado === "NO INICIADO" && !demand.solicitud_parte && (
+            <button className="btn btn-primary" onClick={() => void run(() => requestNextPart(machine.maquina, demand.id))}>
+              Request kit
+            </button>
+          )}
+          {canProduce && (
             <button className="btn" onClick={() => setProducing(demand)}>
               Produced
             </button>
@@ -127,6 +138,7 @@ export function QueueDialog({ machine, onClose, onChanged, onKit, onAdd, onEdit 
         </span>
       </div>
       <ErrorNote message={error} />
+      <MachineOperatorBar code={machine.maquina} operators={machine.operadores ?? []} onChanged={onChanged} showOpen />
       {machine.demandas.length === 0 && <p className="muted">This machine has no demands yet.</p>}
       <ol className="q-list">{pending.map((d, i) => row(d, i + 1))}</ol>
       {done.length > 0 && (

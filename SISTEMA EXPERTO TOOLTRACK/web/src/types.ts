@@ -13,6 +13,9 @@ export interface Demand {
   marca: string | null;
   comentario: string | null;
   orden: number;
+  orden_trabajo: string | null;
+  uph_editado: boolean;
+  solicitud_parte: { folio: string; state: string; by: string; at: string } | null;
   es_actual: boolean;
   es_siguiente: boolean;
 }
@@ -26,6 +29,18 @@ export interface WaitingTool {
   since: string;
 }
 
+export interface MachineOperator {
+  username: string;
+  full_name: string;
+  shift: string;
+  since: string;
+}
+
+export interface MyMachine extends MachineOperator {
+  machine: string;
+  until: string;
+}
+
 export interface Machine {
   maquina: string;
   tipo: string;
@@ -34,6 +49,7 @@ export interface Machine {
   tie_cubierto: number;
   demandas: Demand[];
   herramientas_esperando: WaitingTool[];
+  operadores: MachineOperator[];
   nivel: Level;
   motivo: string;
   hr_restante: number | null;
@@ -144,6 +160,10 @@ export interface ServiceRequest {
   attended_by: string | null;
   attended_by_name: string | null;
   attended_at: string | null;
+  received_at: string | null;
+  wait_min: number | null;
+  attention_min: number | null;
+  downtime_min: number | null;
   collected_by: string | null;
   collected_at: string | null;
   closed_by: string | null;
@@ -153,6 +173,40 @@ export interface ServiceRequest {
   restored?: boolean;
   incident: ToolIncident | null;
   ticket: { id: number; folio: string; state: TicketState; result: string | null } | null;
+  retirement: { id: number; folio: string; state: RetirementState } | null;
+  demand_id: number | null;
+  work_order: string | null;
+  quantity: number | null;
+}
+
+export type RetirementState = "pending" | "approved" | "rejected";
+
+export interface Retirement {
+  id: number;
+  folio: string;
+  state: RetirementState;
+  tool_id: string;
+  tn: string | null;
+  category: string | null;
+  tool_status: string | null;
+  tool_location: string | null;
+  request_id: number | null;
+  request_folio: string | null;
+  reason: string;
+  incident: ToolIncident | null;
+  proposed_by: string;
+  proposed_by_name: string | null;
+  proposed_at: string | null;
+  resolved_by: string | null;
+  resolved_by_name: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
+}
+
+export interface ToolCribUser {
+  username: string;
+  full_name: string;
+  shift: string | null;
 }
 
 export type TicketState = "open" | "evaluating" | "repairing" | "closed";
@@ -170,6 +224,7 @@ export interface MaintenanceTicket {
   request_folio: string | null;
   finding: string;
   incident: ToolIncident | null;
+  retirement: { folio: string; state: RetirementState } | null;
   created_by: string;
   created_by_name: string | null;
   created_at: string | null;
@@ -217,7 +272,7 @@ export interface OperatorOption {
   shift: string | null;
 }
 
-export type ServiceRequestType = "sharpening" | "inspection" | "replacement" | "damage" | "performance" | "return" | "tool_request" | "program_problem";
+export type ServiceRequestType = "sharpening" | "inspection" | "replacement" | "damage" | "performance" | "return" | "tool_request" | "program_problem" | "part_request";
 export type ServiceRequestState = "open" | "attending" | "collected" | "replaced" | "closed" | "cancelled";
 
 export interface ToolServiceResult {
@@ -262,9 +317,12 @@ export interface ManufacturingWorkspace {
       cycle_time_s: number | null;
       cycle_with_lead_s: number | null;
       theoretical_uph: number | null;
+      uph_in_use: number | null;
+      uph_edited: boolean;
     };
   } | null;
   coverage: { installed: number; required: number; complete: boolean };
+  operators: MachineOperator[];
   stations: {
     requirement_id: number | null;
     station: string;
@@ -549,6 +607,11 @@ export interface Planning {
   cycle_time_s: number | null;
   cycle_con_lead_s: number | null;
   uph_teorico: number | null;
+  uph_editado?: number | null;
+  uph_efectivo?: number | null;
+  uph_motivo?: string | null;
+  uph_editado_por?: string | null;
+  uph_editado_en?: string | null;
 }
 
 export interface Program {

@@ -35,10 +35,19 @@ MAX_CANTIDAD = 1_000_000
 CAMPOS_POR_PERMISO = {
     "cantidad": "demand.manage",
     "orden": "demand.manage",
+    "orden_trabajo": "demand.manage",
     "piezas_producidas": "demand.progress",
     "marca": "demand.mark",
     "comentario": "demand.mark",
 }
+MAX_WO_LENGTH = 40
+
+
+def _work_order(value):
+    text = (value or "").strip().upper()
+    if len(text) > MAX_WO_LENGTH:
+        raise HTTPException(status_code=400, detail=f"La orden de trabajo se limita a {MAX_WO_LENGTH} caracteres")
+    return text or None
 
 
 class DemandaCreate(BaseModel):
@@ -46,6 +55,7 @@ class DemandaCreate(BaseModel):
     numero_parte: str
     cantidad: int
     orden: Optional[int] = None
+    orden_trabajo: Optional[str] = None
     creado_por: str
 
 
@@ -53,6 +63,7 @@ class DemandaUpdate(BaseModel):
     cantidad: Optional[int] = None
     piezas_producidas: Optional[int] = None
     orden: Optional[int] = None
+    orden_trabajo: Optional[str] = None
     marca: Optional[str] = None
     comentario: Optional[str] = None
 
@@ -65,7 +76,10 @@ def _program_index(db):
 
 
 def _hr(program, pieces):
-    """Horas de máquina para `pieces` piezas: pzas × cycle c/lead ÷ (pzas por blank × 3600)."""
+    """Horas de máquina para `pieces` piezas. Con UPH editado por Planeación: pzas ÷ UPH;
+    si no, pzas × cycle c/lead ÷ (pzas por blank × 3600) (el mismo cálculo con el UPH del .stp)."""
+    if program and getattr(program, "uph_editado", None):
+        return round(pieces / program.uph_editado, 2)
     if not program or not program.piezas_blank or not program.cycle_con_lead_s:
         return None
     return round(pieces * program.cycle_con_lead_s / (program.piezas_blank * 3600), 2)
@@ -229,6 +243,22 @@ def demandas_board(edificio: str = "B1"):
             DemandaPlaneacion.activa.is_(True),
             DemandaPlaneacion.maquina_codigo.in_(codes),
         ).order_by(DemandaPlaneacion.orden, DemandaPlaneacion.id).all()
+        part_requests = {
+            request.demanda_id: {
+                "folio": f"SR-{request.id:05d}",
+                "state": request.estado,
+                "by": request.solicitado_por,
+                "at": request.solicitado_en.isoformat(),
+            }
+            for request in db.query(SolicitudServicio).filter(
+                SolicitudServicio.tipo == "part_request",
+                SolicitudServicio.maquina_codigo.in_(codes),
+                SolicitudServicio.estado.in_(("open", "attending")),
+            ).order_by(SolicitudServicio.id).all()
+        }
+        from machine_operators_api import operators_by_machine
+
+        operators = operators_by_machine(db, codes)
 
         kinds = {loc.codigo: _machine_kind(profile.tipo_maquina) for loc, profile in machines}
         by_machine = {code: [] for code in codes}
@@ -251,6 +281,9 @@ def demandas_board(edificio: str = "B1"):
                 "marca": demand.marca,
                 "comentario": demand.comentario,
                 "orden": demand.orden,
+                "orden_trabajo": demand.orden_trabajo,
+                "uph_editado": bool(program and program.uph_editado),
+                "solicitud_parte": part_requests.get(demand.id),
             })
 
         result = []
@@ -273,6 +306,7 @@ def demandas_board(edificio: str = "B1"):
                 "tie_cubierto": round(sum(cubierto), 2),
                 "demandas": items,
                 "herramientas_esperando": waiting_tools.get(code, []),
+                "operadores": operators.get(code, []),
                 **analysis,
             })
         result.sort(key=lambda m: (
@@ -315,7 +349,7 @@ def crear_demanda(item: DemandaCreate):
         now = utcnow()
         demand = DemandaPlaneacion(
             maquina_codigo=code, numero_parte=np, cantidad=item.cantidad,
-            piezas_producidas=0, orden=orden, activa=True,
+            piezas_producidas=0, orden=orden, activa=True, orden_trabajo=_work_order(item.orden_trabajo),
             creado_por=item.creado_por, creado_en=now, actualizado_en=now,
         )
         db.add(demand)
@@ -335,8 +369,19 @@ def actualizar_demanda(demand_id: int, item: DemandaUpdate):
         if not demand:
             raise HTTPException(status_code=404, detail="Demanda no encontrada")
         changes = item.dict(exclude_unset=True)
+        user = None
         for field in changes:
-            require_permission(CAMPOS_POR_PERMISO[field])
+            user = require_permission(CAMPOS_POR_PERMISO[field])
+        if "piezas_producidas" in changes and "kitting.operate" not in user.permissions and "demand.manage" not in user.permissions:
+            from machine_operators_api import is_on_machine
+
+            if not is_on_machine(db, user.username, demand.maquina_codigo):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Toma la máquina {demand.maquina_codigo} (Take this machine) para capturar sus piezas producidas",
+                )
+        if "orden_trabajo" in changes:
+            changes["orden_trabajo"] = _work_order(changes["orden_trabajo"])
         if "cantidad" in changes:
             _validate_cantidad(changes["cantidad"] or 0)
         if "piezas_producidas" in changes and (changes["piezas_producidas"] or 0) < 0:

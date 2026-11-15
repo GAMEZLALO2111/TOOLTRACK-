@@ -26,9 +26,15 @@ export function PlanningBox({ planning }: { planning: Planning }) {
         {fmt(planning.cycle_con_lead_s)}
       </div>
       <div>
-        <div className="muted small">Theoretical UPH</div>
+        <div className="muted small">Theoretical UPH (.stp)</div>
         {fmt(planning.uph_teorico)}
       </div>
+      {planning.uph_efectivo !== undefined && (
+        <div>
+          <div className="muted small">UPH used for the plan{planning.uph_editado ? " (edited)" : ""}</div>
+          <strong>{fmt(planning.uph_efectivo)}</strong>
+        </div>
+      )}
     </div>
   );
 }

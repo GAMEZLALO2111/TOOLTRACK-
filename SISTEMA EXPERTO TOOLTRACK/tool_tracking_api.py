@@ -147,6 +147,7 @@ def manufacturing_machine_workspace(machine_code: str):
         installed_components = 0
         total_components = 0
         import service_requests_api  # evita importación circular al cargar los routers
+        from machine_operators_api import operators_by_machine
         machine_requests = service_requests_api.machine_requests(db, code)
         open_by_slot = {
             (request["requirement_id"], request["category"]): request
@@ -284,6 +285,8 @@ def manufacturing_machine_workspace(machine_code: str):
                     "cycle_time_s": program.cycle_time_s,
                     "cycle_with_lead_s": program.cycle_con_lead_s,
                     "theoretical_uph": program.uph_teorico,
+                    "uph_in_use": program.uph_editado or program.uph_teorico,
+                    "uph_edited": program.uph_editado is not None,
                 },
                 "requirements": json.loads(program.requisitos_json),
             } if program else None,
@@ -310,6 +313,7 @@ def manufacturing_machine_workspace(machine_code: str):
                 "updated_at": active_kit.actualizado_en.isoformat(),
             } if active_kit else None,
             "service_requests": machine_requests,
+            "operators": operators_by_machine(db, [code]).get(code, []),
         }
     finally:
         db.close()
@@ -442,8 +446,13 @@ class ToolStatusChange(BaseModel):
 def change_tool_status(tool_id: str, item: ToolStatusChange):
     """Flag a tool as damaged, clear it after inspection, or retire it (baja)."""
     target = item.estado.strip().lower()
-    if target not in {"disponible", "danado", "baja"}:
-        raise HTTPException(status_code=422, detail="Invalid status (disponible, danado or baja)")
+    if target == "baja":
+        raise HTTPException(
+            status_code=409,
+            detail="A tool is retired through a retirement proposal that a supervisor or the technician approves (Tools > Retire…).",
+        )
+    if target not in {"disponible", "danado"}:
+        raise HTTPException(status_code=422, detail="Invalid status (disponible or danado)")
     db = workflow_api.SessionLocal()
     try:
         tool = scan_codes.find_tool(db, tool_id, lock=True)
@@ -567,25 +576,14 @@ def store_tool_in_rack(rack_code: str, item: RackStore):
                 if current == "baja":
                     raise HTTPException(status_code=409, detail=f"Tool {tool.id} is retired; it is not stored in a rack.")
                 if current != "disponible":
-                    if result_choice not in {"disponible", "baja"}:
+                    if result_choice != "disponible":
                         raise HTTPException(
                             status_code=409,
                             detail=(
                                 f"Tool {tool.id} comes from '{workflow_api.TOOL_STATUS_LABELS.get(current, current)}'. "
-                                "Choose the result: ready for use or retired."
+                                "Choose «Ready for use»; to retire it propose the retirement from its tool file."
                             ),
                         )
-                    if result_choice == "baja":
-                        workflow_api._append_movement(
-                            db, tool, origin.codigo, origin.codigo, "status_baja",
-                            item.realizado_por, details=f"Retired from {current}", capture=capture,
-                        )
-                        tool.estado = "baja"
-                        db.commit()
-                        return {
-                            "tool_id": tool.id, "tn": tool.tn, "from": origin.codigo,
-                            "to": origin.codigo, "kind": "baja",
-                        }
                     tool.estado = "disponible"
             workflow_api._append_movement(
                 db, tool, origin.codigo, rack.codigo, f"{origin.tipo}_to_rack",

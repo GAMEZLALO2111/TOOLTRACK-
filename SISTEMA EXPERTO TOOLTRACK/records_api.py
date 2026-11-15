@@ -17,6 +17,7 @@ import auth
 import workflow_api
 from models.inventory import (
     Auditoria,
+    BajaHerramienta,
     BitacoraPrograma,
     Herramienta,
     IncidenteHerramienta,
@@ -39,7 +40,7 @@ MOVEMENT_GROUPS = {
     "storage_status": "Storage and status",
 }
 KITTING_PREFIXES = ("rack_to_cart", "kit_", "cart_to_machine", "machine_", "removed_from", "pending_pickup")
-SERVICE_PREFIXES = ("service_", "maintenance_")
+SERVICE_PREFIXES = ("service_", "maintenance_", "retirement_")
 
 MOVEMENT_LABEL = {
     "service_requested": "Service requested from the machine",
@@ -63,6 +64,9 @@ MOVEMENT_LABEL = {
     "maintenance_received": "Received by Maintenance",
     "maintenance_released": "Repaired and released by Maintenance",
     "maintenance_unrepairable": "Maintenance: cannot be repaired",
+    "retirement_proposed": "Retirement proposed",
+    "retirement_approved": "Retirement approved: retired",
+    "retirement_rejected": "Retirement rejected: back in use",
     "kit_refresh_returned": "Back to its rack: the kit was refreshed",
     "placed_in_rack": "Placed in a rack (first location)",
     "rack_to_cart_for_kit": "Taken from the rack to the cart",
@@ -96,6 +100,7 @@ MOMENT = {
 }
 TICKET_STATE = {"open": "Waiting for the technician", "evaluating": "Being evaluated", "repairing": "Being repaired", "closed": "Closed"}
 TICKET_RESULT = {"released": "Released", "unrepairable": "Cannot be repaired"}
+RETIREMENT_STATE = {"pending": "Waiting for approval", "approved": "Approved: retired", "rejected": "Rejected"}
 SERVICE_RESULT = {"ready": "Ready for use", "retired": "Retired"}
 ORIGIN = {"machine": "Machine", "toolcrib": "Found in Tool Crib"}
 CATEGORY = {"punzon": "Punch", "matriz": "Die"}
@@ -283,7 +288,9 @@ def _requests_row(item, names):
         "replacement": request.herramienta_nueva_id,
         "requested_by": names.get(request.solicitado_por, request.solicitado_por),
         "wait_min": _minutes(request.solicitado_en, request.atendido_en),
+        "attention_min": _minutes(request.atendido_en, request.recibida_en),
         "total_min": _minutes(request.solicitado_en, request.cerrado_en),
+        "downtime_min": _minutes(request.solicitado_en, request.recibida_en),
         "cause": CAUSE.get(incident.causa, incident.causa) if incident else None,
         "ticket": f"MT-{ticket.id:05d}" if ticket else None,
         "note": request.nota or request.problema,
@@ -383,6 +390,50 @@ def _tickets_row(item, names):
     }
 
 
+# ---- retirements ---------------------------------------------------------------------------
+
+def _retirements_query(db, f):
+    query = db.query(BajaHerramienta, IncidenteHerramienta, Herramienta.tn, Herramienta.categoria).join(
+        IncidenteHerramienta, IncidenteHerramienta.id == BajaHerramienta.incidente_id,
+    ).join(Herramienta, Herramienta.id == BajaHerramienta.herramienta_id)
+    query = _between(query, BajaHerramienta.propuesto_en, f)
+    query = _tool_filter(query, f, BajaHerramienta.herramienta_id)
+    query = _machine_filter(query, f, IncidenteHerramienta.maquina_codigo)
+    query = _user_filter(query, f, BajaHerramienta.propuesto_por, BajaHerramienta.resuelto_por)
+    return query.order_by(BajaHerramienta.id.desc())
+
+
+def _retirements_row(item, names):
+    retirement, incident, tn, category = item
+    return {
+        "folio": f"BJ-{retirement.id:05d}",
+        "proposed_at": _local(retirement.propuesto_en),
+        "tool": retirement.herramienta_id,
+        "tn": tn,
+        "category": CATEGORY.get(category, category),
+        "state": RETIREMENT_STATE.get(retirement.estado, retirement.estado),
+        "machine": incident.maquina_codigo,
+        "part_number": incident.numero_parte,
+        "station": incident.estacion,
+        "operator": names.get(incident.operador, incident.operador),
+        "shift": incident.turno,
+        "cause": CAUSE.get(incident.causa, incident.causa),
+        "reason": retirement.motivo,
+        "proposed_by": names.get(retirement.propuesto_por, retirement.propuesto_por),
+        "resolved_by": names.get(retirement.resuelto_por, retirement.resuelto_por),
+        "resolved_at": _local(retirement.resuelto_en),
+        "hours_to_decide": (
+            round((retirement.resuelto_en - retirement.propuesto_en).total_seconds() / 3600, 1)
+            if retirement.resuelto_en else None
+        ),
+        "decision_note": retirement.nota_resolucion,
+        "moment": MOMENT.get(incident.momento, incident.momento),
+        "reported_as": REQUEST_TYPE.get(incident.reportado_como, incident.reportado_como),
+        "request": f"SR-{retirement.solicitud_id:05d}" if retirement.solicitud_id else None,
+        "origin": ORIGIN.get(incident.origen, incident.origen),
+    }
+
+
 # ---- sharpening and repairs ----------------------------------------------------------------
 
 def _services_query(db, f):
@@ -472,10 +523,12 @@ KINDS = {kind.key: kind for kind in (
         ("folio", "Request", False), ("requested_at", "Requested", False), ("type", "Type", False), ("state", "Status", False),
         ("machine", "Machine", False), ("part_number", "Part number", False), ("station", "Station", False),
         ("tn", "TN", False), ("category", "Punch / die", False), ("tool", "Tool", False), ("replacement", "Replacement", False),
-        ("requested_by", "Requested by", False), ("wait_min", "Minutes to attend", False), ("total_min", "Minutes in total", False),
+        ("requested_by", "Requested by", False), ("wait_min", "Minutes waiting for Tool Crib", False),
+        ("attended_by", "Attended by", False), ("attention_min", "Minutes of Tool Crib attention", False),
+        ("downtime_min", "Minutes without tool", False), ("total_min", "Minutes in total", True),
         ("cause", "Cause", False), ("ticket", "Maintenance", False), ("note", "Note", True), ("destination", "Taken to", True),
-        ("attended_by", "Attended by", True), ("attended_at", "Attended", True), ("collected_by", "Collected by", True),
-        ("collected_at", "Collected", True), ("closed_by", "Closed by", True), ("closed_at", "Closed", True),
+        ("attended_at", "Attended", True), ("collected_by", "Collected by", True),
+        ("collected_at", "Collected", True), ("received_at", "Machine received", True), ("closed_by", "Closed by", True), ("closed_at", "Closed", True),
         ("outcome", "Resolution or cancel reason", True),
     ), ("date", "tool", "machine", "user"), _requests_query, _requests_row),
     Kind("incidents", "Damage incidents", _cols(
@@ -497,6 +550,16 @@ KINDS = {kind.key: kind for kind in (
         ("received_by", "Received by", True), ("received_at", "Received", True), ("evaluated_at", "Evaluated", True),
         ("closed_by", "Closed by", True), ("closed_at", "Closed", True),
     ), ("date", "tool", "machine", "user"), _tickets_query, _tickets_row),
+    Kind("retirements", "Retirements", _cols(
+        ("folio", "Retirement", False), ("proposed_at", "Proposed", False), ("tool", "Tool", False), ("tn", "TN", False),
+        ("category", "Punch / die", False), ("state", "Status", False), ("machine", "Machine", False),
+        ("part_number", "Part number", False), ("station", "Station", False), ("operator", "Operator", False),
+        ("shift", "Shift", False), ("cause", "Cause", False), ("reason", "Reason", False),
+        ("proposed_by", "Proposed by", False), ("resolved_by", "Decided by", False), ("resolved_at", "Decided", False),
+        ("hours_to_decide", "Hours to decide", False), ("decision_note", "Decision note", True),
+        ("moment", "Moment", True), ("reported_as", "Reported as", True), ("request", "Request", True),
+        ("origin", "Origin", True),
+    ), ("date", "tool", "machine", "user"), _retirements_query, _retirements_row),
     Kind("services", "Sharpening and repairs", _cols(
         ("when", "When", False), ("tool", "Tool", False), ("tn", "TN", False), ("category", "Punch / die", False),
         ("service", "Service", False), ("result", "Result", False), ("ground_off", "Ground off (in)", False),

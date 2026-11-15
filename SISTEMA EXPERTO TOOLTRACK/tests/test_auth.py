@@ -404,7 +404,15 @@ class UserManagementTests(TempDbCase):
             self.client.get("/workflow/manufacturing/machines/M1", headers=headers).status_code,
             200,
         )
-        self.assertEqual(self.client.get("/workflow/machine-profiles", headers=headers).status_code, 403)
+        self.assertEqual(self.client.get("/workflow/machine-profiles", headers=headers).status_code, 200)
+        self.assertEqual(self.client.get("/workflow/programs", headers=headers).status_code, 200)
+        self.assertEqual(self.client.get("/catalogo/tn", headers=headers).status_code, 200)
+        self.assertEqual(self.client.get("/workflow/demandas/board", headers=headers).status_code, 200)
+        self.assertEqual(self.client.put("/workflow/machine-profiles/M1", json={}, headers=headers).status_code, 403)
+        self.assertEqual(self.client.post("/catalogo/tn", json={"tn": "X"}, headers=headers).status_code, 403)
+        self.assertEqual(self.client.post("/workflow/demandas", json={}, headers=headers).status_code, 403)
+        self.assertEqual(self.client.put("/workflow/programs/4I/X/uph", json={}, headers=headers).status_code, 403)
+        self.assertEqual(self.client.get("/insights/overview", headers=headers).status_code, 403)
         self.assertEqual(self.client.get("/workflow/kits", headers=headers).status_code, 403)
         self.assertEqual(self.client.get("/users", headers=headers).status_code, 403)
         self.assertEqual(self.client.post("/users/deactivate-others", headers=headers).status_code, 403)

@@ -13,6 +13,7 @@ import scan_codes
 import tool_tracking_api
 import workflow_api
 from models.inventory import (
+    BajaHerramienta,
     HerramientaCatalogo,
     IncidenteHerramienta,
     MovimientoHerramienta,
@@ -28,9 +29,10 @@ SECTIONS = (
     ("requests", None),
     ("incidents", None),
     ("tickets", None),
+    ("retirements", None),
     ("services", None),
 )
-SERVICE_SECTIONS = {"requests", "incidents", "tickets", "services"}
+SERVICE_SECTIONS = {"requests", "incidents", "tickets", "retirements", "services"}
 
 
 def _iso(value):
@@ -88,6 +90,12 @@ def get_tool_file(tool_id: str):
             open_ticket = db.query(TicketMantenimiento).filter(
                 TicketMantenimiento.herramienta_id == tool.id, TicketMantenimiento.estado != "closed",
             ).first()
+            pending = db.query(BajaHerramienta).filter(
+                BajaHerramienta.herramienta_id == tool.id, BajaHerramienta.estado == "pending",
+            ).first()
+            open_request = db.query(SolicitudServicio).filter(
+                SolicitudServicio.herramienta_id == tool.id, SolicitudServicio.estado.in_(("open", "attending", "collected", "replaced")),
+            ).first()
             summary.update({
                 "sharpenings": sum(1 for item in services if item.tipo == "sharpening"),
                 "ground_off": round(sum(item.rebaje or 0 for item in services), 3),
@@ -95,6 +103,9 @@ def get_tool_file(tool_id: str):
                 "incidents": db.query(IncidenteHerramienta).filter(IncidenteHerramienta.herramienta_id == tool.id).count(),
                 "tickets": db.query(TicketMantenimiento).filter(TicketMantenimiento.herramienta_id == tool.id).count(),
                 "open_ticket": f"MT-{open_ticket.id:05d}" if open_ticket else None,
+                "retirements": db.query(BajaHerramienta).filter(BajaHerramienta.herramienta_id == tool.id).count(),
+                "pending_retirement": f"BJ-{pending.id:05d}" if pending else None,
+                "open_request": f"SR-{open_request.id:05d}" if open_request else None,
                 "requests": db.query(SolicitudServicio).filter(
                     (SolicitudServicio.herramienta_id == tool.id) | (SolicitudServicio.herramienta_nueva_id == tool.id)
                 ).count(),

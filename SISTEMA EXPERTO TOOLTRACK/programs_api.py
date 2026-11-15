@@ -99,6 +99,11 @@ def _read(program, with_content=False, clients=None):
             "cycle_time_s": program.cycle_time_s,
             "cycle_con_lead_s": program.cycle_con_lead_s,
             "uph_teorico": program.uph_teorico,
+            "uph_editado": program.uph_editado,
+            "uph_efectivo": program.uph_editado or program.uph_teorico,
+            "uph_motivo": program.uph_motivo,
+            "uph_editado_por": program.uph_editado_por,
+            "uph_editado_en": program.uph_editado_en.isoformat() if program.uph_editado_en else None,
         },
     }
     if with_content:
@@ -261,6 +266,57 @@ def preview_program(tipo_maquina: str, numero_parte: str, item: ProgramPreview):
             },
             "diff": diff,
         }
+    finally:
+        db.close()
+
+
+class ProgramUph(BaseModel):
+    uph: Optional[float] = None
+    motivo: str
+    usuario: Optional[str] = None
+
+
+@router.put("/{tipo_maquina}/{numero_parte}/uph")
+def edit_program_uph(tipo_maquina: str, numero_parte: str, item: ProgramUph):
+    """Planning/Engineering adjust the UPH used for the hours of the plan; the one read from the .stp is kept.
+    An empty value goes back to the .stp's own UPH. Every change is logged with its reason."""
+    machine_type = _machine_type(tipo_maquina)
+    part_number = _part_number(numero_parte)
+    reason = (item.motivo or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="Write the reason for changing the UPH.")
+    if len(reason) > 500:
+        raise HTTPException(status_code=422, detail="The reason is limited to 500 characters.")
+    if item.uph is not None and not (0 < item.uph <= 100000):
+        raise HTTPException(status_code=422, detail="The UPH must be greater than 0.")
+    user = (item.usuario or "").strip() or "unknown"
+    db = workflow_api.SessionLocal()
+    try:
+        program = db.query(ProgramaParte).filter(
+            ProgramaParte.tipo_maquina == machine_type, ProgramaParte.numero_parte == part_number
+        ).first()
+        if not program:
+            raise HTTPException(status_code=404, detail="Part number program not found.")
+        before = program.uph_editado or program.uph_teorico
+        new_value = round(item.uph, 1) if item.uph is not None else None
+        if new_value == program.uph_editado:
+            raise HTTPException(status_code=409, detail="The UPH is already that value.")
+        now = workflow_api.utcnow()
+        program.uph_editado = new_value
+        program.uph_motivo = reason if new_value is not None else None
+        program.uph_editado_por = user if new_value is not None else None
+        program.uph_editado_en = now if new_value is not None else None
+        after = new_value if new_value is not None else program.uph_teorico
+        db.add(BitacoraPrograma(
+            numero_parte=part_number, tipo_maquina=machine_type, accion="uph",
+            revision=program.revision, motivo=reason, usuario=user, fecha=now,
+            detalle=f"UPH {before} -> {after}" + ("" if new_value is not None else " (back to the .stp value)"),
+        ))
+        db.commit()
+        return _read(program, clients=_client_map(db))
+    except HTTPException:
+        db.rollback()
+        raise
     finally:
         db.close()
 

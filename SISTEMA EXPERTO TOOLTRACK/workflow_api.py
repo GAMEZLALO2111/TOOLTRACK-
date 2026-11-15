@@ -15,6 +15,7 @@ from db import SessionLocal
 import scan_codes
 from machine_rules import setup_warnings
 from models.inventory import (
+    BajaHerramienta,
     ComponenteSurtido,
     EstadoMaquina,
     EventoMaquina,
@@ -179,7 +180,7 @@ def _require_home_rack(db, tool, destination):
 
 
 def _require_no_open_ticket(db, tool):
-    """A tool with an open maintenance ticket only moves through that ticket."""
+    """A tool with an open maintenance ticket or a retirement waiting for approval only moves through it."""
     ticket = db.query(TicketMantenimiento).filter(
         TicketMantenimiento.herramienta_id == tool.id,
         TicketMantenimiento.estado != "closed",
@@ -188,6 +189,14 @@ def _require_no_open_ticket(db, tool):
         raise HTTPException(
             status_code=409,
             detail=f"Tool {tool.id} has the open maintenance ticket MT-{ticket.id:05d}; Maintenance has to close it first.",
+        )
+    retirement = db.query(BajaHerramienta).filter(
+        BajaHerramienta.herramienta_id == tool.id, BajaHerramienta.estado == "pending",
+    ).first()
+    if retirement:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tool {tool.id} has the retirement BJ-{retirement.id:05d} waiting for approval.",
         )
 
 
@@ -1900,6 +1909,17 @@ def confirm_kit_delivery(item: DeliveryScan):
         kit.estado = "delivered"
         kit.entregado_en = now
         kit.actualizado_en = now
+        delivered_part = _part_from_name(new_setup.nombre_archivo).upper()
+        for part_request in db.query(SolicitudServicio).filter(
+            SolicitudServicio.maquina_codigo == kit.maquina_codigo,
+            SolicitudServicio.tipo == "part_request",
+            SolicitudServicio.numero_parte == delivered_part,
+            SolicitudServicio.estado.in_(("open", "attending")),
+        ).all():
+            part_request.estado = "closed"
+            part_request.resolucion = "Kit delivered to the machine"
+            part_request.cerrado_por = part_request.atendido_por or part_request.solicitado_por
+            part_request.cerrado_en = now
         db.commit()
         return {
             "kit_id": kit.id,

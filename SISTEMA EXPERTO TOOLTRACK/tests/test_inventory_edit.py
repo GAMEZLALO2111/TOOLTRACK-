@@ -378,14 +378,18 @@ class InventoryEditTests(unittest.TestCase):
         ))
         self.assertEqual((updated["ubicacion"], updated["life"]), ("R-LEGACY", "12.000"))
 
-    def test_delete_cleans_catalog_link(self):
+    def test_a_tool_is_never_deleted(self):
         self.create_punch()
-        result = main.eliminar_herramienta("PHYS-1")
-        self.assertEqual(result, {"ok": True})
+        with self.assertRaises(HTTPException) as error:
+            main.eliminar_herramienta("PHYS-1")
+        self.assertEqual(error.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as missing:
+            main.eliminar_herramienta("NOPE")
+        self.assertEqual(missing.exception.status_code, 404)
         session = self.session_factory()
         try:
-            self.assertIsNone(session.query(Herramienta).filter_by(id="PHYS-1").first())
-            self.assertEqual(session.query(HerramientaCatalogo).count(), 0)
+            self.assertIsNotNone(session.query(Herramienta).filter_by(id="PHYS-1").first())
+            self.assertEqual(session.query(HerramientaCatalogo).count(), 1)
         finally:
             session.close()
 

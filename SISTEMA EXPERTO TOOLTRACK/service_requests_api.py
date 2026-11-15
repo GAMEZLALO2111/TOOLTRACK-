@@ -12,9 +12,12 @@ from sqlalchemy import func
 
 import auth
 import scan_codes
+import shifts
 import tool_tracking_api
 import workflow_api
 from models.inventory import (
+    BajaHerramienta,
+    DemandaPlaneacion,
     EstadoMaquina,
     Herramienta,
     IncidenteHerramienta,
@@ -153,6 +156,12 @@ def _iso(value):
     return value.isoformat() if value else None
 
 
+def _minutes(start, end):
+    if not start or not end:
+        return None
+    return max(0, round((end - start).total_seconds() / 60))
+
+
 def _people(db, rows):
     usernames = {
         name
@@ -169,22 +178,23 @@ def _people(db, rows):
 
 
 def _incident_fields(db, operador, causa, momento, require_operator=True):
-    """Validated who/why/when of an incident; the shift is the involved operator's own."""
+    """Validated who/why/when of an incident; the shift comes from the clock, not from the operator's profile."""
     cause = (causa or "").strip().lower()
     moment = (momento or "").strip().lower()
+    shift = shifts.shift_for(workflow_api.utcnow())
     if cause not in DAMAGE_CAUSES:
         raise HTTPException(status_code=422, detail="Choose the cause of the damage from the list")
     if moment not in DAMAGE_MOMENTS:
         raise HTTPException(status_code=422, detail="Choose when it happened")
     username = (operador or "").strip()
     if not username and not require_operator:
-        return {"operador": None, "turno": None, "causa": cause, "momento": moment}
+        return {"operador": None, "turno": shift, "causa": cause, "momento": moment}
     person = db.query(Usuario).filter(
         func.lower(Usuario.username) == username.lower(), Usuario.activo.is_(True)
     ).first() if username else None
     if not person:
         raise HTTPException(status_code=422, detail="Choose the operator who was on the machine from the list")
-    return {"operador": person.username, "turno": person.shift, "causa": cause, "momento": moment}
+    return {"operador": person.username, "turno": shift, "causa": cause, "momento": moment}
 
 
 def _save_incident(db, row, tool, fields, actor, descripcion=None, hallazgo=None):
@@ -203,7 +213,7 @@ def _save_incident(db, row, tool, fields, actor, descripcion=None, hallazgo=None
         incident.actualizado_por = actor
         incident.actualizado_en = now
     incident.operador = fields["operador"]
-    incident.turno = fields["turno"]
+    incident.turno = incident.turno or fields["turno"]
     incident.causa = fields["causa"]
     incident.momento = fields["momento"]
     if descripcion:
@@ -245,7 +255,12 @@ def _read_many(db, rows):
     services = {}
     incidents = {}
     tickets = {}
+    retirements = {}
     if request_ids:
+        for retirement in db.query(BajaHerramienta).filter(
+            BajaHerramienta.solicitud_id.in_(request_ids)
+        ).order_by(BajaHerramienta.id).all():
+            retirements[retirement.solicitud_id] = retirement
         for ticket in db.query(TicketMantenimiento).filter(
             TicketMantenimiento.solicitud_id.in_(request_ids)
         ).order_by(TicketMantenimiento.id).all():
@@ -263,6 +278,11 @@ def _read_many(db, rows):
         tool.id: tool
         for tool in db.query(Herramienta).filter(Herramienta.id.in_(tool_ids)).all()
     } if tool_ids else {}
+    demand_ids = {row.demanda_id for row in rows if row.demanda_id}
+    demands = {
+        demand.id: demand
+        for demand in db.query(DemandaPlaneacion).filter(DemandaPlaneacion.id.in_(demand_ids)).all()
+    } if demand_ids else {}
 
     def name(username):
         person = people.get(username)
@@ -306,15 +326,27 @@ def _read_many(db, rows):
                 "state": tickets[row.id].estado,
                 "result": tickets[row.id].resultado,
             } if row.id in tickets else None,
+            "retirement": {
+                "id": retirements[row.id].id,
+                "folio": f"BJ-{retirements[row.id].id:05d}",
+                "state": retirements[row.id].estado,
+            } if row.id in retirements else None,
             "replacement_tool_id": row.herramienta_nueva_id,
             "destination": row.destino_codigo,
             "requested_by": row.solicitado_por,
             "requested_by_name": name(row.solicitado_por),
-            "requested_by_shift": requester.shift if requester else None,
+            "demand_id": row.demanda_id,
+            "work_order": demands[row.demanda_id].orden_trabajo if row.demanda_id in demands else None,
+            "quantity": demands[row.demanda_id].cantidad if row.demanda_id in demands else None,
+            "requested_by_shift": shifts.shift_for(row.solicitado_en),
             "requested_at": _iso(row.solicitado_en),
             "attended_by": row.atendido_por,
             "attended_by_name": name(row.atendido_por) if row.atendido_por else None,
             "attended_at": _iso(row.atendido_en),
+            "received_at": _iso(row.recibida_en),
+            "wait_min": _minutes(row.solicitado_en, row.atendido_en),
+            "attention_min": _minutes(row.atendido_en, row.recibida_en),
+            "downtime_min": _minutes(row.solicitado_en, row.recibida_en),
             "collected_by": row.recogido_por,
             "collected_at": _iso(row.recogido_en),
             "closed_by": row.cerrado_por,
@@ -544,8 +576,8 @@ def resolve_program_problem(request_id: int, item: ServiceResolve):
     db = workflow_api.SessionLocal()
     try:
         row = _get(db, request_id)
-        if row.tipo != "program_problem":
-            raise HTTPException(status_code=409, detail="Only program problems are resolved this way")
+        if row.tipo not in ("program_problem", "part_request"):
+            raise HTTPException(status_code=409, detail="Only program problems and part number requests are resolved this way")
         if row.estado != "attending":
             raise HTTPException(status_code=409, detail="Mark the request as attending before resolving it")
         _require_attendant(user, row)
@@ -649,21 +681,62 @@ def list_service_requests(state: str = "active", machine: Optional[str] = None, 
         db.close()
 
 
+class ServiceAttend(BaseModel):
+    atendido_por: Optional[str] = None
+
+
+TOOLCRIB_ROLES = ("TOOLCRIB_OPERATOR", "TOOLCRIB_SUPERVISOR")
+
+
+@router.get("/toolcrib-users")
+def list_toolcrib_users():
+    """Active Tool Crib people, so a shared screen can say who is attending."""
+    user = _user()
+    if "service.attend" not in user.permissions:
+        raise HTTPException(status_code=403, detail=f"Your role ({user.role}) is not allowed to do this")
+    db = workflow_api.SessionLocal()
+    try:
+        rows = db.query(Usuario).filter(
+            Usuario.activo.is_(True), Usuario.role.in_(TOOLCRIB_ROLES)
+        ).order_by(Usuario.full_name, Usuario.username).all()
+        return [
+            {"username": person.username, "full_name": person.full_name or person.username, "shift": person.shift}
+            for person in rows
+        ]
+    finally:
+        db.close()
+
+
 @router.post("/service-requests/{request_id}/attend")
-def attend_service_request(request_id: int):
+def attend_service_request(request_id: int, item: Optional[ServiceAttend] = None):
+    """Tool Crib takes a request. On a shared screen the attendant is picked from the Tool Crib list;
+    a supervisor can hand an attended request to someone else."""
     user = _user()
     db = workflow_api.SessionLocal()
     try:
         row = _get(db, request_id)
-        if row.tipo != "program_problem" and "tools.move" not in user.permissions:
+        is_program = row.tipo == "program_problem"
+        if not is_program and "tools.move" not in user.permissions:
             raise HTTPException(status_code=403, detail="Only Tool Crib attends tool requests")
+        chosen = ((item.atendido_por if item else None) or "").strip()
+        if is_program or not chosen:
+            attendant = user.username
+        else:
+            person = db.query(Usuario).filter(
+                func.lower(Usuario.username) == chosen.lower(), Usuario.activo.is_(True),
+                Usuario.role.in_(TOOLCRIB_ROLES),
+            ).first()
+            if not person:
+                raise HTTPException(status_code=422, detail="Choose who is attending from the Tool Crib list")
+            attendant = person.username
         if row.estado == "attending":
-            raise HTTPException(status_code=409, detail=f"{row.atendido_por} is already attending this request")
-        if row.estado != "open":
+            if user.role not in CAN_ATTEND_FOR_OTHERS or not chosen:
+                raise HTTPException(status_code=409, detail=f"{row.atendido_por} is already attending this request")
+        elif row.estado != "open":
             raise HTTPException(status_code=409, detail="This request is no longer open")
         row.estado = "attending"
-        row.atendido_por = user.username
-        row.atendido_en = workflow_api.utcnow()
+        row.atendido_por = attendant
+        row.atendido_en = row.atendido_en if row.atendido_en else workflow_api.utcnow()
         db.commit()
         return _read_many(db, [row])[0]
     except HTTPException:
@@ -674,6 +747,10 @@ def attend_service_request(request_id: int):
 
 
 def _require_attendant(user, row):
+    """Tool Crib screens are shared, so any Tool Crib account can record the steps of a tool request;
+    program problems stay with whoever took them."""
+    if row.tipo != "program_problem" and "tools.move" in user.permissions:
+        return
     if user.username != row.atendido_por and user.role not in CAN_ATTEND_FOR_OTHERS:
         raise HTTPException(
             status_code=403,
@@ -769,7 +846,7 @@ def collect_service_tool(request_id: int, item: ServiceCollect):
             user.username, details=detail, setup_id=row.setup_id,
         )
         row.destino_codigo = destination.codigo
-        row.recogido_por = user.username
+        row.recogido_por = row.atendido_por or user.username
         row.recogido_en = now
         if row.tipo == "return":
             row.estado = "closed"
@@ -926,6 +1003,7 @@ def install_service_tool(request_id: int, item: ServiceInstall):
         )
         _set_slot(requirement, row.categoria, tool.id)
         row.herramienta_nueva_id = tool.id
+        row.recibida_en = workflow_api.utcnow()
         old_tool = db.query(Herramienta).filter(Herramienta.id == row.herramienta_id).first() if row.herramienta_id else None
         old_location = db.query(Ubicacion).filter(Ubicacion.codigo == old_tool.ubicacion).first() if old_tool else None
         old_tool_resolved = (
@@ -934,6 +1012,9 @@ def install_service_tool(request_id: int, item: ServiceInstall):
             or (old_tool.estado or "disponible") == "baja"
             or (old_location is not None and old_location.tipo == "rack")
             or db.query(TicketMantenimiento.id).filter(TicketMantenimiento.solicitud_id == row.id).first() is not None
+            or db.query(BajaHerramienta.id).filter(
+                BajaHerramienta.solicitud_id == row.id, BajaHerramienta.estado != "rejected",
+            ).first() is not None
         )
         if old_tool_resolved:
             row.estado = "closed"
@@ -969,6 +1050,14 @@ def _service_tool(db, row):
             detail=f"Tool {tool.id} went to Maintenance (MT-{ticket.id:05d}); the work is recorded in that ticket.",
         )
     location = db.query(Ubicacion).filter(Ubicacion.codigo == tool.ubicacion).first()
+    pending = db.query(BajaHerramienta).filter(
+        BajaHerramienta.solicitud_id == row.id, BajaHerramienta.estado != "rejected",
+    ).first()
+    if pending:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tool {tool.id} has the retirement BJ-{pending.id:05d}; the decision is recorded there.",
+        )
     if not location or location.tipo not in SERVICE_LOCATIONS:
         raise HTTPException(
             status_code=409,
@@ -993,8 +1082,13 @@ def finish_tool_service(request_id: int, item: ServiceFinish):
     user = _user()
     _require_toolcrib(user)
     result_kind = item.resultado.strip().lower()
-    if result_kind not in ("ready", "retired"):
-        raise HTTPException(status_code=422, detail="Result must be ready or retired")
+    if result_kind == "retired":
+        raise HTTPException(
+            status_code=409,
+            detail="A tool is retired through a retirement proposal (Retire…) that a supervisor or the technician approves.",
+        )
+    if result_kind != "ready":
+        raise HTTPException(status_code=422, detail="Result must be ready")
     note = (item.nota or "").strip()
     justification = (item.justificacion or "").strip()
     if len(note) > MAX_NOTE_LENGTH or len(justification) > MAX_NOTE_LENGTH:
@@ -1013,13 +1107,10 @@ def finish_tool_service(request_id: int, item: ServiceFinish):
             if rebaje < 0:
                 raise HTTPException(status_code=422, detail="The amount ground off cannot be negative")
         abnormal = False
-        if result_kind == "ready":
-            if row.tipo == "sharpening" and rebaje is None:
-                raise HTTPException(status_code=422, detail="Record how much was ground off (use 0 if nothing was removed)")
-            if row.tipo in ("damage", "performance") and not note:
-                raise HTTPException(status_code=422, detail="Describe what was found and repaired")
-        elif not note:
-            raise HTTPException(status_code=422, detail="Explain why the tool is being retired")
+        if row.tipo == "sharpening" and rebaje is None:
+            raise HTTPException(status_code=422, detail="Record how much was ground off (use 0 if nothing was removed)")
+        if row.tipo in ("damage", "performance") and not note:
+            raise HTTPException(status_code=422, detail="Describe what was found and repaired")
         abnormal = rebaje is not None and rebaje > ABNORMAL_REBAJE
         if abnormal and len(justification) < MIN_JUSTIFICATION_LENGTH:
             raise HTTPException(
@@ -1052,16 +1143,8 @@ def finish_tool_service(request_id: int, item: ServiceFinish):
             summary += f", {rebaje} in. ground off"
         if note:
             summary += f" - {note}"
-        if result_kind == "ready":
-            tool.estado = "disponible"
-            movement = "service_completed"
-        else:
-            tool.estado = "baja"
-            movement = "service_retired"
-            if row.estado == "replaced":
-                row.estado = "closed"
-                row.cerrado_por = user.username
-                row.cerrado_en = now
+        tool.estado = "disponible"
+        movement = "service_completed"
         workflow_api._append_movement(
             db, tool, location.codigo, location.codigo, movement, user.username,
             details=summary, setup_id=row.setup_id,

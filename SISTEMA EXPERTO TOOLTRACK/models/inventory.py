@@ -273,6 +273,8 @@ class SolicitudServicio(Base):
     atendido_en = Column(DateTime, nullable=True)
     recogido_por = Column(String, nullable=True)
     recogido_en = Column(DateTime, nullable=True)
+    recibida_en = Column(DateTime, nullable=True)
+    demanda_id = Column(Integer, ForeignKey("demandas_planeacion.id"), nullable=True)
     cerrado_por = Column(String, nullable=True)
     cerrado_en = Column(DateTime, nullable=True)
     motivo_cancelacion = Column(Text, nullable=True)
@@ -377,6 +379,29 @@ class TicketMantenimiento(Base):
     cerrado_en = Column(DateTime, nullable=True)
 
 
+class BajaHerramienta(Base):
+    """Retirement (baja) of a physical tool: proposed by Tool Crib with the incident behind it,
+    approved or rejected by a supervisor or the maintenance technician (never by the proposer)."""
+    __tablename__ = "bajas_herramienta"
+    __table_args__ = (
+        Index("ix_bajas_herramienta_tool", "herramienta_id"),
+        Index("ix_bajas_herramienta_estado", "estado"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    herramienta_id = Column(String, ForeignKey("herramientas.id"), nullable=False)
+    solicitud_id = Column(Integer, ForeignKey("solicitudes_servicio.id"), nullable=True)
+    incidente_id = Column(Integer, ForeignKey("incidentes_herramienta.id"), nullable=False)
+    estado = Column(String, nullable=False, default="pending")
+    estado_previo = Column(String, nullable=True)
+    motivo = Column(Text, nullable=False)
+    propuesto_por = Column(String, nullable=False)
+    propuesto_en = Column(DateTime, nullable=False)
+    resuelto_por = Column(String, nullable=True)
+    resuelto_en = Column(DateTime, nullable=True)
+    nota_resolucion = Column(Text, nullable=True)
+
+
 class MovimientoHerramienta(Base):
     __tablename__ = "movimientos_herramienta"
 
@@ -461,6 +486,10 @@ class ProgramaParte(Base):
     cycle_time_s = Column(Integer, nullable=True)
     cycle_con_lead_s = Column(Integer, nullable=True)
     uph_teorico = Column(Float, nullable=True)
+    uph_editado = Column(Float, nullable=True)
+    uph_motivo = Column(Text, nullable=True)
+    uph_editado_por = Column(String, nullable=True)
+    uph_editado_en = Column(DateTime, nullable=True)
 
 
 class BitacoraPrograma(Base):
@@ -502,9 +531,28 @@ class DemandaPlaneacion(Base):
     marca = Column(String, nullable=True)
     comentario = Column(Text, nullable=True)
     activa = Column(Boolean, nullable=False, default=True, server_default="1")
+    orden_trabajo = Column(String, nullable=True)
     creado_por = Column(String, nullable=False)
     creado_en = Column(DateTime, nullable=False)
     actualizado_en = Column(DateTime, nullable=False)
+
+
+class AsignacionMaquina(Base):
+    """Who is working on a machine: the operator logs into the machine each time, until the shift ends."""
+    __tablename__ = "asignaciones_maquina"
+    __table_args__ = (
+        Index("ix_asignaciones_maquina_usuario", "usuario"),
+        Index("ix_asignaciones_maquina_maquina", "maquina_codigo"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    usuario = Column(String, nullable=False)
+    maquina_codigo = Column(String, ForeignKey("ubicaciones.codigo"), nullable=False)
+    turno = Column(String, nullable=False)
+    inicio = Column(DateTime, nullable=False)
+    vence = Column(DateTime, nullable=False)
+    fin = Column(DateTime, nullable=True)
+    fin_motivo = Column(String, nullable=True)
 
 
 class Sesion(Base):

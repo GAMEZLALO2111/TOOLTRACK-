@@ -11,6 +11,7 @@ import { ACTION_LABEL, CATEGORY_LABEL, COMPONENT_STATE_LABEL, KIT_STATE_CLASS, K
 import { go } from "../router";
 import type { Candidate, DeliveryResult, Kit, KitComponent, KitQr, KitRefreshResult } from "../types";
 import { usePoll } from "../usePoll";
+import { RetireToolDialog } from "./Maintenance";
 
 type Reasoned = "pause" | "cancel" | null;
 
@@ -467,8 +468,12 @@ function ChooseDialog({ kit, component, onClose, onChosen }: { kit: Kit; compone
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
   const [unplaced, setUnplaced] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [retiring, setRetiring] = useState<string | null>(null);
+  const { can } = useAuth();
+  const canRetire = can("service.attend") && can("tools.move");
 
-  useEffect(() => {
+  function load() {
+    setCandidates(null);
     api<Candidate[]>("GET", `/workflow/kits/${encodeURIComponent(kit.id)}/components/${component.component_id}/candidates`)
       .then((rows) => {
         setCandidates(rows);
@@ -480,7 +485,9 @@ function ChooseDialog({ kit, component, onClose, onChosen }: { kit: Kit; compone
         }
       })
       .catch((caught) => setError(caught instanceof ApiError ? caught.message : "Could not load the available tools."));
-  }, [kit.id, component.component_id, component.tn, component.category]);
+  }
+
+  useEffect(load, [kit.id, component.component_id, component.tn, component.category]);
 
   async function pick(candidate: Candidate) {
     setError(null);
@@ -538,12 +545,27 @@ function ChooseDialog({ kit, component, onClose, onChosen }: { kit: Kit; compone
                     <button className="btn btn-primary" onClick={() => void pick(c)}>
                       Use this one
                     </button>
+                    {canRetire && (
+                      <button className="btn btn-ghost-danger" onClick={() => setRetiring(c.id)}>
+                        Damaged…
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {retiring && (
+        <RetireToolDialog
+          toolId={retiring}
+          onClose={() => setRetiring(null)}
+          onDone={() => {
+            setRetiring(null);
+            load();
+          }}
+        />
       )}
     </Dialog>
   );

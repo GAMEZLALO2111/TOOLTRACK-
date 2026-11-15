@@ -58,6 +58,11 @@ export function MachineCard({ machine, tv, canKit, canAdd, onOpen, onKit, onAdd 
         </div>
         <div className="card-big">{big}</div>
         <div className="card-reason">{machine.motivo}</div>
+        {machine.operadores?.length > 0 && (
+          <div className="card-operators" title="Logged into this machine">
+            👤 {machine.operadores.map((operator) => operator.full_name).join(" · ")}
+          </div>
+        )}
       </header>
 
       <div className="card-body">
@@ -76,6 +81,7 @@ export function MachineCard({ machine, tv, canKit, canAdd, onOpen, onKit, onAdd 
             <div className="np-line">
               <small>RUNNING</small>
               <strong>{actual.numero_parte}</strong>
+              {actual.orden_trabajo && <span className="muted small">WO {actual.orden_trabajo}</span>}
               <MarkChip mark={actual.marca} />
             </div>
             <Progress demand={actual} />
@@ -94,10 +100,12 @@ export function MachineCard({ machine, tv, canKit, canAdd, onOpen, onKit, onAdd 
             <div className="np-line">
               <small>NEXT</small>
               <strong>{next.numero_parte}</strong>
+              {next.orden_trabajo && <span className="muted small">WO {next.orden_trabajo}</span>}
             </div>
             <div className="chips">
               <StatusChip status={next.estado} />
               <MarkChip mark={next.marca} />
+              {next.solicitud_parte && <span className="chip st-kitting">Kit requested</span>}
             </div>
           </div>
         ) : (

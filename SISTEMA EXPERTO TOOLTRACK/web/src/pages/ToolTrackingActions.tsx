@@ -7,6 +7,7 @@ import { ScanInput } from "../components/ScanInput";
 import { CATEGORY_LABEL, RETURN_REASONS } from "../labels";
 import { toolCode, type Capture } from "../scan";
 import type { LocationRow, MachineTools } from "../types";
+import { RetireToolDialog } from "./Maintenance";
 
 function useLocations() {
   const [locations, setLocations] = useState<LocationRow[]>([]);
@@ -32,6 +33,9 @@ export function StoreTab() {
   const [result, setResult] = useState("");
   const [log, setLog] = useState<LogLine[]>([]);
   const [busy, setBusy] = useState(false);
+  const [retiring, setRetiring] = useState<string | null>(null);
+  const { can } = useAuth();
+  const canRetire = can("service.attend") && can("tools.move");
   const input = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -52,11 +56,9 @@ export function StoreTab() {
         captura: capture,
       });
       const text =
-        response.kind === "baja"
-          ? `✔ ${response.tool_id} retired (it does not go back to a rack).`
-          : response.kind === "placement"
-            ? `✔ ${response.tool_id} (TN ${response.tn}) placed in ${response.to} · first location`
-            : `✔ ${response.tool_id} (TN ${response.tn}) stored: ${response.from} → ${response.to}`;
+        response.kind === "placement"
+          ? `✔ ${response.tool_id} (TN ${response.tn}) placed in ${response.to} · first location`
+          : `✔ ${response.tool_id} (TN ${response.tn}) stored: ${response.from} → ${response.to}`;
       setLog([{ ok: true, text }, ...log].slice(0, 12));
       setToolId("");
       setResult("");
@@ -82,15 +84,30 @@ export function StoreTab() {
           <select value={result} onChange={(event) => setResult(event.target.value)}>
             <option value="">Not needed</option>
             <option value="disponible">Ready for use</option>
-            <option value="baja">Retire it</option>
           </select>
         </label>
         <div className="end">
           <button className="btn btn-primary big" type="submit" disabled={busy || !toolId.trim()}>
             Store
           </button>
+          {canRetire && (
+            <button className="btn btn-ghost-danger" type="button" disabled={busy || !toolId.trim()} onClick={() => setRetiring(toolCode(toolId))}>
+              Damaged: retire…
+            </button>
+          )}
         </div>
       </div>
+      {retiring && (
+        <RetireToolDialog
+          toolId={retiring}
+          onClose={() => setRetiring(null)}
+          onDone={() => {
+            setLog([{ ok: true, text: `✔ ${retiring} retirement proposed. A supervisor or the technician has to approve it.` }, ...log].slice(0, 12));
+            setRetiring(null);
+            setToolId("");
+          }}
+        />
+      )}
       {log.length > 0 && (
         <ul className="log" role="log">
           {log.map((line, index) => (

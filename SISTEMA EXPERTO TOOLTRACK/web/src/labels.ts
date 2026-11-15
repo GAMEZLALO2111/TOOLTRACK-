@@ -133,6 +133,7 @@ export const SERVICE_TYPE_LABEL: Record<string, string> = {
   ...Object.fromEntries(SERVICE_TYPES.map((type) => [type.value, type.label])),
   tool_request: "Tool request",
   program_problem: "Program problem",
+  part_request: "Next part number",
 };
 
 export const SERVICE_STATE_LABEL: Record<string, string> = {
@@ -156,6 +157,18 @@ export const TICKET_STATE_CLASS: Record<string, string> = {
   evaluating: "st-running",
   repairing: "st-onmachine",
   closed: "st-done",
+};
+
+export const RETIREMENT_STATE_LABEL: Record<string, string> = {
+  pending: "Waiting for approval",
+  approved: "Approved · retired",
+  rejected: "Rejected",
+};
+
+export const RETIREMENT_STATE_CLASS: Record<string, string> = {
+  pending: "st-kitting",
+  approved: "st-done",
+  rejected: "st-notstarted",
 };
 
 export const SERVICE_STATE_CLASS: Record<string, string> = {
@@ -189,6 +202,9 @@ export const MOVEMENT_LABEL: Record<string, string> = {
   maintenance_received: "Received by Maintenance",
   maintenance_released: "Repaired and released by Maintenance",
   maintenance_unrepairable: "Maintenance: cannot be repaired",
+  retirement_proposed: "Retirement proposed",
+  retirement_approved: "Retirement approved: retired",
+  retirement_rejected: "Retirement rejected: back in use",
   kit_refresh_returned: "Back to its rack: the kit was refreshed",
   placed_in_rack: "Placed in a rack (first location)",
   rack_to_cart_for_kit: "Taken from the rack to the cart",

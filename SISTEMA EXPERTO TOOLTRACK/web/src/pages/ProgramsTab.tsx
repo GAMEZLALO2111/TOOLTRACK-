@@ -5,7 +5,7 @@ import { Dialog, ErrorNote } from "../components/Dialog";
 import type { Program, ProgramLogRow } from "../types";
 import { fmt, PlanningBox, UploadDialog } from "./ProgramUpload";
 
-export const ACTION_LABEL: Record<string, string> = { alta: "Created", actualizado: "Updated", created: "Created", updated: "Updated" };
+export const ACTION_LABEL: Record<string, string> = { alta: "Created", actualizado: "Updated", created: "Created", updated: "Updated", uph: "UPH changed" };
 
 function when(iso: string): string {
   return new Date(iso + "Z").toLocaleString();
@@ -90,7 +90,10 @@ export function ProgramsTab({ type }: { type: string }) {
                   <td className="hide-sm">{p.requisitos.length}</td>
                   <td className="hide-sm">{fmt(p.planeacion.piezas_blank)}</td>
                   <td className="hide-sm">{fmt(p.planeacion.cycle_time_s)}</td>
-                  <td className="hide-sm">{fmt(p.planeacion.uph_teorico)}</td>
+                  <td className="hide-sm">
+                    {fmt(p.planeacion.uph_efectivo ?? p.planeacion.uph_teorico)}
+                    {p.planeacion.uph_editado ? " ✎" : ""}
+                  </td>
                   <td>
                     {when(p.actualizado_en)}
                     <div className="muted small">{p.actualizado_por}</div>
@@ -106,7 +109,13 @@ export function ProgramsTab({ type }: { type: string }) {
           program={selected}
           type={type}
           canManage={can("program.manage")}
+          canUph={can("program.uph")}
           onClose={() => setSelected(null)}
+          onUphSaved={(updated) => {
+            setSelected(updated);
+            setMessage(`UPH of ${updated.numero_parte} saved.`);
+            void load();
+          }}
           onRevise={() => {
             setUploading(selected);
             setSelected(null);
@@ -129,15 +138,72 @@ export function ProgramsTab({ type }: { type: string }) {
   );
 }
 
-function ProgramDialog({ program, type, canManage, onClose, onRevise }: { program: Program; type: string; canManage: boolean; onClose: () => void; onRevise: () => void }) {
+function UphDialog({ program, type, onClose, onSaved }: { program: Program; type: string; onClose: () => void; onSaved: (program: Program) => void }) {
+  const current = program.planeacion;
+  const [value, setValue] = useState(String(current.uph_efectivo ?? current.uph_teorico ?? ""));
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(restore: boolean) {
+    const amount = Number(value);
+    if (!restore && (!Number.isFinite(amount) || amount <= 0)) return setError("Enter a UPH greater than 0.");
+    if (reason.trim().length < 3) return setError("Write the reason for the change.");
+    setBusy(true);
+    setError(null);
+    try {
+      onSaved(await api<Program>("PUT", `/workflow/programs/${type}/${encodeURIComponent(program.numero_parte)}/uph`, { uph: restore ? null : amount, motivo: reason.trim(), usuario: "web" }));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The UPH could not be saved.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`UPH · ${program.numero_parte}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Back
+          </button>
+          {current.uph_editado != null && (
+            <button className="btn" onClick={() => void save(true)} disabled={busy}>
+              Back to the .stp value ({fmt(current.uph_teorico)})
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={() => void save(false)} disabled={busy}>
+            {busy ? "Saving…" : "Save UPH"}
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        <label>
+          UPH used for the plan (the .stp says {fmt(current.uph_teorico)})
+          <input inputMode="decimal" value={value} onChange={(event) => setValue(event.target.value)} autoFocus />
+        </label>
+        <label>
+          Reason (required, it stays in the history)
+          <textarea rows={2} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} />
+        </label>
+        <ErrorNote message={error} />
+      </div>
+    </Dialog>
+  );
+}
+
+function ProgramDialog({ program, type, canManage, canUph, onClose, onRevise, onUphSaved }: { program: Program; type: string; canManage: boolean; canUph: boolean; onClose: () => void; onRevise: () => void; onUphSaved: (program: Program) => void }) {
   const [log, setLog] = useState<ProgramLogRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingUph, setEditingUph] = useState(false);
 
   useEffect(() => {
     api<ProgramLogRow[]>("GET", `/workflow/programs/log?numero_parte=${encodeURIComponent(program.numero_parte)}&tipo_maquina=${encodeURIComponent(type)}`)
       .then(setLog)
       .catch((caught) => setError(caught instanceof ApiError ? caught.message : "Could not load the history."));
-  }, [program.numero_parte, type]);
+  }, [program.numero_parte, type, program.planeacion.uph_editado]);
 
   async function download() {
     setError(null);
@@ -183,8 +249,19 @@ function ProgramDialog({ program, type, canManage, onClose, onRevise }: { progra
           {when(program.actualizado_en)} · {program.actualizado_por}
         </div>
       </div>
+      <h3 className="q-done-title">Planning</h3>
       <PlanningBox planning={program.planeacion} />
+      {program.planeacion.uph_editado != null && (
+        <p className="muted small">
+          UPH edited by {program.planeacion.uph_editado_por} {program.planeacion.uph_editado_en ? when(program.planeacion.uph_editado_en) : ""}: {program.planeacion.uph_motivo}
+        </p>
+      )}
       <div className="kit-actions">
+        {canUph && (
+          <button className="btn" onClick={() => setEditingUph(true)}>
+            Edit UPH
+          </button>
+        )}
         <button className="btn" onClick={() => void download()}>
           Download .stp
         </button>
@@ -194,6 +271,17 @@ function ProgramDialog({ program, type, canManage, onClose, onRevise }: { progra
           </button>
         )}
       </div>
+      {editingUph && (
+        <UphDialog
+          program={program}
+          type={type}
+          onClose={() => setEditingUph(false)}
+          onSaved={(updated) => {
+            setEditingUph(false);
+            onUphSaved(updated);
+          }}
+        />
+      )}
       <ErrorNote message={error} />
       <h3 className="q-done-title">Stations ({program.requisitos.length})</h3>
       <div className="table-wrap">

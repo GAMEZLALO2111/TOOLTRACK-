@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, download } from "../api";
 import { useAuth } from "../auth";
-import { ConfirmDialog, Dialog, ErrorNote } from "../components/Dialog";
+import { Dialog, ErrorNote } from "../components/Dialog";
 import { LocationPicker } from "../components/LocationPicker";
 import { Chip } from "../components/MachineCard";
 import { RecordTable, type RecordColumn, type RecordRow } from "../components/RecordTable";
@@ -10,6 +10,7 @@ import { CATEGORY_LABEL, TOOL_STATE_CLASS } from "../labels";
 import { go } from "../router";
 import type { InvOptions, InvRow, LocationRow, ToolRow } from "../types";
 import { ToolForm } from "./Tools";
+import { RetireToolDialog } from "./Maintenance";
 
 interface FileSection {
   label: string;
@@ -32,13 +33,17 @@ interface ToolFile {
     incidents?: number;
     tickets?: number;
     open_ticket?: string | null;
+    open_request?: string | null;
+    retirements?: number;
+    pending_retirement?: string | null;
     requests?: number;
   };
   sections: Record<string, FileSection>;
 }
 
-const SECTION_ORDER = ["movements", "requests", "incidents", "tickets", "services"];
+const SECTION_ORDER = ["movements", "requests", "incidents", "tickets", "retirements", "services"];
 const SERVICE_PLACES = ["togu", "maintenance", "workshop"];
+const TOOLCRIB_PLACES = ["rack", "togu", "maintenance", "workshop"];
 const MOVE_TARGETS = ["rack", "togu", "maintenance", "workshop"];
 
 function Fact({ label, value }: { label: string; value: React.ReactNode }) {
@@ -107,7 +112,7 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
   const [group, setGroup] = useState("all");
   const [editing, setEditing] = useState<{ options: InvOptions; locations: LocationRow[]; tns: string[] } | null>(null);
   const [moving, setMoving] = useState(false);
-  const [status, setStatus] = useState<"danado" | "disponible" | "baja" | null>(null);
+  const [retiring, setRetiring] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -141,8 +146,7 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
     }
   }
 
-  async function changeStatus(next: "danado" | "disponible" | "baja") {
-    setStatus(null);
+  async function changeStatus(next: "danado" | "disponible") {
     setBusy(true);
     setError(null);
     try {
@@ -199,11 +203,15 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
   const retired = tool.estado === "baja";
   const inService = !!where.location_type && SERVICE_PLACES.includes(where.location_type);
   const ticketOpen = !!summary.open_ticket;
+  const retirementPending = !!summary.pending_retirement;
+  const heldByToolCrib = !!where.location_type && TOOLCRIB_PLACES.includes(where.location_type);
+  const canRetire = can("service.attend") && can("tools.move") && heldByToolCrib && !ticketOpen && !retirementPending && !summary.open_request;
   const sectionSummary: Record<string, string> = {
     movements: String(summary.movements),
     requests: summary.requests !== undefined ? String(summary.requests) : "",
     incidents: summary.incidents !== undefined ? String(summary.incidents) : "",
     tickets: summary.tickets !== undefined ? String(summary.tickets) : "",
+    retirements: summary.retirements !== undefined ? String(summary.retirements) : "",
     services: summary.sharpenings !== undefined ? String(file.sections.services?.total ?? 0) : "",
   };
 
@@ -238,8 +246,27 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
           )}
         </div>
       )}
+      {summary.open_request && (
+        <div className="note note-warn">
+          Request {summary.open_request} is handling this tool; record its result, maintenance or retirement there.{" "}
+          {can("service.view") && (
+            <button className="link-btn" onClick={() => go("/requests")}>
+              Go to Requests
+            </button>
+          )}
+        </div>
+      )}
+      {retirementPending && (
+        <div className="note note-warn">
+          Retirement {summary.pending_retirement} is waiting for approval.{" "}
+          {can("maintenance.view") && (
+            <button className="link-btn" onClick={() => go("/maintenance")}>
+              Go to Maintenance
+            </button>
+          )}
+        </div>
+      )}
       <div className="facts">
-        <Fact label="Where it is" value={where.status} />
         <Fact label="TN" value={tool.tn ?? "—"} />
         <Fact label="Type" value={`${CATEGORY_LABEL[tool.categoria] ?? tool.categoria}${tool.type ? ` · ${tool.type}` : ""}${tool.size ? ` · size ${tool.size}` : ""}`} />
         <Fact label="Home rack" value={where.home_rack ?? "—"} />
@@ -258,23 +285,26 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
           {!!summary.abnormal && <span className="chip sum lvl-ROJO">{summary.abnormal} abnormal</span>}
           <span className="chip sum lvl-AMARILLO">{summary.incidents} incidents</span>
           <span className="chip sum lvl-AMARILLO">{summary.tickets} tickets</span>
+          {!!summary.retirements && <span className="chip sum lvl-ROJO">{summary.retirements} retirements</span>}
         </div>
       )}
       {can("tools.status") && !retired && (
         <div className="kit-actions">
           {where.estado !== "danado" && (
-            <button className="btn" disabled={busy || ticketOpen} onClick={() => void changeStatus("danado")}>
+            <button className="btn" disabled={busy || ticketOpen || retirementPending} onClick={() => void changeStatus("danado")}>
               Mark as damaged
             </button>
           )}
           {where.estado !== "disponible" && (
-            <button className="btn" disabled={busy || ticketOpen} onClick={() => void changeStatus("disponible")}>
+            <button className="btn" disabled={busy || ticketOpen || retirementPending} onClick={() => void changeStatus("disponible")}>
               Release (available)
             </button>
           )}
-          <button className="btn btn-ghost-danger" disabled={busy || ticketOpen} onClick={() => setStatus("baja")}>
-            Retire
-          </button>
+          {canRetire && (
+            <button className="btn btn-ghost-danger" disabled={busy} onClick={() => setRetiring(true)}>
+              Retire…
+            </button>
+          )}
         </div>
       )}
       <div className="tabs-inline wrap">
@@ -314,7 +344,6 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
           locations={editing.locations}
           tns={editing.tns}
           canEdit={can("inventory.edit")}
-          canDelete={can("inventory.delete")}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -332,8 +361,15 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
           }}
         />
       )}
-      {status === "baja" && (
-        <ConfirmDialog title="Retire tool" message={`Retire ${tool.id}? It can never be kitted again.`} confirmLabel="Retire" danger onClose={() => setStatus(null)} onConfirm={() => void changeStatus("baja")} />
+      {retiring && (
+        <RetireToolDialog
+          toolId={tool.id}
+          onClose={() => setRetiring(false)}
+          onDone={() => {
+            setRetiring(false);
+            void load();
+          }}
+        />
       )}
     </section>
   );

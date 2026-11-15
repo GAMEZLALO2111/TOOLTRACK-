@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
-import { ConfirmDialog, Dialog, ErrorNote } from "../components/Dialog";
+import { Dialog, ErrorNote } from "../components/Dialog";
 import { Chip } from "../components/MachineCard";
 import { CATEGORY_LABEL, TOOL_STATE_CLASS, TOOL_STATE_LABEL } from "../labels";
 import { go } from "../router";
@@ -198,7 +198,6 @@ export function ToolsList() {
           locations={places}
           tns={tns}
           canEdit={canEdit}
-          canDelete={false}
           onClose={() => setRegistering(false)}
           onSaved={() => {
             setRegistering(false);
@@ -216,12 +215,11 @@ interface FormProps {
   locations: LocationRow[];
   tns: string[];
   canEdit: boolean;
-  canDelete: boolean;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function ToolForm({ tool, options, locations, tns, canEdit, canDelete, onClose, onSaved }: FormProps) {
+export function ToolForm({ tool, options, locations, tns, canEdit, onClose, onSaved }: FormProps) {
   const isNew = tool === null;
   const [id, setId] = useState(tool?.id ?? "");
   const [category, setCategory] = useState(tool?.categoria ?? "punzon");
@@ -234,7 +232,6 @@ export function ToolForm({ tool, options, locations, tns, canEdit, canDelete, on
   const [place, setPlace] = useState(tool?.ubicacion ?? "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const cuts = category === "punzon" || category === "matriz";
   const types = options.tipos[category] ?? [];
@@ -274,18 +271,6 @@ export function ToolForm({ tool, options, locations, tns, canEdit, canDelete, on
       onSaved();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "The tool could not be saved.");
-      setBusy(false);
-    }
-  }
-
-  async function remove() {
-    setConfirmDelete(false);
-    setBusy(true);
-    try {
-      await api("DELETE", `/herramientas/${encodeURIComponent(id)}`);
-      onSaved();
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "The tool could not be deleted.");
       setBusy(false);
     }
   }
@@ -372,13 +357,7 @@ export function ToolForm({ tool, options, locations, tns, canEdit, canDelete, on
         </div>
         <ErrorNote message={error} />
         <div className="form-actions spread">
-          {!isNew && canDelete ? (
-            <button type="button" className="btn btn-ghost-danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
-              Delete
-            </button>
-          ) : (
-            <span />
-          )}
+          <span />
           <span className="pair">
             <button type="button" className="btn" onClick={onClose}>
               {readOnly ? "Close" : "Cancel"}
@@ -391,16 +370,6 @@ export function ToolForm({ tool, options, locations, tns, canEdit, canDelete, on
           </span>
         </div>
       </form>
-      {confirmDelete && (
-        <ConfirmDialog
-          title="Delete tool"
-          message={`Delete ${id}? Only for entry mistakes; a tool with movement history cannot be deleted.`}
-          confirmLabel="Delete"
-          danger
-          onClose={() => setConfirmDelete(false)}
-          onConfirm={() => void remove()}
-        />
-      )}
     </Dialog>
   );
 }

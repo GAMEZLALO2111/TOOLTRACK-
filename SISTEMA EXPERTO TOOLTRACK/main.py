@@ -41,6 +41,9 @@ from users_api import router as users_router
 from kitting_api import router as kitting_router
 from service_requests_api import router as service_requests_router
 from maintenance_api import router as maintenance_router
+from retirement_api import router as retirement_router
+from machine_operators_api import router as machine_operators_router
+from insights_api import router as insights_router
 from records_api import router as records_router
 from tool_file_api import router as tool_file_router
 from auth import AuthMiddleware, normalize_role as _canonical_role
@@ -58,6 +61,9 @@ app.include_router(demandas_router)
 app.include_router(kitting_router)
 app.include_router(service_requests_router)
 app.include_router(maintenance_router)
+app.include_router(retirement_router)
+app.include_router(machine_operators_router)
+app.include_router(insights_router)
 app.include_router(records_router)
 app.include_router(tool_file_router)
 # Aplicación web (web/dist). Se compila con build_web.bat; sin compilar, "/" avisa cómo hacerlo.
@@ -153,9 +159,35 @@ def migrate_service_requests_table(db_path=DB_PATH):
         for column in ("problema", "resolucion"):
             if column not in info:
                 cur.execute(f"ALTER TABLE solicitudes_servicio ADD COLUMN {column} TEXT")
+        if "recibida_en" not in info:
+            cur.execute("ALTER TABLE solicitudes_servicio ADD COLUMN recibida_en DATETIME")
+        if "demanda_id" not in info:
+            cur.execute("ALTER TABLE solicitudes_servicio ADD COLUMN demanda_id INTEGER")
     conn.commit()
     conn.close()
 migrate_service_requests_table()
+
+
+def migrate_planning_columns(db_path=DB_PATH):
+    """Work order on each demand; the editable UPH on each part number program."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    for table, additions in (
+        ("demandas_planeacion", {"orden_trabajo": "TEXT"}),
+        ("programas_parte", {
+            "uph_editado": "REAL", "uph_motivo": "TEXT", "uph_editado_por": "TEXT", "uph_editado_en": "DATETIME",
+        }),
+    ):
+        columns = {row[1] for row in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not columns:
+            continue
+        for name, kind in additions.items():
+            if name not in columns:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+    conn.commit()
+    conn.close()
+migrate_planning_columns()
 
 
 def migrate_movements_table(db_path=DB_PATH):
@@ -1254,21 +1286,17 @@ def actualizar_herramienta(herramienta_id: str, herramienta: HerramientaCreate):
 
 @app.delete("/herramientas/{herramienta_id}")
 def eliminar_herramienta(herramienta_id: str):
+    """A tool is never erased: it leaves service through a retirement that records who, where and why."""
     db = SessionLocal()
-    h = db.query(Herramienta).filter(Herramienta.id == herramienta_id).first()
-    if h is None:
+    try:
+        if db.query(Herramienta.id).filter(Herramienta.id == herramienta_id).first() is None:
+            raise HTTPException(status_code=404, detail="Herramienta no encontrada")
+    finally:
         db.close()
-        raise HTTPException(status_code=404, detail="Herramienta no encontrada")
-    if tool_has_workflow_tracking(db, herramienta_id):
-        db.close()
-        raise HTTPException(
-            status_code=409,
-            detail="Tool has workflow history and cannot be deleted; use the formal retirement flow",
-        )
-    db.delete(h)
-    db.commit()
-    db.close()
-    return {"ok": True}
+    raise HTTPException(
+        status_code=409,
+        detail="A tool cannot be deleted. Retire it from its tool file (Retire…) and give the reason.",
+    )
 
 @app.patch("/herramientas/{herramienta_id}/ajustar_conteo", response_model=HerramientaRead)
 def ajustar_conteo_herramienta(herramienta_id: int, conteo: int):
