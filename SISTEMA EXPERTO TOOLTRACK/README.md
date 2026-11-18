@@ -1,6 +1,36 @@
-# TOOLTRACK
+# MIRA — Manufacturing Intelligence & Resource Administration
 
-Sistema de escritorio para inventario y rastreabilidad de herramientas. La interfaz Tkinter consume una API FastAPI y los datos se guardan localmente en SQLite.
+> TOOLTRACK es el nombre histórico del prototipo. Las carpetas, variables (`TOOLTRACK_*`), prefijos de QR (`TOOLTRACK-…`) y la base `tooltrack.db` conservan ese nombre a propósito: no se renombran para no romper etiquetas ya impresas ni instalaciones.
+
+Sistema de administración de recursos de manufactura. API FastAPI + SQLite, interfaz web en React (`web/`) y una interfaz de escritorio Tkinter que se mantiene mientras cada módulo web se prueba.
+
+## Visión
+
+MIRA nació para controlar herramientas del Tool Crib y hoy cubre Tool Crib y Punzonado como piloto. La meta es un sistema digital configurable que administre otros recursos y operaciones de manufactura, sin reconstruir lo que ya funciona: la evolución es incremental.
+
+- Centralizar información operativa que hoy vive en Excel y sistemas de requisiciones desconectados.
+- Mantener trazabilidad completa de cada recurso y operación (quién, dónde, por qué, cuándo, con qué escaneo).
+- Relacionar demanda, productos, programas, máquinas, recursos y disponibilidad.
+- Generar alertas, KPIs, gráficas y análisis para decidir (dashboard de gerencia).
+
+Principios de diseño: se separan siempre la definición técnica del recurso, el ejemplar físico individual, el requerimiento del número de parte, la asignación temporal a una máquina, el historial de uso, la solicitud de servicio y la sustitución; nada histórico se sobrescribe; todo se identifica por QR/escáner con ingreso manual como respaldo; cada acción lleva su usuario; una baja nunca es un clic, siempre exige motivo y aprobación.
+
+## Qué hay construido (estado actual)
+
+| Área | Qué hace |
+| --- | --- |
+| **Surtido (Kitting)** | Comparativo setup actual vs nuevo por TN + ángulo, kit por máquina/carro, escaneo de herramientas, claridad de matrices con tolerancia ±0.005 in, *Refresh* desde el programa, hoja impresa ordenada por rack, QR del kit, entrega con QR de máquina, regresos y pendientes de recoger. |
+| **Board (plan de producción)** | Una tarjeta por máquina con semáforo, cola, WO, producido, horas con el UPH en uso y quién está en la máquina. Sustituye al Excel del plan. Modo TV. |
+| **Manufactura** | Ve el Board completo y Setup en solo lectura; toma su máquina (vence al fin del turno), captura producidas y pide el siguiente número de parte solo en la suya; reporta herramientas y problemas de programa. |
+| **Requests (Tool Crib)** | Bandeja única: herramientas (afilado, inspección, reemplazo, daño, desempeño, retorno), problemas de programa y siguiente número de parte. Se elige quién atiende; se guardan tres tiempos (espera, atención, máquina sin herramienta). |
+| **Incidentes, Mantenimiento y bajas** | Expediente de daño (operador, turno por reloj, causa, momento), tickets que solo abre Tool Crib y trabaja el técnico, y baja con motivo obligatorio y aprobación de otra persona. |
+| **Tools** | Lista única y ficha por herramienta con toda su historia; etiquetas QR; guardado en rack. |
+| **Setup (solo lectura para Manufactura)** | Catalog, Part numbers (con UPH editable por Planeación/Ingeniería, con motivo e historial) y Machines. |
+| **Records** | Consulta y descarga a Excel de movimientos, solicitudes, incidentes, tickets, bajas, servicios, programas y auditoría. |
+| **Dashboard de gerencia** | KPIs con tendencia, gráficas, hallazgos automáticos, costo del paro y PDF; más una base de demostración para presentarlo. |
+| **Seguridad** | Roles y permisos aplicados en la API, sesión con token, bitácora de todo cambio. |
+
+Pendientes conocidos: el comparativo del surtido debe respetar lo que ya corre en la máquina (reportado, en corrección); un kit terminado debe quedar «completo y listo para entregar» sin obligar a entregarlo de inmediato, y deben poder surtirse en paralelo varios números de parte de la misma máquina; cargar la ubicación de las herramientas sin rack; imprimir etiquetas de herramientas, racks y TOGU; lectura con cámara (requiere HTTPS); conteo de golpes por ejemplar; integración con MES.
 
 ## Inicio rápido (sin asistente)
 
@@ -96,7 +126,7 @@ En el primer inicio se registran las máquinas predeterminadas `T-101` a `T-117`
 Frontend en `web/` (React + TypeScript + Vite). El backend lo sirve en `http://localhost:8000/` y usa la misma API y los mismos roles que la interfaz Tkinter, que se mantiene hasta que cada módulo web esté probado.
 
 - Compilar: `build_web.bat` (usa Node.js portátil en `%LOCALAPPDATA%\TOOLTRACK\node-v26.13.0-win-x64`; `node_modules` vive en `%LOCALAPPDATA%\TOOLTRACK\web_node_modules`, enlazado con una unión, para que OneDrive no lo sincronice). Después reinicia el backend. Desarrollo: `npm.cmd run dev` dentro de `web/` (puerto 5173 con proxy a la API).
-- Módulos listos: Login, Sequence Board (tarjetas con semáforo, cola por máquina, producido, edición, orden, modo TV en `#/tv` con desplazamiento automático), Usuarios, **Kitting completo**, **Tools** (`#/tools`), **Catalog** (`#/catalog`), **Records** (`#/records`), **Maintenance** (`#/maintenance`), **Part numbers** (`#/programs`), **Machines** (`#/machines`: estado en tiempo real, ficha, estaciones y traspaso entre máquinas compatibles) **Manufacturing** (`#/manufacturing`: máquina, número de parte, datos técnicos, estaciones y herramientas, solicitudes a Tool Crib) y **Requests** (`#/requests`: cola de Tool Crib). Máquinas conserva administración avanzada en Tkinter; Audit Log e importar/exportar CSV de inventario siguen solo en Tkinter.
+- Módulos listos: Login, Sequence Board (tarjetas con semáforo, cola por máquina, WO, producido, operadores en la máquina, edición, orden, modo TV en `#/tv` con desplazamiento automático), **Dashboard** (`#/insights`), Usuarios, **Kitting completo**, **Tools** (`#/tools`), **Catalog** (`#/catalog`), **Records** (`#/records`), **Maintenance** (`#/maintenance`: tickets y bajas por aprobar), **Part numbers** (`#/programs`), **Machines** (`#/machines`: estado en tiempo real, ficha, estaciones y traspaso entre máquinas compatibles) **Manufacturing** (`#/manufacturing`: máquina, número de parte, datos técnicos, estaciones y herramientas, plan de la máquina, solicitudes a Tool Crib) y **Requests** (`#/requests`: cola de Tool Crib). Máquinas conserva administración avanzada en Tkinter; Audit Log e importar/exportar CSV de inventario siguen solo en Tkinter.
 - Permiso nuevo `tools.store` (guardar en rack): operador, supervisor, técnico de mantenimiento y admin. El técnico de mantenimiento ve Maintenance, Tools y Catalog.
 - Interfaz en inglés, adaptable a PC, tablet y celular. La sesión se guarda en `sessionStorage` (se pierde al cerrar la pestaña) y dura 12 h.
 - Los estados y marcas que devuelve el backend siguen en español; `web/src/labels.ts` los traduce para mostrarlos.
@@ -161,7 +191,7 @@ API: `GET /records`, `GET /records/{kind}` (con `limit` y `offset`) y `GET /reco
 
 ## Navegación de la web
 
-Menú por rol (cada uno ve solo lo suyo): **Board · Kitting · Requests · Maintenance · Tools · Records · Setup · Manufacturing · Users**. *Setup* agrupa Catalog, Part numbers y Machines con una tira de pestañas; si un rol solo ve una de las tres, aparece directa. Atajos: la tarjeta de máquina del Board lleva a Kitting con el comparativo ya hecho (Tool Crib) o al alta de demanda (Planeación); el ID de cualquier herramienta o máquina en Requests, Maintenance y Records abre su ficha o su página. Las pantallas no llevan párrafos explicativos: título, el siguiente paso como botón principal y mensajes de error o confirmación. Los enlaces antiguos (`#/tracking`, `#/inventory`, `#/kitting/pending`, `#/kitting/labels`) siguen funcionando.
+Menú por rol (cada uno ve solo lo suyo): **Board · Dashboard · Kitting · Requests · Maintenance · Tools · Records · Setup · Manufacturing · Users**. *Dashboard* es el tablero de gerencia (supervisor de Tool Crib, Ingeniería, Planeación y administrador). *Setup* agrupa Catalog, Part numbers y Machines con una tira de pestañas (Punzonado lo ve en solo lectura); si un rol solo ve una de las tres, aparece directa. Atajos: la tarjeta de máquina del Board lleva a Kitting con el comparativo ya hecho (Tool Crib) o al alta de demanda (Planeación); el ID de cualquier herramienta o máquina en Requests, Maintenance y Records abre su ficha o su página. Las pantallas no llevan párrafos explicativos: título, el siguiente paso como botón principal y mensajes de error o confirmación. Los enlaces antiguos (`#/tracking`, `#/inventory`, `#/kitting/pending`, `#/kitting/labels`) siguen funcionando.
 
 ## Escaneo y etiquetas
 
@@ -190,7 +220,8 @@ Menú Tablero de secuencia (`demand_board_ui.py`, API `demandas_api.py`, prefijo
 - TIE TOTAL de la máquina = suma de HR de sus demandas; CUBIERTO = suma de HR de las demandas en TERMINADO.
 - Estado automático: TERMINADO (pendiente 0), CORRIENDO (la máquina tiene montado ese NP; si el NP se repite solo la primera), SURTIENDO (surtido en proceso), FALTA HERRAMIENTAS (surtido pausado), EN MÁQUINA (surtido listo para entregar), NO INICIADO.
 - Marcas manuales con comentario obligatorio: PARO PROGRAMADO, URGENTE, LÁSER, CORTE DE BLANCK (Planning, Engineering y supervisor de toolcrib).
-- Permisos por campo en el PATCH de una demanda: cantidad y orden → `demand.manage` (Planning); producido → `demand.progress` (toolcrib); marca y comentario → `demand.mark`. Límite de 1,000,000 de piezas, NP en mayúsculas, producido no puede superar la cantidad y no se aceptan máquinas desactivadas.
+- Permisos por campo en el PATCH de una demanda: cantidad, orden y orden de trabajo (WO) → `demand.manage` (Planning); producido → `demand.progress` (Tool Crib en cualquier máquina; el operador de Punzonado solo en la máquina que tomó); marca y comentario → `demand.mark`. Límite de 1,000,000 de piezas, NP en mayúsculas, producido no puede superar la cantidad y no se aceptan máquinas desactivadas.
+- HR con UPH editado: si Planeación o Ingeniería fijó un UPH para el número de parte, HR = piezas ÷ UPH; si no, se usa la fórmula del .stp de arriba.
 - Quitar una demanda la desactiva (no se borra).
 - Se actualiza solo cada 30 s; si el backend no responde lo avisa en la barra superior sin mensajes emergentes.
 - Pendiente: el lead time y la integración con MESSPRO quedan para después; la producción se captura a mano.
