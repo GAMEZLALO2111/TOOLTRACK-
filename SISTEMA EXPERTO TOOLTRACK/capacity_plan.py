@@ -28,7 +28,7 @@ def _hours_per_piece(machine, info):
     return hpp
 
 
-def _place(part, pieces, remaining, setups, machines, parts, setup_h, loads):
+def _place(part, pieces, remaining, setups, machines, parts, setup_h, loads, log=None, week=None, prebuilt=False):
     """Puts up to `pieces` of a part on the machines with free hours. Returns (pieces placed, hours used)."""
     options = []
     for machine in machines:
@@ -51,6 +51,9 @@ def _place(part, pieces, remaining, setups, machines, parts, setup_h, loads):
         remaining[code] -= spent
         setups.add((code, part))
         loads[code] += spent
+        if log is not None:
+            log.append({"week": week, "machine": code, "part": part, "pieces": take, "hours": take * hpp,
+                        "setup_h": extra, "prebuilt": prebuilt})
         left -= take
         hours += spent
     return pieces - left, hours
@@ -68,6 +71,7 @@ def simulate(weeks, machines, parts, need, setup_h, ahead):
     }
     best_hpp = {part: min(parts[part]["hpp"].values()) if parts[part]["hpp"] else None for part in need}
     machine_loads = {m["code"]: [] for m in machines}
+    placements = []
     for w in range(weeks):
         remaining = {m["code"]: max(m["cap"][w], 0.0) for m in machines}
         gross = sum(remaining.values())
@@ -84,7 +88,7 @@ def simulate(weeks, machines, parts, need, setup_h, ahead):
                 late[part] = wanted
                 entries[part] = {"need": wanted, "assigned": 0.0}
                 continue
-            placed, hours = _place(part, wanted, remaining, setups, machines, parts, setup_h, loads)
+            placed, hours = _place(part, wanted, remaining, setups, machines, parts, setup_h, loads, placements, w, False)
             used += hours
             late[part] = wanted - placed
             entries[part] = {"need": wanted, "assigned": placed}
@@ -96,7 +100,7 @@ def simulate(weeks, machines, parts, need, setup_h, ahead):
                 future = need[part][w + k]
                 if future <= EPS or not parts[part]["hpp"]:
                     continue
-                placed, hours = _place(part, future, remaining, setups, machines, parts, setup_h, loads)
+                placed, hours = _place(part, future, remaining, setups, machines, parts, setup_h, loads, placements, w, True)
                 need[part][w + k] = future - placed
                 prebuilt += hours
                 used += hours
@@ -117,7 +121,8 @@ def simulate(weeks, machines, parts, need, setup_h, ahead):
             })
         for machine in machines:
             machine_loads[machine["code"]].append(round(loads.get(machine["code"], 0.0), 1))
-    return {"weeks": week_rows, "parts": part_rows, "machine_loads": machine_loads}
+    return {"weeks": week_rows, "parts": part_rows, "machine_loads": machine_loads, "placements": placements,
+            "late": {part: round(value) for part, value in late.items() if value > EPS}}
 
 
 def net_need(weekly_demand, offset):

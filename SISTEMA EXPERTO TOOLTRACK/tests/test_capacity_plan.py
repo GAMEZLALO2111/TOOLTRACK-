@@ -66,6 +66,16 @@ class SimulateTests(unittest.TestCase):
         self.assertEqual(result["machine_loads"]["F1"][0], 10.0)
         self.assertEqual(result["machine_loads"]["S1"][0], 20.0)
 
+    def test_placements_say_where_each_piece_goes_and_what_is_built_ahead(self):
+        result = self.run_plan([machine("M1"), machine("M2")], {"A": part()}, {"A": [15000, 5000, 0, 0]}, setup_h=1.0, ahead=1)
+        placed = [(p["week"], p["machine"], p["prebuilt"]) for p in result["placements"] if p["week"] == 0]
+        self.assertIn((0, "M1", False), placed)
+        self.assertIn((0, "M2", False), placed)
+        total_week0 = sum(p["pieces"] for p in result["placements"] if p["week"] == 0)
+        self.assertAlmostEqual(total_week0, 15000 + 5000 - result["parts"]["A"][1]["need"], delta=1)
+        self.assertEqual(result["late"], {})
+        self.assertTrue(all(p["hours"] > 0 for p in result["placements"]))
+
     def test_a_part_without_program_is_reported_as_unplanned_and_not_as_late_hours(self):
         result = self.run_plan([machine()], {"A": part(hpp=None)}, {"A": [300, 0, 0, 0]})
         week = result["weeks"][0]

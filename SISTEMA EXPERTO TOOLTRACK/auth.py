@@ -245,6 +245,8 @@ ROUTE_RULES = {
     ("PUT", "/planeacion/maquinas/{code}"): "planning.manage",
     ("PUT", "/planeacion/parametros"): "planning.manage",
     ("GET", "/planeacion/capacidad"): "planning.view",
+    ("GET", "/planeacion/propuesta"): "planning.view",
+    ("POST", "/planeacion/propuesta/aplicar"): "planning.manage",
 }
 
 

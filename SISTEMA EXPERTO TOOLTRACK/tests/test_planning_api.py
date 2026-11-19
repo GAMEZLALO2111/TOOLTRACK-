@@ -131,6 +131,37 @@ class PlanningApiTests(unittest.TestCase):
         machine = next(m for m in result["machines"] if m["code"] == "T-1")
         self.assertEqual(machine["committed_h"], 7.0)
 
+    def test_the_proposal_lists_what_each_machine_runs_and_applying_it_creates_board_demands_that_are_not_planned_again(self):
+        self._params(horizonte_semanas=2, setup_minutos=60, adelanto_semanas=0)
+        self._fg(parts=(("MAKE-A_00-SW", 1), ("MAKE-B_00-SW", 1)))
+        self._forecast("FG-1", w0=1000)
+        result = planning_api.proposal(2)
+        first = result["proposal"]["weeks"][0]
+        lines = [(m["code"], item["numero_parte"], item["piezas"]) for m in first["machines"] for item in m["items"]]
+        self.assertEqual(sum(piezas for _c, _p, piezas in lines if _p == "MAKE-A_00-SW"), 1000)
+        self.assertEqual(sum(piezas for _c, _p, piezas in lines if _p == "MAKE-B_00-SW"), 1000)
+        self.assertEqual(result["proposal"]["not_placed"], [])
+        self.assertEqual(set(first["machines"][0]["items"][0]["eligible"]), {"T-1", "T-2"})
+
+        chosen = [planning_api.ApplyItem(maquina=c, numero_parte=p, piezas=n) for c, p, n in lines]
+        created = planning_api.apply_proposal(planning_api.ApplyIn(items=chosen))["created"]
+        self.assertEqual(len(created), len(lines))
+        db = self.factory()
+        try:
+            self.assertEqual(db.query(DemandaPlaneacion).filter_by(activa=True).count(), len(lines))
+            self.assertEqual({row.comentario for row in db.query(DemandaPlaneacion)}, {"From the capacity proposal"})
+        finally:
+            db.close()
+        again = planning_api.build_capacity(self.factory(), 2)
+        self.assertEqual([row["need"] for part in again["parts"] for row in part["weeks"]], [0, 0, 0, 0])
+
+        with self.assertRaises(HTTPException) as no_program:
+            planning_api.apply_proposal(planning_api.ApplyIn(items=[planning_api.ApplyItem(maquina="T-1", numero_parte="NOPE", piezas=5)]))
+        self.assertEqual(no_program.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as empty:
+            planning_api.apply_proposal(planning_api.ApplyIn(items=[]))
+        self.assertEqual(empty.exception.status_code, 422)
+
     def test_a_part_without_program_marks_its_fg_as_no_program_and_not_as_short(self):
         self._params(horizonte_semanas=2, setup_minutos=0, adelanto_semanas=0)
         self._fg("FG-9", parts=(("MAKE-A_00-SW", 1), ("MANUAL-MAKE", 1)))

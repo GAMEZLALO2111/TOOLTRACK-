@@ -4,7 +4,7 @@ import { useAuth } from "../auth";
 import { Dialog, ErrorNote } from "../components/Dialog";
 import { go } from "../router";
 
-type Tab = "capacity" | "fg" | "forecast" | "settings";
+type Tab = "capacity" | "proposal" | "fg" | "forecast" | "settings";
 
 interface WeekSummary {
   capacity_h: number;
@@ -77,6 +77,7 @@ const STATUS_LABEL: Record<string, string> = {
 const WEEK_CHOICES = [4, 8, 12, 26];
 const TABS: { value: Tab; label: string }[] = [
   { value: "capacity", label: "Capacity" },
+  { value: "proposal", label: "Proposal" },
   { value: "fg", label: "FG and BOM" },
   { value: "forecast", label: "Forecast" },
   { value: "settings", label: "Capacity settings" },
@@ -108,6 +109,7 @@ export function PlanningPage({ tab }: { tab: string }) {
         ))}
       </div>
       {current === "capacity" && <CapacityTab />}
+      {current === "proposal" && <ProposalTab />}
       {current === "fg" && <FgTab />}
       {current === "forecast" && <ForecastTab />}
       {current === "settings" && <SettingsTab />}
@@ -365,6 +367,237 @@ function FgDetail({ fg, data, onClose }: { fg: CapacityResult["fgs"][number]; da
         </div>
       ))}
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------- Proposal
+
+interface ProposalItem {
+  numero_parte: string;
+  piezas: number;
+  hours: number;
+  setup_h: number;
+  prebuilt: boolean;
+  thickness: number | null;
+  eligible: string[];
+}
+interface ProposalResult {
+  weeks: string[];
+  summary: WeekSummary[];
+  warnings: string[];
+  proposal: {
+    weeks: { week: string; machines: { code: string; type: string; capacity_h: number; load_h: number; items: ProposalItem[] }[] }[];
+    not_placed: { numero_parte: string; piezas: number; reason: string }[];
+  };
+}
+interface Line {
+  key: string;
+  machine: string;
+  part: string;
+  pieces: string;
+  originalPieces: number;
+  hours: number;
+  prebuilt: boolean;
+  thickness: number | null;
+  eligible: string[];
+  checked: boolean;
+}
+
+const NOT_PLACED_REASON: Record<string, string> = {
+  no_program: "no program with UPH",
+  no_machine: "no compatible machine",
+  capacity: "not enough capacity in the weeks shown",
+};
+
+function ProposalTab() {
+  const { can } = useAuth();
+  const canApply = can("planning.manage");
+  const [weeks, setWeeks] = useState(8);
+  const [data, setData] = useState<ProposalResult | null>(null);
+  const [index, setIndex] = useState(0);
+  const [lines, setLines] = useState<Line[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    setError(null);
+    api<ProposalResult>("GET", `/planeacion/propuesta?semanas=${weeks}`)
+      .then((result) => {
+        setData(result);
+        setIndex((value) => Math.min(value, result.weeks.length - 1));
+      })
+      .catch((caught) => setError(message(caught, "Could not build the proposal")));
+  }, [weeks]);
+  useEffect(load, [load]);
+
+  useEffect(() => {
+    const week = data?.proposal.weeks[index];
+    if (!week) return setLines([]);
+    setLines(
+      week.machines.flatMap((machine) =>
+        machine.items.map((item) => ({
+          key: `${machine.code}|${item.numero_parte}|${item.prebuilt}`,
+          machine: machine.code,
+          part: item.numero_parte,
+          pieces: String(item.piezas),
+          originalPieces: item.piezas,
+          hours: item.hours + item.setup_h,
+          prebuilt: item.prebuilt,
+          thickness: item.thickness,
+          eligible: item.eligible,
+          checked: !item.prebuilt,
+        })),
+      ),
+    );
+  }, [data, index]);
+
+  const grouped = useMemo(() => {
+    const result = new Map<string, Line[]>();
+    for (const line of [...lines].sort((a, b) => a.machine.localeCompare(b.machine))) {
+      result.set(line.machine, [...(result.get(line.machine) ?? []), line]);
+    }
+    return [...result.entries()];
+  }, [lines]);
+
+  const selected = lines.filter((line) => line.checked);
+
+  function patch(key: string, values: Partial<Line>) {
+    setLines((list) => list.map((line) => (line.key === key ? { ...line, ...values } : line)));
+  }
+
+  async function send() {
+    setError(null);
+    setInfo(null);
+    for (const line of selected) {
+      const pieces = Number(line.pieces);
+      if (!Number.isInteger(pieces) || pieces < 1) return setError(`Pieces of ${line.part} must be a whole number of 1 or more.`);
+    }
+    setBusy(true);
+    try {
+      const result = await api<{ created: unknown[] }>("POST", "/planeacion/propuesta/aplicar", {
+        items: selected.map((line) => ({ maquina: line.machine, numero_parte: line.part, piezas: Number(line.pieces) })),
+      });
+      setInfo(`${result.created.length} demand(s) were added to the Board. The proposal now counts them as already scheduled.`);
+      load();
+    } catch (caught) {
+      setError(message(caught, "The lines could not be sent to the Board"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const week = data?.proposal.weeks[index];
+  const summary = data?.summary[index];
+
+  return (
+    <>
+      <p className="muted">What each machine would run to meet the forecast. Review it, change a machine or the pieces, and send the lines you accept to the Board.</p>
+      <div className="plan-toolbar">
+        <label>
+          Week{" "}
+          <select value={index} onChange={(event) => setIndex(Number(event.target.value))}>
+            {(data?.weeks ?? []).map((value, position) => (
+              <option key={value} value={position}>
+                {weekLabel(value)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Look ahead{" "}
+          <select value={weeks} onChange={(event) => setWeeks(Number(event.target.value))}>
+            {WEEK_CHOICES.map((value) => (
+              <option key={value} value={value}>
+                {value} weeks
+              </option>
+            ))}
+          </select>
+        </label>
+        {summary && <StatusChip status={summary.status} />}
+        {canApply && (
+          <button className="btn btn-primary" disabled={busy || selected.length === 0} onClick={() => void send()}>
+            {busy ? "Sending…" : `Send ${selected.length} line(s) to the Board`}
+          </button>
+        )}
+      </div>
+      <ErrorNote message={error} />
+      {info && (
+        <div className="note note-info">
+          {info}{" "}
+          <button className="link-btn" onClick={() => go("/board")}>
+            Open the Board
+          </button>
+        </div>
+      )}
+      {data && data.warnings.length > 0 && <div className="note note-warn">{data.warnings.length} point(s) to review: see the Capacity tab.</div>}
+      {data && data.proposal.not_placed.length > 0 && (
+        <div className="note note-error">
+          Not placed in these weeks:
+          <ul>
+            {data.proposal.not_placed.map((row) => (
+              <li key={row.numero_parte}>
+                <strong>{row.numero_parte}</strong>: {fmt(row.piezas)} pcs, {NOT_PLACED_REASON[row.reason] ?? row.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!data && !error && <p className="muted">Building the proposal…</p>}
+      {data && grouped.length === 0 && <p className="note note-info">Nothing needs to run in the week of {week ? weekLabel(week.week) : "—"}.</p>}
+      {grouped.map(([code, items]) => {
+        const machine = week?.machines.find((row) => row.code === code);
+        return (
+          <div key={code} className="plan-machine">
+            <h3>
+              {code} <span className="muted small">{machine?.type ?? ""}{machine ? ` · ${fmt(machine.load_h)} of ${fmt(machine.capacity_h)} h` : ""}</span>
+            </h3>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    {canApply && <th />}
+                    <th>Part number</th>
+                    <th>Thickness</th>
+                    <th>Pieces</th>
+                    <th>Hours</th>
+                    <th>Machine</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((line) => (
+                    <tr key={line.key}>
+                      {canApply && (
+                        <td>
+                          <input type="checkbox" checked={line.checked} onChange={(event) => patch(line.key, { checked: event.target.checked })} aria-label={`Send ${line.part}`} />
+                        </td>
+                      )}
+                      <td>
+                        <strong>{line.part}</strong> {line.prebuilt && <span className="chip st-kitting">Built ahead</span>}
+                      </td>
+                      <td>{line.thickness ?? "—"}</td>
+                      <td>
+                        <input className="plan-input" inputMode="numeric" value={line.pieces} disabled={!canApply} onChange={(event) => patch(line.key, { pieces: event.target.value })} aria-label={`Pieces of ${line.part}`} />
+                      </td>
+                      <td>{fmt(Math.round(line.hours * (Number(line.pieces) / line.originalPieces || 0) * 10) / 10)}</td>
+                      <td>
+                        <select value={line.machine} disabled={!canApply} onChange={(event) => patch(line.key, { machine: event.target.value })} aria-label={`Machine for ${line.part}`}>
+                          {line.eligible.map((value) => (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
+    </>
   );
 }
 

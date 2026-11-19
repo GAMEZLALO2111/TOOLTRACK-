@@ -228,7 +228,8 @@ Responde «¿cumplimos con el forecast?» por FG, familia y semana, en lugar del
   - Los horas que el Board ya tiene comprometidas se restan de la capacidad de esa máquina desde la primera semana.
 - **Resultado:** semáforo por semana (*Meets*, *Tight* desde 90% de uso, *Short* si queda atraso) y por FG, con desglose por make, máquina y semana. Las partes sin programa o sin UPH se marcan «No program» y no se cuentan como horas; los avisos listan lo que hay que revisar antes de confiar en el resultado.
 - **Permisos:** `planning.view` (Planning, Engineering) y `planning.manage` (solo Planning); cada cambio queda en la bitácora.
-- **Aún no hace:** repartir la carga por máquina como propuesta, tiempo de setup según las herramientas que cambian, ni el límite de herramientas únicas por máquina.
+- **Propuesta de reparto (pestaña Proposal):** por semana, qué parte corre en qué máquina y cuántas piezas, con las horas y el setup de cada máquina. El planner revisa, puede cambiar la máquina (solo entre las compatibles) o las piezas, y envía al Board las líneas que acepta; se crean como demandas con el comentario «From the capacity proposal». Lo que se adelanta de semanas futuras aparece marcado «Built ahead» y sin seleccionar. Una vez enviadas, el cálculo las cuenta como ya programadas y descuenta sus horas de esas máquinas. Lo que no cabe se lista con su razón (sin programa, sin máquina compatible o sin capacidad).
+- **Aún no hace:** tiempo de setup según las herramientas que cambian (hoy es fijo por parte y máquina), ni el límite de herramientas únicas por máquina.
 
 ## Producción registrada y demandas del Board
 

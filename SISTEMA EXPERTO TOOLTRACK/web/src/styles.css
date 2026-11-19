@@ -1586,3 +1586,9 @@ textarea:disabled {
 .plan-detail {
   margin-bottom: 14px;
 }
+.plan-machine {
+  margin-top: 14px;
+}
+.plan-machine h3 {
+  margin: 0 0 6px;
+}

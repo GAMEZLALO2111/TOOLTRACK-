@@ -14,7 +14,7 @@ import programs_api
 import shifts
 import workflow_api
 from auth import require_permission
-from capacity_plan import net_need, simulate
+from capacity_plan import _hours_per_piece, net_need, simulate
 from db import SessionLocal
 from models.inventory import (
     CapacidadMaquina,
@@ -522,7 +522,7 @@ def save_params(item: ParamsIn):
 
 # ---------------------------------------------------------------- Cálculo
 
-def build_capacity(db, weeks=None):
+def build_capacity(db, weeks=None, with_plan=False):
     params = _params(db)
     horizon = _horizon(db, weeks)
     count = len(horizon)
@@ -612,6 +612,7 @@ def build_capacity(db, weeks=None):
             warnings.append(f"{part} has no program with UPH: its hours cannot be counted")
 
     result = simulate(count, machines, part_info, need, params["setup_minutos"] / 60, int(params["adelanto_semanas"]))
+    proposal = _proposal(horizon, machines, part_info, result) if with_plan else None
     fg_rows = []
     for fg in fgs:
         parts = [row.numero_parte for row in fg_parts[fg.id]]
@@ -646,7 +647,65 @@ def build_capacity(db, weeks=None):
             for m in machines
         ],
         "warnings": warnings,
+        **({"proposal": proposal} if proposal is not None else {}),
     }
+
+
+def _proposal(horizon, machines, part_info, result):
+    """What each machine would run each week, from the placements of the calculation."""
+    grouped = defaultdict(lambda: {"pieces": 0.0, "hours": 0.0, "setup_h": 0.0})
+    for row in result["placements"]:
+        entry = grouped[(row["week"], row["machine"], row["part"], row["prebuilt"])]
+        entry["pieces"] += row["pieces"]
+        entry["hours"] += row["hours"]
+        entry["setup_h"] += row["setup_h"]
+    eligible = {
+        part: [m["code"] for m in machines if _hours_per_piece(m, info)] for part, info in part_info.items()
+    }
+    # Whole pieces: the rounding left over goes to the largest line of each part so no 1-piece line appears later.
+    whole = {}
+    by_part = defaultdict(list)
+    for key, entry in grouped.items():
+        by_part[(key[0], key[2], key[3])].append((key, entry["pieces"]))
+    for lines in by_part.values():
+        total = int(round(sum(pieces for _key, pieces in lines)))
+        floors = {key: int(pieces + 1e-6) for key, pieces in lines}
+        remainder = total - sum(floors.values())
+        if remainder > 0:
+            floors[max(lines, key=lambda line: line[1])[0]] += remainder
+        whole.update(floors)
+    weeks_out = []
+    for index, monday in enumerate(horizon):
+        machines_out = []
+        for machine in machines:
+            items = []
+            for (week, code, part, prebuilt), entry in grouped.items():
+                pieces = whole[(week, code, part, prebuilt)]
+                if week != index or code != machine["code"] or pieces < 1:
+                    continue
+                items.append({
+                    "numero_parte": part, "piezas": pieces, "hours": round(entry["hours"], 1),
+                    "setup_h": round(entry["setup_h"], 1), "prebuilt": prebuilt,
+                    "thickness": part_info[part]["thickness"], "eligible": eligible[part],
+                })
+            if not items:
+                continue
+            items.sort(key=lambda item: (item["prebuilt"], item["thickness"] or 0, item["numero_parte"]))
+            machines_out.append({
+                "code": machine["code"], "type": machine["type"], "capacity_h": round(machine["cap"][index], 1),
+                "load_h": round(sum(item["hours"] + item["setup_h"] for item in items), 1), "items": items,
+            })
+        weeks_out.append({"week": monday.isoformat(), "machines": machines_out})
+    not_placed = []
+    for part, pieces in sorted(result["late"].items()):
+        if not part_info[part]["hpp"]:
+            reason = "no_program"
+        elif not eligible[part]:
+            reason = "no_machine"
+        else:
+            reason = "capacity"
+        not_placed.append({"numero_parte": part, "piezas": pieces, "reason": reason})
+    return {"weeks": weeks_out, "not_placed": not_placed}
 
 
 @router.get("/capacidad")
@@ -655,5 +714,76 @@ def capacity(semanas: Optional[int] = None):
     db = SessionLocal()
     try:
         return build_capacity(db, semanas)
+    finally:
+        db.close()
+
+
+@router.get("/propuesta")
+def proposal(semanas: Optional[int] = None):
+    """What each machine would run each week to meet the forecast, to review before sending it to the Board."""
+    require_permission("planning.view")
+    db = SessionLocal()
+    try:
+        result = build_capacity(db, semanas, with_plan=True)
+        return {"weeks": result["weeks"], "summary": result["summary"], "warnings": result["warnings"],
+                "proposal": result["proposal"]}
+    finally:
+        db.close()
+
+
+class ApplyItem(BaseModel):
+    maquina: str
+    numero_parte: str
+    piezas: int
+
+
+class ApplyIn(BaseModel):
+    items: List[ApplyItem]
+
+
+@router.post("/propuesta/aplicar", status_code=201)
+def apply_proposal(item: ApplyIn):
+    """Creates Board demands from reviewed proposal lines. The Board then counts them as pending work."""
+    user = require_permission("planning.manage")
+    if not item.items:
+        raise HTTPException(status_code=422, detail="Choose at least one line to send to the Board")
+    db = SessionLocal()
+    try:
+        programs = demandas_api._program_index(db)
+        now = _now()
+        next_order = {}
+        created = []
+        for line in item.items:
+            code = line.maquina.strip().upper()
+            part = _part_key(line.numero_parte)
+            if not 1 <= line.piezas <= demandas_api.MAX_CANTIDAD:
+                raise HTTPException(status_code=422, detail=f"Pieces of {part} must be between 1 and {demandas_api.MAX_CANTIDAD:,}")
+            location = db.query(Ubicacion).filter(
+                Ubicacion.codigo == code, Ubicacion.tipo == "machine", Ubicacion.activa.is_(True)).first()
+            profile = db.query(Maquina).filter(Maquina.codigo == code).first()
+            if location is None or profile is None:
+                raise HTTPException(status_code=404, detail=f"Machine {code} not found or inactive")
+            kind = workflow_api._machine_kind(profile.tipo_maquina)
+            if (part, kind) not in programs:
+                raise HTTPException(status_code=422, detail=f"There is no saved program of {part} for {kind or 'this machine type'} ({code})")
+            if code not in next_order:
+                last = db.query(DemandaPlaneacion.orden).filter(
+                    DemandaPlaneacion.maquina_codigo == code, DemandaPlaneacion.activa.is_(True)
+                ).order_by(DemandaPlaneacion.orden.desc()).first()
+                next_order[code] = (last[0] if last else 0) + 1
+            row = DemandaPlaneacion(
+                maquina_codigo=code, numero_parte=part, cantidad=line.piezas, piezas_producidas=0,
+                orden=next_order[code], activa=True, creado_por=user.username, creado_en=now, actualizado_en=now,
+                comentario="From the capacity proposal",
+            )
+            next_order[code] += 1
+            db.add(row)
+            db.flush()
+            created.append({"id": row.id, "maquina": code, "numero_parte": part, "piezas": line.piezas})
+        db.commit()
+        return {"created": created}
+    except HTTPException:
+        db.rollback()
+        raise
     finally:
         db.close()
