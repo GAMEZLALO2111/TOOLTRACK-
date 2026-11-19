@@ -26,7 +26,7 @@ class DemandaRulesTests(unittest.TestCase):
         self.assertEqual(_estado(5, "NP1", "preparing", "NP1"), "CORRIENDO")
         self.assertEqual(_estado(5, None, "preparing", "NP1"), "SURTIENDO")
         self.assertEqual(_estado(5, None, "paused", "NP1"), "FALTA HERRAMIENTAS")
-        self.assertEqual(_estado(5, None, "ready", "NP1"), "EN MÁQUINA")
+        self.assertEqual(_estado(5, None, "ready", "NP1"), "KIT LISTO")
         self.assertEqual(_estado(5, None, None, "NP1"), "NO INICIADO")
 
     def test_marca_requires_known_value_and_comment(self):

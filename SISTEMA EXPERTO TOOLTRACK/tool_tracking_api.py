@@ -19,6 +19,7 @@ from models.inventory import (
     ProgramaParte,
     RequisitoSetup,
     Setup,
+    SolicitudServicio,
     Surtido,
     Ubicacion,
 )
@@ -159,6 +160,15 @@ def manufacturing_machine_workspace(machine_code: str):
             if setup else None
         )
         requirements_source = "none"
+        pilot_changes = {
+            (row.requisito_id, row.herramienta_nueva_id)
+            for row in db.query(SolicitudServicio).filter(
+                SolicitudServicio.maquina_codigo == code,
+                SolicitudServicio.cambio_piloto.is_(True),
+                SolicitudServicio.herramienta_nueva_id.isnot(None),
+                SolicitudServicio.estado != "cancelled",
+            ).all()
+        }
         if setup:
             requirements = db.query(RequisitoSetup).filter(
                 RequisitoSetup.setup_id == setup.id
@@ -193,9 +203,10 @@ def manufacturing_machine_workspace(machine_code: str):
                         workflow_api._clearance_in_range(tool, clearance_range)
                         if tool and category == "matriz" else None
                     )
+                    pilot_installed = (requirement.id, tool_id) in pilot_changes if tool_id else False
                     compatible = bool(
                         tool
-                        and tool.tn == requirement.tn
+                        and (workflow_api._tn_fits(db, requirement.tn, tool.tn) or pilot_installed)
                         and workflow_api._category(tool) == category
                         and (category != "matriz" or clearance_valid)
                     )
@@ -212,6 +223,9 @@ def manufacturing_machine_workspace(machine_code: str):
                         "category": category,
                         "tool_id": tool.id if tool else None,
                         "tn": tool.tn if tool else requirement.tn,
+                        "substitute": bool(tool and tool.tn != requirement.tn),
+                        "pilot_change": pilot_installed,
+                        "tn_difference": workflow_api.describe_difference(requirement.tn, tool.tn) if tool else None,
                         "tool_type": tool.type if tool else None,
                         "tool_size": tool.size if tool else None,
                         "location": tool.ubicacion if tool else None,
@@ -249,7 +263,7 @@ def manufacturing_machine_workspace(machine_code: str):
         active_kit = db.query(Surtido).filter(
             Surtido.maquina_codigo == code,
             Surtido.estado.in_(OPEN_KIT_STATES),
-        ).order_by(Surtido.creado_en.desc()).first()
+        ).order_by(Surtido.creado_en, Surtido.id).first()
         family = db.query(FamiliaParte).filter(
             FamiliaParte.nombre == program.familia
         ).first() if program and program.familia else None

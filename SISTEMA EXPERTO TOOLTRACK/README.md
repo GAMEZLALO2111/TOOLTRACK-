@@ -19,7 +19,7 @@ Principios de diseño: se separan siempre la definición técnica del recurso, e
 
 | Área | Qué hace |
 | --- | --- |
-| **Surtido (Kitting)** | Comparativo setup actual vs nuevo por TN + ángulo, kit por máquina/carro, escaneo de herramientas, claridad de matrices con tolerancia ±0.005 in, *Refresh* desde el programa, hoja impresa ordenada por rack, QR del kit, entrega con QR de máquina, regresos y pendientes de recoger. |
+| **Surtido (Kitting)** | Comparativo setup actual vs nuevo (el mismo TN es la misma herramienta aunque cambie el ángulo: se conserva y avisa «re-orientar»), kit por máquina/carro, escaneo, claridad de matrices ±0.005 in, *Refresh*, hoja impresa por rack, QR, entrega con QR de máquina, regresos y pendientes de recoger. Al escanear la última herramienta el kit queda solo en «Listo para entregar» (se entrega cuando la máquina lo necesite). Una máquina puede tener hasta 5 kits en fila, surtidos al mismo tiempo por la misma persona o por otra. |
 | **Board (plan de producción)** | Una tarjeta por máquina con semáforo, cola, WO, producido, horas con el UPH en uso y quién está en la máquina. Sustituye al Excel del plan. Modo TV. |
 | **Manufactura** | Ve el Board completo y Setup en solo lectura; toma su máquina (vence al fin del turno), captura producidas y pide el siguiente número de parte solo en la suya; reporta herramientas y problemas de programa. |
 | **Requests (Tool Crib)** | Bandeja única: herramientas (afilado, inspección, reemplazo, daño, desempeño, retorno), problemas de programa y siguiente número de parte. Se elige quién atiende; se guardan tres tiempos (espera, atención, máquina sin herramienta). |
@@ -30,7 +30,7 @@ Principios de diseño: se separan siempre la definición técnica del recurso, e
 | **Dashboard de gerencia** | KPIs con tendencia, gráficas, hallazgos automáticos, costo del paro y PDF; más una base de demostración para presentarlo. |
 | **Seguridad** | Roles y permisos aplicados en la API, sesión con token, bitácora de todo cambio. |
 
-Pendientes conocidos: el comparativo del surtido debe respetar lo que ya corre en la máquina (reportado, en corrección); un kit terminado debe quedar «completo y listo para entregar» sin obligar a entregarlo de inmediato, y deben poder surtirse en paralelo varios números de parte de la misma máquina; cargar la ubicación de las herramientas sin rack; imprimir etiquetas de herramientas, racks y TOGU; lectura con cámara (requiere HTTPS); conteo de golpes por ejemplar; integración con MES.
+Pendientes conocidos: cargar la ubicación de las herramientas sin rack; imprimir etiquetas de herramientas, racks y TOGU; lectura con cámara (requiere HTTPS); conteo de golpes por ejemplar; integración con MES.
 
 ## Inicio rápido (sin asistente)
 
@@ -141,7 +141,7 @@ Frontend en `web/` (React + TypeScript + Vite). El backend lo sirve en `http://l
 - **Bitácora** (`auditoria`): cada cambio en la base guarda usuario autenticado, rol, acción (ruta), fecha y valores anteriores y nuevos (las contraseñas nunca). También se registran inicios y cierres de sesión, intentos fallidos y accesos denegados. El nombre del actor en los cuerpos (`realizado_por`, `creado_por`, `usuario`) siempre se sustituye por el del token. Se consulta en View Audit Log.
 - Los usuarios no se borran: se desactivan, y siempre debe quedar al menos un `SYSTEM_ADMIN` activo.
 - Migración de roles: `admin`→`SYSTEM_ADMIN`, `supervisor`→`TOOLCRIB_SUPERVISOR`, `operator`→`TOOLCRIB_OPERATOR` (solo la primera vez).
-- La base garantiza un solo surtido abierto por máquina y por carro (índice único parcial).
+- La base garantiza un solo surtido abierto por carro (índice único parcial). Una máquina puede tener varios en fila (máximo 5, `MAX_OPEN_KITS_PER_MACHINE`).
 
 ## Máquinas
 
@@ -204,6 +204,41 @@ Toda pantalla que recibe un ID de herramienta o un código de ubicación acepta 
 - **Dónde ya aplica:** registrar lo montado, recibir la herramienta, guardar en rack, destino de la recolección, selector de máquina de Manufacturing, escaneo de herramientas del kit y *Store in rack* de Tool Tracking.
 - **Pendiente:** imprimir las etiquetas de herramientas, racks y TOGU con estos formatos (hoy solo se imprimen las de máquina y carro) y la lectura con cámara.
 
+## Inventario de herramientas: altura, claridad, tolerancia y cambio de piloto
+
+- **Alta de herramienta:** el tipo (ROUND, 1 RADIUS, 2 RADIUS, 4 RADIUS…) lo manda el catálogo del TN y tamaño; no se captura libre. Se registra el proveedor (lista con los existentes o uno nuevo) y la claridad de matrices se elige de una lista 0.004 a 0.030. La tabla de Tools filtra por columna.
+- **Altura y vida:** de un punzón se mide la altura total de la punta y el sistema resta el stripper plate de su tamaño (A 0.250, B 0.250, C 0.300, D 0.350, E 0.350) para obtener la vida utilizable; una herramienta puede traer su propio stripper. En matrices la medida es la altura. Todo es editable en Tools > Life settings (`/inventario/parametros`).
+- **Alertas de mínimo:** punzón con 0.200 in. o menos de punta sobre el stripper y matriz de 1.050 in. o menos. No detienen surtido, envío ni uso: la herramienta se marca «At minimum» y aparece en el Dashboard, sección *Next purchase*, con cuánto stock sano queda del mismo TN.
+- **Afilado:** el rebaje se elige de una lista 0.000 a 0.050; desde 0.020 exige justificación y resta de la altura medida.
+- **Tolerancia de ±0.003 in.** (editable): los TN de las series 1 a 4 llevan su medida (1xxxx redondo, 2xxxx cuadrado, 3xxxx rectangular, 4xxxx oblongo), así que un TN dentro de la tolerancia en cada dimensión cuenta como el requerido (352×252 por 350×250). Aplica igual al surtir, escanear, comparar contra lo montado, registrar lo montado y la cobertura de Manufacturing, y siempre se muestra el TN sustituto y su diferencia. Los TN sin medida (series 5 a 9) solo coinciden exactos.
+- **Cambio de piloto:** en una solicitud de reemplazo o de herramienta sobre una posición redonda, Manufacturing marca «Pilot change» (con nota obligatoria). Tool Crib puede entregar cualquier redondo aunque exceda la tolerancia; la solicitud conserva el TN pedido contra el instalado y se muestra en Requests y en la posición de la máquina.
+- **Imagen:** cada herramienta puede tener foto (o heredar la del TN) y se ve al consultar su ficha. Se guardan en `tool_images/`, junto a la base, fuera de git.
+
+## Planeación de capacidad (menú Planning)
+
+Responde «¿cumplimos con el forecast?» por FG, familia y semana, en lugar del Excel de los planners.
+
+- **FG y BOM:** un FG (rack, shelf…) se arma con números de parte *make* y las piezas de cada uno por unidad de FG. Se captura en una pantalla aparte (Setup y la carga de programas no cambian), eligiendo partes ya guardadas o tecleando un make que aún no tiene programa. Dos números de FG con el mismo BOM pueden compartirlo. También se importa desde Excel (columnas FG, MAKE y PIEZAS).
+- **Forecast:** piezas por FG por semana (la semana empieza en lunes), capturadas en la pestaña Forecast.
+- **Capacidad por máquina:** turnos × horas por turno × días × eficiencia, editable por máquina (también se puede excluir una máquina). Una máquina sin captura propia usa valores por defecto marcados «default», que hay que revisar.
+- **Cálculo (`capacity_plan.py`):**
+  - La demanda es neta: se resta lo producido desde el lunes de la semana actual (registro de producción) y lo pendiente en el Board; lo ya cubierto se usa contra las primeras semanas y el excedente pasa a las siguientes.
+  - Las horas de cada parte salen de su UPH (el editado por Planeación, o el del .stp) por tipo de máquina, más un tiempo fijo de setup por parte y máquina.
+  - Cada parte va a las máquinas compatibles (tipo con programa y espesor dentro del rango de la máquina cuando está capturado); lo que no cabe se arrastra a la semana siguiente como atraso y las horas libres adelantan demanda de las semanas siguientes (límite editable).
+  - Los horas que el Board ya tiene comprometidas se restan de la capacidad de esa máquina desde la primera semana.
+- **Resultado:** semáforo por semana (*Meets*, *Tight* desde 90% de uso, *Short* si queda atraso) y por FG, con desglose por make, máquina y semana. Las partes sin programa o sin UPH se marcan «No program» y no se cuentan como horas; los avisos listan lo que hay que revisar antes de confiar en el resultado.
+- **Permisos:** `planning.view` (Planning, Engineering) y `planning.manage` (solo Planning); cada cambio queda en la bitácora.
+- **Aún no hace:** repartir la carga por máquina como propuesta, tiempo de setup según las herramientas que cambian, ni el límite de herramientas únicas por máquina.
+
+## Producción registrada y demandas del Board
+
+Cada captura de piezas producidas agrega un registro (`registros_produccion`) con parte, máquina, piezas, fecha, turno, usuario y fuente (`manual` hoy; `baan` y `mespro` quedan previstos con un ID externo para no contar dos veces). Nunca se edita ni se borra: quitar una demanda del Board pide motivo y estado (terminada, cancelada o reemplazada) y lo producido se conserva. Se permite producir más que la cantidad de la demanda. `GET /workflow/demandas/production` lo consulta.
+
+## Kitting: comparación manual y Pilot change
+
+- **Comparar contra:** además del modo automático (lo montado o el último kit de la fila, y el atajo desde la tarjeta de la máquina), Kitting permite elegir a mano cualquier número de parte guardado. La comparación solo aplica a ese kit y no cambia lo que el sistema tiene registrado en la máquina; al entregar se vuelve a comparar contra lo realmente montado. Con la casilla «también corregir lo registrado» se usa el flujo de corrección con motivo.
+- **Pilot change:** en una posición redonda (TN 1xxxx), Manufacturing ofrece «Pilot change» al solicitar un reemplazo o una herramienta. Tool Crib puede instalar cualquier redondo aunque exceda la tolerancia; el ticket guarda el TN pedido y el instalado, y se ve en Requests y en la posición de la máquina.
+
 ## Números de parte
 
 Menú Números de parte: programas por tipo de máquina (4I, 2I, 45 STA). Formato fijo tipo TYEH-1193217_01-SW, familia (lista administrable) y NPI/Sustaining. Se guardan los datos leídos del .stp y el archivo (hoja de setup). Si el número ya existe se reemplaza, con motivo obligatorio; todo queda en la Bitácora de cambios (qué estaciones cambiaron, quién y cuándo).
@@ -218,7 +253,7 @@ Menú Tablero de secuencia (`demand_board_ui.py`, API `demandas_api.py`, prefijo
 - Si la máquina está en rojo/amarillo y la siguiente NP no está surtida, la tarjeta pide "SURTIR SIGUIENTE YA" y abre Tool Dispensing con máquina y NP preseleccionadas.
 - HR de una demanda = cantidad × cycle c/lead ÷ (piezas por blank × 3600). Pendiente se calcula con la cantidad menos lo producido.
 - TIE TOTAL de la máquina = suma de HR de sus demandas; CUBIERTO = suma de HR de las demandas en TERMINADO.
-- Estado automático: TERMINADO (pendiente 0), CORRIENDO (la máquina tiene montado ese NP; si el NP se repite solo la primera), SURTIENDO (surtido en proceso), FALTA HERRAMIENTAS (surtido pausado), EN MÁQUINA (surtido listo para entregar), NO INICIADO.
+- Estado automático: TERMINADO (pendiente 0), CORRIENDO (la máquina tiene montado ese NP; si el NP se repite solo la primera), SURTIENDO (surtido en proceso), FALTA HERRAMIENTAS (surtido pausado), KIT LISTO (surtido completo, listo para entregar), NO INICIADO.
 - Marcas manuales con comentario obligatorio: PARO PROGRAMADO, URGENTE, LÁSER, CORTE DE BLANCK (Planning, Engineering y supervisor de toolcrib).
 - Permisos por campo en el PATCH de una demanda: cantidad, orden y orden de trabajo (WO) → `demand.manage` (Planning); producido → `demand.progress` (Tool Crib en cualquier máquina; el operador de Punzonado solo en la máquina que tomó); marca y comentario → `demand.mark`. Límite de 1,000,000 de piezas, NP en mayúsculas, producido no puede superar la cantidad y no se aceptan máquinas desactivadas.
 - HR con UPH editado: si Planeación o Ingeniería fijó un UPH para el número de parte, HR = piezas ÷ UPH; si no, se usa la fórmula del .stp de arriba.
@@ -235,3 +270,6 @@ Menú Tablero de secuencia (`demand_board_ui.py`, API `demandas_api.py`, prefijo
 - **Claridad de matrices:** el rango se calcula con el espesor ±0.005 in (unión de las bandas que toca ese margen, `THICKNESS_TOLERANCE` en `setup_workflow.py`), para que una milésima no cambie de banda. El surtido muestra número de parte, espesor y rango de claridad, y la columna *Clearance* en las matrices.
 - **Refresh del surtido:** vuelve a leer el programa vigente (`POST /workflow/kits/{id}/refresh`). Si Ingeniería lo cambió, conserva lo ya surtido que sigue siendo válido y avisa qué herramientas regresar a su rack, cuáles son nuevas y cuáles se quitaron. Si no cambió, no toca nada.
 - **Hoja para surtir:** *Print pick sheet* (`GET /workflow/kits/{id}/pick-sheet`) imprime en horizontal lo que falta, ordenado por rack: herramienta sugerida (ID y rack), hasta 2 alternas, claridad requerida y espacio para el ID surtido. Solo sugiere; no reserva nada.
+- **Mismo TN, otro ángulo:** el comparativo empareja primero TN + ángulo y después el mismo TN con ángulo distinto (`pair_positions` en `setup_workflow.py`); esa herramienta se conserva en la máquina y el kit indica «was 90°: re-orient». Si un kit abierto había pedido otra vez algo que ya está montado, *Compare again* lo recalcula.
+- **Kit completo:** al escanear la última herramienta el kit pasa solo a `ready` y genera su QR; no hay que entregarlo de inmediato. En el Board el estado es «KIT LISTO».
+- **Fila de kits por máquina:** se pueden iniciar varios kits de la misma máquina (misma persona o distintas, cada uno en su carro). Cada kit se compara contra el anterior de la fila y no contra lo montado hoy. La entrega es en orden de fila y según lo montado; en casos extraordinarios Tool Crib puede entregar fuera de orden con motivo obligatorio (`fuera_de_orden` + `motivo_orden` en `POST /workflow/delivery/scan`): el kit se vuelve a comparar contra lo montado y solo se entrega si sigue completo. Si un kit anterior se cancela, se refresca o se entrega fuera de orden, los kits detrás reciben una alerta (no se recalculan solos) con el botón *Compare again*.

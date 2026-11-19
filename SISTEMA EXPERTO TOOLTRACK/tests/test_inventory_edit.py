@@ -1,3 +1,4 @@
+import os
 import unittest
 from datetime import datetime, timezone
 
@@ -377,6 +378,146 @@ class InventoryEditTests(unittest.TestCase):
             id="PHYS-1", categoria="punzon", tn="TN-100", size="A", type="ROUND", life="12", ubicacion="R-LEGACY",
         ))
         self.assertEqual((updated["ubicacion"], updated["life"]), ("R-LEGACY", "12.000"))
+
+    def test_punch_life_is_the_measured_height_minus_the_stripper_and_can_be_overridden(self):
+        punch = main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+            id="H-1", categoria="punzon", tn="TN-200", size="C", type="ROUND", altura="1.000",
+            proveedor=" wilson ", ubicacion="RACK-1",
+        ))
+        self.assertEqual((punch["altura_total"], punch["stripper"], punch["life"]), ("1.000", "0.300", "0.700"))
+        self.assertEqual((punch["proveedor"], punch["stripper_custom"], punch["life_alert"]), ("WILSON", False, False))
+
+        custom = main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+            id="H-2", categoria="punzon", tn="TN-200", size="C", type="ROUND", altura="1.000", stripper="0.250",
+        ))
+        self.assertEqual((custom["stripper"], custom["life"], custom["stripper_custom"]), ("0.250", "0.750", True))
+
+        with self.assertRaises(HTTPException) as too_short:
+            main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+                id="H-3", categoria="punzon", tn="TN-200", size="D", type="ROUND", altura="0.350",
+            ))
+        self.assertEqual(too_short.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as missing:
+            main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+                id="H-4", categoria="punzon", tn="TN-200", size="A", type="ROUND",
+            ))
+        self.assertIn("TOTAL HEIGHT", missing.exception.detail)
+
+        # The editable table of strippers changes the next calculation, and the minimum raises the alert.
+        original_session = main.tool_params.SessionLocal
+        main.tool_params.SessionLocal = self.session_factory
+        try:
+            main.tool_params.update_parameters(main.tool_params.ParametersUpdate(valores={"stripper_A": "0.280"}))
+            with self.assertRaises(HTTPException) as bad_value:
+                main.tool_params.update_parameters(main.tool_params.ParametersUpdate(valores={"stripper_Z": "1"}))
+        finally:
+            main.tool_params.SessionLocal = original_session
+        self.assertEqual(bad_value.exception.status_code, 422)
+        low = main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+            id="H-5", categoria="punzon", tn="TN-300", size="A", type="ROUND", altura="0.480",
+        ))
+        self.assertEqual((low["stripper"], low["life"], low["life_alert"]), ("0.280", "0.200", True))
+
+    def test_dies_alert_below_the_minimum_height_and_clearance_comes_from_a_list(self):
+        def die(tool_id, clearance, life="1.200"):
+            return main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+                id=tool_id, categoria="matriz", tn="TN-400", size="A", type="ROUND", life=life, clearance=clearance,
+            ))
+
+        self.assertFalse(die("D-1", "0.016")["life_alert"])
+        self.assertTrue(die("D-2", "0.016", life="1.050")["life_alert"])
+        for wrong in ("0.003", "0.031", "0.0165"):
+            with self.assertRaises(HTTPException) as caught:
+                die("D-X", wrong)
+            self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(die("D-3", "0.004")["clearance"], "0.004")
+        self.assertEqual(die("D-4", "0.030")["clearance"], "0.030")
+
+        # An old out-of-list value can stay while it is not changed.
+        session = self.session_factory()
+        try:
+            session.query(Herramienta).filter_by(id="D-1").one().clearance = "0.002"
+            session.commit()
+        finally:
+            session.close()
+        kept = main.actualizar_herramienta_inventario("D-1", main.RegistroInventarioUpdate(
+            id="D-1", categoria="matriz", tn="TN-400", size="A", type="ROUND", life="1.100", clearance="0.002",
+        ))
+        self.assertEqual(kept["clearance"], "0.002")
+
+    def test_inventory_listing_filters_by_column_and_keeps_the_supplier_when_it_is_not_sent(self):
+        main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+            id="F-1", categoria="punzon", tn="TN-500", size="A", type="2 RADIUS", life="0.700", proveedor="WILSON"))
+        main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+            id="F-2", categoria="punzon", tn="TN-501", size="B", type="ROUND", life="0.200", proveedor="AMADA"))
+        main.registrar_herramienta_inventario(main.RegistroInventarioCreate(
+            id="F-3", categoria="matriz", tn="TN-501", size="B", type="ROUND", life="1.200", clearance="0.016"))
+
+        def ids(**filters):
+            return [row["id"] for row in main.listar_inventario(**filters)["items"]]
+
+        self.assertEqual(ids(f_supplier="wilson"), ["F-1"])
+        self.assertEqual(ids(f_type="2 radius"), ["F-1"])
+        self.assertEqual(ids(f_tn="501"), ["F-2", "F-3"])
+        self.assertEqual(ids(f_size="B", categoria="matriz"), ["F-3"])
+        self.assertEqual(ids(f_clearance="0.016"), ["F-3"])
+        self.assertEqual(ids(f_alert="low"), ["F-2"])
+        self.assertEqual(ids(f_id="f-2"), ["F-2"])
+
+        main.actualizar_herramienta_inventario("F-1", main.RegistroInventarioUpdate(
+            id="F-1", categoria="punzon", tn="TN-500", size="A", type="2 RADIUS", life="0.650"))
+        self.assertEqual(ids(f_supplier="WILSON"), ["F-1"])
+        cleared = main.actualizar_herramienta_inventario("F-1", main.RegistroInventarioUpdate(
+            id="F-1", categoria="punzon", tn="TN-500", size="A", type="2 RADIUS", life="0.650", proveedor=""))
+        self.assertIsNone(cleared["proveedor"])
+        options = main.opciones_inventario()
+        self.assertEqual(options["proveedores"], ["AMADA"])
+        self.assertEqual(options["claridades"][0], "0.004")
+        self.assertEqual(options["claridades"][-1], "0.030")
+        self.assertEqual(len(options["claridades"]), 27)
+        self.assertIn("2 RADIUS", options["tipos"]["punzon"])
+
+    def test_a_tool_shows_its_own_image_or_the_one_of_its_tn(self):
+        import base64
+        import tempfile
+
+        import tool_images
+
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 20).decode()
+        jpeg = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xff\xe0" + b"y" * 20).decode()
+        self.create_punch(tool_id="IMG-1", tn="TN-IMG")
+        self.create_punch(tool_id="IMG-2", tn="TN-IMG")
+        original = (tool_images.SessionLocal, tool_images.IMAGE_DIR)
+        tool_images.SessionLocal = self.session_factory
+        with tempfile.TemporaryDirectory() as folder:
+            tool_images.IMAGE_DIR = folder
+            try:
+                with self.assertRaises(HTTPException) as none_yet:
+                    tool_images.get_tool_image("IMG-1")
+                self.assertEqual(none_yet.exception.status_code, 404)
+                with self.assertRaises(HTTPException) as not_image:
+                    tool_images.put_tool_image("IMG-1", tool_images.ImageUpload(data=base64.b64encode(b"hello").decode()))
+                self.assertEqual(not_image.exception.status_code, 422)
+                with self.assertRaises(HTTPException) as too_big:
+                    tool_images.put_tool_image("IMG-1", tool_images.ImageUpload(
+                        data=base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * (tool_images.MAX_IMAGE_BYTES + 1)).decode()))
+                self.assertEqual(too_big.exception.status_code, 413)
+
+                tool_images.put_tn_image("TN-IMG", tool_images.ImageUpload(data=png))
+                shared = tool_images.get_tool_image("IMG-2")
+                self.assertTrue(shared.path.endswith(".png"))
+                tool_images.put_tool_image("IMG-1", tool_images.ImageUpload(data=jpeg))
+                own = tool_images.get_tool_image("IMG-1")
+                self.assertTrue(own.path.endswith(".jpg"))
+                self.assertNotEqual(own.path, shared.path)
+                self.assertEqual(tool_images.get_tool_image("IMG-2").path, shared.path)
+                self.assertTrue(main.listar_inventario(f_id="IMG-1")["items"][0]["has_image"])
+
+                tool_images.delete_tool_image("IMG-1")
+                self.assertEqual(tool_images.get_tool_image("IMG-1").path, shared.path)
+                self.assertEqual(len(os.listdir(folder)), 1)
+            finally:
+                tool_images.SessionLocal, tool_images.IMAGE_DIR = original
 
     def test_a_tool_is_never_deleted(self):
         self.create_punch()

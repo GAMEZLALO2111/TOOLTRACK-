@@ -15,6 +15,7 @@ import scan_codes
 import shifts
 import tool_tracking_api
 import workflow_api
+from tn_tolerance import is_round
 from models.inventory import (
     BajaHerramienta,
     DemandaPlaneacion,
@@ -56,6 +57,7 @@ CAN_ATTEND_FOR_OTHERS = {"TOOLCRIB_SUPERVISOR", "SYSTEM_ADMIN"}
 MAX_NOTE_LENGTH = 500
 # A sharpening that removes more than this (inches) is abnormal and needs a justification.
 ABNORMAL_REBAJE = Decimal("0.020")
+MAX_REBAJE = Decimal("0.050")
 MIN_JUSTIFICATION_LENGTH = 10
 
 
@@ -72,6 +74,7 @@ class ServiceRequestCreate(BaseModel):
     operador: Optional[str] = None
     causa: Optional[str] = None
     momento: Optional[str] = None
+    cambio_piloto: bool = False
 
 
 class IncidentRecord(BaseModel):
@@ -332,6 +335,9 @@ def _read_many(db, rows):
                 "state": retirements[row.id].estado,
             } if row.id in retirements else None,
             "replacement_tool_id": row.herramienta_nueva_id,
+            "pilot_change": bool(row.cambio_piloto),
+            "installed_tn": row.tn_instalado,
+            "tn_difference": workflow_api.describe_difference(row.tn, row.tn_instalado) if row.tn_instalado else None,
             "destination": row.destino_codigo,
             "requested_by": row.solicitado_por,
             "requested_by_name": name(row.solicitado_por),
@@ -447,6 +453,13 @@ def create_service_request(item: ServiceRequestCreate):
         if not setup:
             raise HTTPException(status_code=409, detail="The machine has no registered setup")
         requirement = _position(db, code, setup, item)
+        if item.cambio_piloto:
+            if tipo not in ("replacement", "tool_request"):
+                raise HTTPException(status_code=422, detail="A pilot change only applies to a replacement or a tool request")
+            if not is_round(requirement.tn):
+                raise HTTPException(status_code=422, detail="A pilot change only applies to a round tool (TN 1xxxx)")
+            if len(note) < 5:
+                raise HTTPException(status_code=422, detail="Write which pilot size is needed and why")
         if _has_open_request(db, requirement, category):
             raise HTTPException(status_code=409, detail="This position already has an open request")
 
@@ -491,6 +504,7 @@ def create_service_request(item: ServiceRequestCreate):
             tipo=tipo,
             estado="open",
             nota=note or None,
+            cambio_piloto=bool(item.cambio_piloto),
             herramienta_id=tool.id if tool else None,
             solicitado_por=user.username,
             solicitado_en=workflow_api.utcnow(),
@@ -863,19 +877,21 @@ def collect_service_tool(request_id: int, item: ServiceCollect):
         db.close()
 
 
-def _candidate(db, setup, tn, category, tool_id, sources, machine_code=None, observed=False):
+def _candidate(db, setup, tn, category, tool_id, sources, machine_code=None, observed=False, pilot_change=False):
     """Tool that can be put on a position: right TN/type, usable, not committed elsewhere.
 
+    The TN may differ within the dimensional tolerance; a pilot change also accepts any other round tool.
     `observed` is for tools already mounted before MIRA tracked them: an unregistered or empty
     previous location is accepted, but a tool known to be in service, a cart or a machine is not.
     """
     tool = scan_codes.find_tool(db, tool_id, lock=True)
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_id}' is not in the inventory")
-    if tool.tn != tn or workflow_api._category(tool) != category:
+    fits = workflow_api._tn_fits(db, tn, tool.tn) or (pilot_change and is_round(tn) and is_round(tool.tn))
+    if not fits or workflow_api._category(tool) != category:
         raise HTTPException(
             status_code=409,
-            detail=f"Tool {tool.id} does not match this position (needs TN {tn}, {category}).",
+            detail=f"Tool {tool.id} does not match this position (needs TN {tn} within ±{workflow_api._tolerance(db):.3f} in., {category}).",
         )
     workflow_api._require_available(tool)
     location = db.query(Ubicacion).filter(
@@ -994,7 +1010,9 @@ def install_service_tool(request_id: int, item: ServiceInstall):
         ).with_for_update().one()
         if _slot(requirement, row.categoria):
             raise HTTPException(status_code=409, detail="This position already has a tool assigned")
-        tool, location = _candidate(db, setup, row.tn, row.categoria, tool_id, INSTALL_SOURCES)
+        tool, location = _candidate(
+            db, setup, row.tn, row.categoria, tool_id, INSTALL_SOURCES, pilot_change=bool(row.cambio_piloto),
+        )
         workflow_api._append_movement(
             db, tool, location.codigo, row.maquina_codigo, "service_install", user.username,
             details=f"{_folio(row)}: installed on station {row.estacion} ({row.categoria})"
@@ -1003,6 +1021,7 @@ def install_service_tool(request_id: int, item: ServiceInstall):
         )
         _set_slot(requirement, row.categoria, tool.id)
         row.herramienta_nueva_id = tool.id
+        row.tn_instalado = tool.tn
         row.recibida_en = workflow_api.utcnow()
         old_tool = db.query(Herramienta).filter(Herramienta.id == row.herramienta_id).first() if row.herramienta_id else None
         old_location = db.query(Ubicacion).filter(Ubicacion.codigo == old_tool.ubicacion).first() if old_tool else None
@@ -1106,16 +1125,20 @@ def finish_tool_service(request_id: int, item: ServiceFinish):
             rebaje = _decimal(item.rebaje, "The amount ground off").quantize(Decimal("0.001"))
             if rebaje < 0:
                 raise HTTPException(status_code=422, detail="The amount ground off cannot be negative")
+            if rebaje > MAX_REBAJE:
+                raise HTTPException(
+                    status_code=422, detail=f"The amount ground off cannot be more than {MAX_REBAJE} in.",
+                )
         abnormal = False
         if row.tipo == "sharpening" and rebaje is None:
             raise HTTPException(status_code=422, detail="Record how much was ground off (use 0 if nothing was removed)")
         if row.tipo in ("damage", "performance") and not note:
             raise HTTPException(status_code=422, detail="Describe what was found and repaired")
-        abnormal = rebaje is not None and rebaje > ABNORMAL_REBAJE
+        abnormal = rebaje is not None and rebaje >= ABNORMAL_REBAJE
         if abnormal and len(justification) < MIN_JUSTIFICATION_LENGTH:
             raise HTTPException(
                 status_code=422,
-                detail=f"More than {ABNORMAL_REBAJE} in. was ground off, which is abnormal: explain what happened "
+                detail=f"{ABNORMAL_REBAJE} in. or more was ground off, which is abnormal: explain what happened "
                        f"(at least {MIN_JUSTIFICATION_LENGTH} characters).",
             )
 
@@ -1129,6 +1152,11 @@ def finish_tool_service(request_id: int, item: ServiceFinish):
                     tool.life = life_after
             except (InvalidOperation, TypeError):
                 life_before = None
+            if tool.altura_total not in (None, ""):
+                try:
+                    tool.altura_total = format(max(Decimal("0"), Decimal(str(tool.altura_total)) - rebaje), ".3f")
+                except (InvalidOperation, TypeError):
+                    pass
         now = workflow_api.utcnow()
         db.add(ServicioHerramienta(
             herramienta_id=tool.id, solicitud_id=row.id, tipo=row.tipo, resultado=result_kind,

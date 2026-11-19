@@ -3,6 +3,7 @@ import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { ConfirmDialog, Dialog, ErrorNote } from "../components/Dialog";
 import { go } from "../router";
+import { KIT_STATE_LABEL } from "../labels";
 import type { MachineProfile, MachineStation, RunningMachine } from "../types";
 import { usePoll } from "../usePoll";
 
@@ -243,7 +244,7 @@ export function MachinesPage({ code }: { code: string | null }) {
           <Fact label="Current thickness" value={live?.thickness ? `${live.thickness} in` : "—"} />
           <Fact
             label="Kitting"
-            value={live?.kit_state ? `${live.kit_state} · cart ${live.kit_cart ?? "—"}` : "No open kit"}
+            value={live?.kit_state ? `${KIT_STATE_LABEL[live.kit_state]} · cart ${live.kit_cart ?? "—"}${live.kit_count && live.kit_count > 1 ? ` (+${live.kit_count - 1} in line)` : ""}` : "No open kit"}
           />
           <Fact label="Stations" value={`${machine.estaciones_disponibles} available · ${machine.estaciones_danadas} damaged`} />
         </section>
@@ -391,7 +392,7 @@ export function MachinesPage({ code }: { code: string | null }) {
                     <td>{live?.numero_parte ?? "—"}</td>
                     <td>{live?.thickness ? `${live.thickness} in` : "—"}</td>
                     <td>{row.estaciones_disponibles}/{row.estaciones_total} available</td>
-                    <td>{live?.kit_state ? `${live.kit_state} · ${live.kit_cart ?? ""}` : "—"}</td>
+                    <td>{live?.kit_state ? `${KIT_STATE_LABEL[live.kit_state]} · ${live.kit_cart ?? ""}${live.kit_count && live.kit_count > 1 ? ` (+${live.kit_count - 1})` : ""}` : "—"}</td>
                     <td className="row-actions">
                       <button className="btn" onClick={() => go(`/machines/${encodeURIComponent(row.codigo)}`)}>Details</button>
                     </td>

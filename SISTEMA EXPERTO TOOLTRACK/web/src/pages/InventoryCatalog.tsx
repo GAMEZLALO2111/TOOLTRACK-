@@ -109,7 +109,7 @@ export function CatalogTab() {
       )}
       {dialog?.kind === "tn" && <TnForm onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void load(); }} />}
       {dialog?.kind === "config" && options && <ConfigForm tns={tns} options={options} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void load(); }} />}
-      {dialog?.kind === "variant" && <VariantForm config={dialog.config} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void load(); }} />}
+      {dialog?.kind === "variant" && <VariantForm config={dialog.config} options={options} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); void load(); }} />}
     </div>
   );
 }
@@ -217,7 +217,7 @@ function ConfigForm({ tns, options, onClose, onSaved }: { tns: string[]; options
   );
 }
 
-function VariantForm({ config, onClose, onSaved }: { config: CatalogConfig; onClose: () => void; onSaved: () => void }) {
+function VariantForm({ config, options, onClose, onSaved }: { config: CatalogConfig; options: InvOptions | null; onClose: () => void; onSaved: () => void }) {
   const [category, setCategory] = useState("punzon");
   const [clearance, setClearance] = useState("");
   const { error, setError, busy, run } = useSave(onSaved);
@@ -238,8 +238,15 @@ function VariantForm({ config, onClose, onSaved }: { config: CatalogConfig; onCl
         </label>
         {category === "matriz" && (
           <label>
-            Clearance (up to 3 decimals)
-            <input inputMode="decimal" value={clearance} onChange={(event) => setClearance(event.target.value)} placeholder="e.g. 0.016" autoFocus />
+            Clearance
+            <select value={clearance} onChange={(event) => setClearance(event.target.value)} autoFocus>
+              <option value="">Select…</option>
+              {(options?.claridades ?? []).map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
           </label>
         )}
         <ErrorNote message={error} />

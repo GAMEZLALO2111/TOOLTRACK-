@@ -12,6 +12,7 @@ import workflow_api
 from models.inventory import (
     Base,
     BitacoraPrograma,
+    ComponenteSurtido,
     DemandaPlaneacion,
     EstadoMaquina,
     Herramienta,
@@ -1231,8 +1232,13 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(negative.exception.status_code, 422)
         for text in (None, "short"):
             with self.assertRaises(HTTPException) as abnormal:
-                service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.021, justificacion=text))
+                service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.02, justificacion=text))
             self.assertEqual(abnormal.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as too_much:
+            service.finish_tool_service(request["id"], service.ServiceFinish(
+                rebaje=0.051, justificacion="Chipped tip, had to remove extra material",
+            ))
+        self.assertEqual(too_much.exception.status_code, 422)
         self._as("eng1", "ENGINEERING")
         with self.assertRaises(HTTPException) as engineering:
             service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.01))
@@ -1254,6 +1260,29 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual((log[0]["part_number"], log[0]["station"], log[0]["machine"]), ("CURRENT", "201", "M1"))
         self.assertTrue(log[0]["abnormal"])
 
+    def test_sharpening_lowers_the_measured_height_together_with_the_life(self):
+        import service_requests_api as service
+
+        self._baseline()
+        session = self.session_factory()
+        try:
+            tool = session.query(Herramienta).filter_by(id="P100").one()
+            tool.life, tool.altura_total = "0.700", "0.950"
+            session.commit()
+        finally:
+            session.close()
+        request = self._open_request()
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.010))
+        session = self.session_factory()
+        try:
+            tool = session.query(Herramienta).filter_by(id="P100").one()
+            self.assertEqual((tool.life, tool.altura_total), ("0.690", "0.940"))
+        finally:
+            session.close()
+
     def test_sharpened_tool_returns_directly_to_the_machine_from_togu(self):
         import service_requests_api as service
 
@@ -1262,7 +1291,7 @@ class WorkflowApiTests(unittest.TestCase):
         self._as("tc1", "TOOLCRIB_OPERATOR")
         service.attend_service_request(request["id"])
         service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
-        service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.02))
+        service.finish_tool_service(request["id"], service.ServiceFinish(rebaje=0.019))
         session = self.session_factory()
         try:
             tool = session.query(Herramienta).filter_by(id="P100").one()
@@ -2306,6 +2335,342 @@ class WorkflowApiTests(unittest.TestCase):
             workflow_api.refresh_kit(kit["id"], workflow_api.SurtidoAction(realizado_por="op"))
         self.assertEqual(closed.exception.status_code, 409)
 
+    def test_same_tn_at_another_angle_stays_on_the_machine_and_a_finished_kit_is_ready_by_itself(self):
+        self._baseline()
+        self._create_tool("P300", "300", "punzon")
+        self._create_tool("D300", "300", "matriz", "0.016")
+        new_content = setup_text("NEXT", "0.075", [("245", "100", "90"), ("303", "300", "45")])
+
+        comparison = workflow_api.compare_with_machine_setup(workflow_api.SetupComparisonRequest(
+            maquina_codigo="M1", nombre_archivo="next.stp", contenido=new_content,
+        ))
+        self.assertEqual({row["tn"] for row in comparison["added_or_changed"] if row["punch_action"] == "new"}, {"300"})
+        tn100 = next(row for row in comparison["added_or_changed"] if row["tn"] == "100")
+        self.assertEqual((tn100["punch_action"], tn100["die_action"], tn100["previous_angle"]), ("keep", "keep", "0"))
+        self.assertEqual([row["tn"] for row in comparison["removed"]], ["200"])
+
+        kit = workflow_api.create_kit(workflow_api.SurtidoCreate(
+            maquina_codigo="M1", carro_codigo="C1", nombre_archivo="next.stp", contenido=new_content, creado_por="op",
+        ))
+        kept = [row for row in kit["components"] if row["tn"] == "100"]
+        self.assertEqual({row["action"] for row in kept}, {"keep"})
+        self.assertTrue(all(row["reorient"] and row["previous_angle"] == "0" for row in kept))
+        self.assertEqual(kit["state"], "preparing")
+
+        workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(herramienta_id="P300", realizado_por="op"))
+        done = workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(herramienta_id="D300", realizado_por="op"))
+        self.assertEqual(done["state"], "ready")
+        self.assertTrue(done["qr_token"])
+
+        delivered = workflow_api.confirm_kit_delivery(workflow_api.DeliveryScan(
+            scan_value=done["qr_token"], machine_scan="M1", realizado_por="op",
+        ))
+        self.assertEqual(delivered["delivered_tools"], 2)
+        self.assertEqual(delivered["pending_pickups_created"], 2)
+        session = self.session_factory()
+        try:
+            pending = {row.herramienta_id for row in session.query(PendienteRecoger).all()}
+            self.assertEqual(pending, {"P200", "D200"})
+        finally:
+            session.close()
+
+    def test_refresh_recomputes_a_kit_that_asked_again_for_a_tool_already_on_the_machine(self):
+        self._baseline()
+        new_content = setup_text("NEXT", "0.075", [("245", "100", "90")])
+        kit = workflow_api.create_kit(workflow_api.SurtidoCreate(
+            maquina_codigo="M1", carro_codigo="C1", nombre_archivo="NEXT.stp", contenido=new_content, creado_por="op",
+        ))
+        session = self.session_factory()
+        try:
+            session.add(Maquina(codigo="M1", tipo_maquina="4 Index", edificio="B1"))
+            session.add(ProgramaParte(
+                numero_parte="NEXT", tipo_maquina="4I", familia="F", tipo_programa="NPI", revision=1,
+                nombre_archivo="NEXT.stp", drawing_name="NEXT", material="Steel", thickness="0.075",
+                contenido=new_content, contenido_hash="h", requisitos_json="[]",
+                actualizado_por="eng", actualizado_en=workflow_api.utcnow(),
+            ))
+            # The same kit as an older version asked for the tool again (angle did not match).
+            for component in session.query(ComponenteSurtido).filter_by(surtido_id=kit["id"]):
+                component.accion, component.herramienta_nueva_id, component.estado = "new", None, "missing"
+            kit_row = session.query(Surtido).filter_by(id=kit["id"]).one()
+            kit_row.estado = "preparing"
+            kit_row.qr_token = None
+            session.commit()
+        finally:
+            session.close()
+
+        refreshed = workflow_api.refresh_kit(kit["id"], workflow_api.SurtidoAction(realizado_por="op"))
+        self.assertTrue(refreshed["changed"])
+        self.assertEqual({row["action"] for row in refreshed["kit"]["components"]}, {"keep"})
+        self.assertEqual(refreshed["kit"]["state"], "ready")
+
+    def _queued_kits(self):
+        self._baseline()
+        self._create_location("C2", "cart")
+        for tool_id, tn, category in (("P300", "300", "punzon"), ("D300", "300", "matriz"),
+                                      ("P500", "500", "punzon"), ("D500", "500", "matriz")):
+            self._create_tool(tool_id, tn, category, "0.016" if category == "matriz" else None)
+        first = workflow_api.create_kit(workflow_api.SurtidoCreate(
+            maquina_codigo="M1", carro_codigo="C1", nombre_archivo="PARTB.stp", creado_por="op",
+            contenido=setup_text("PARTB", "0.075", [("301", "100", "0"), ("303", "300", "45")]),
+        ))
+        second = workflow_api.create_kit(workflow_api.SurtidoCreate(
+            maquina_codigo="M1", carro_codigo="C2", nombre_archivo="PARTC.stp", creado_por="op",
+            contenido=setup_text("PARTC", "0.075", [("401", "100", "0"), ("405", "500", "45")]),
+        ))
+        return first, second
+
+    @staticmethod
+    def _scan(kit, *tool_ids):
+        state = None
+        for tool_id in tool_ids:
+            state = workflow_api.scan_kit_tool(kit["id"], workflow_api.SurtidoToolSelect(herramienta_id=tool_id, realizado_por="op"))
+        return state
+
+    @staticmethod
+    def _deliver(kit, **extra):
+        return workflow_api.confirm_kit_delivery(workflow_api.DeliveryScan(
+            scan_value=kit["qr_token"], machine_scan="M1", realizado_por="op", **extra))
+
+    def _tolerance_baseline(self, tn="30350.25"):
+        self._create_tool("PA", tn, "punzon")
+        self._create_tool("DA", tn, "matriz", "0.016")
+        workflow_api.create_machine_baseline(workflow_api.SetupBaselineCreate(
+            maquina_codigo="M1", nombre_archivo="old.stp", realizado_por="op",
+            contenido=setup_text("OLD", "0.075", [("201", tn, "0")]),
+            herramientas=[workflow_api.SetupAssignment(station="201", tn=tn, angle="0", punch_id="PA", die_id="DA")],
+        ))
+
+    def _tolerance_kit(self, tn):
+        return workflow_api.create_kit(workflow_api.SurtidoCreate(
+            maquina_codigo="M1", carro_codigo="C1", nombre_archivo="NEW.stp", creado_por="op",
+            contenido=setup_text("NEW", "0.075", [("301", tn, "0")]),
+        ))
+
+    def test_the_mounted_tool_is_kept_when_the_next_tn_is_within_tolerance(self):
+        self._tolerance_baseline()
+        close = self._tolerance_kit("30352.252")
+        self.assertEqual(close["state"], "ready")
+        self.assertEqual({row["action"] for row in close["components"]}, {"keep"})
+        self.assertTrue(all(row["substitute"] for row in close["components"]))
+        self.assertEqual({row["tn_difference"] for row in close["components"]}, {"-0.002 x -0.002"})
+
+    def test_a_gap_over_the_tolerance_is_a_new_tool(self):
+        self._tolerance_baseline()
+        far = self._tolerance_kit("30356.25")
+        self.assertEqual({row["action"] for row in far["components"]}, {"new"})
+
+    def test_stock_within_tolerance_fills_a_position_but_a_bigger_gap_does_not(self):
+        self._tolerance_baseline()
+        self._create_tool("PX", "30357.25", "punzon")
+        self._create_tool("DX", "30357.25", "matriz", "0.016")
+        self._create_tool("PFAR", "30361.25", "punzon")
+        kit = self._tolerance_kit("30356.25")
+        with self.assertRaises(HTTPException) as too_far:
+            self._scan(kit, "PFAR")
+        self.assertEqual(too_far.exception.status_code, 409)
+        done = self._scan(kit, "PX", "DX")
+        self.assertEqual(done["state"], "ready")
+        self.assertTrue(all(row["substitute"] for row in done["components"]))
+
+    def _pilot_machine(self):
+        self._tolerance_baseline("10230")
+        self._create_tool("PBIG", "10240", "punzon")
+        self._ensure_user("op1")
+        self._ensure_user("tc1", role="TOOLCRIB_OPERATOR")
+
+    def _replacement(self, **extra):
+        import service_requests_api as service
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        return service.create_service_request(service.ServiceRequestCreate(
+            machine="M1", requirement_id=self._requirement_id("201"), category="punzon",
+            tipo="replacement", tool_id="PA", **extra,
+        ))
+
+    def _bring_to_install(self, request):
+        import service_requests_api as service
+
+        self._as("tc1", "TOOLCRIB_OPERATOR")
+        service.attend_service_request(request["id"])
+        service.collect_service_tool(request["id"], service.ServiceCollect(destino_codigo="TG1"))
+        self._as("op1", "PUNCHING_OPERATOR")
+
+    def test_a_round_outside_the_tolerance_is_rejected_unless_the_request_is_a_pilot_change(self):
+        import service_requests_api as service
+
+        self._pilot_machine()
+        request = self._replacement()
+        self._bring_to_install(request)
+        with self.assertRaises(HTTPException) as rejected:
+            service.install_service_tool(request["id"], service.ServiceInstall(tool_id="PBIG"))
+        self.assertEqual(rejected.exception.status_code, 409)
+
+    def test_pilot_change_accepts_any_round_and_keeps_the_requested_against_the_installed(self):
+        import service_requests_api as service
+
+        self._pilot_machine()
+        with self.assertRaises(HTTPException) as no_reason:
+            self._replacement(cambio_piloto=True)
+        self.assertEqual(no_reason.exception.status_code, 422)
+        request = self._replacement(cambio_piloto=True, nota="Need a 0.240 pilot for the new countersink")
+        self.assertTrue(request["pilot_change"])
+        self._bring_to_install(request)
+        installed = service.install_service_tool(request["id"], service.ServiceInstall(tool_id="PBIG"))
+        self.assertEqual((installed["tn"], installed["installed_tn"], installed["tn_difference"]), ("10230", "10240", "+0.010"))
+        slot = self._slot_state("201", "punzon")
+        self.assertEqual((slot["tool_id"], slot["state"], slot["pilot_change"]), ("PBIG", "installed", True))
+
+    def test_a_pilot_change_only_applies_to_round_tools(self):
+        import service_requests_api as service
+
+        self._baseline()
+        self._ensure_user("op1")
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as not_round:
+            service.create_service_request(service.ServiceRequestCreate(
+                machine="M1", requirement_id=self._requirement_id("202"), category="punzon",
+                tipo="replacement", tool_id="P200", cambio_piloto=True, nota="Bigger pilot",
+            ))
+        self.assertEqual(not_round.exception.status_code, 422)
+
+    def test_consecutive_kits_of_one_machine_are_picked_together_and_delivered_in_line(self):
+        first, second = self._queued_kits()
+        self.assertEqual((first["queue_position"], second["queue_position"]), (1, 2))
+        self.assertEqual([row["part_number"] for row in second["ahead"]], ["PARTB"])
+        # PARTC is compared against PARTB: TN 100 stays and TN 300 leaves.
+        self.assertEqual({row["action"] for row in second["components"] if row["tn"] == "100"}, {"keep"})
+
+        # Another person finishes PARTC while PARTB is still being picked: it is complete and waits.
+        done_second = self._scan(second, "P500", "D500")
+        self.assertEqual(done_second["state"], "ready")
+        self.assertEqual(workflow_api.get_kit(first["id"])["state"], "preparing")
+
+        with self.assertRaises(HTTPException) as out_of_line:
+            self._deliver(done_second)
+        self.assertEqual(out_of_line.exception.status_code, 409)
+        self.assertIn("OUT_OF_ORDER", out_of_line.exception.detail)
+        self.assertIn("PARTB", out_of_line.exception.detail)
+
+        done_first = self._scan(first, "P300", "D300")
+        self.assertEqual(done_first["state"], "ready")
+        self.assertEqual(self._deliver(done_first)["pending_pickups_created"], 2)
+        after_first = workflow_api.get_kit(second["id"])
+        self.assertEqual((after_first["queue_position"], after_first["alerts"]), (1, []))
+
+        delivered = self._deliver(done_second)
+        self.assertEqual((delivered["delivered_tools"], delivered["pending_pickups_created"]), (2, 2))
+        session = self.session_factory()
+        try:
+            active = session.query(EstadoMaquina).filter_by(maquina_codigo="M1").one()
+            self.assertEqual(session.query(Setup).filter_by(id=active.setup_activo_id).one().nombre_archivo, "PARTC.stp")
+            removed = {row.herramienta_id for row in session.query(PendienteRecoger).filter_by(surtido_id=second["id"])}
+            self.assertEqual(removed, {"P300", "D300"})
+        finally:
+            session.close()
+
+    def test_a_kit_can_be_delivered_out_of_line_with_a_reason_and_the_others_are_warned(self):
+        first, second = self._queued_kits()
+        self._scan(first, "P300", "D300")
+        done_second = self._scan(second, "P500", "D500")
+
+        with self.assertRaises(HTTPException) as no_reason:
+            self._deliver(done_second, fuera_de_orden=True, motivo_orden="  ")
+        self.assertIn("OUT_OF_ORDER", no_reason.exception.detail)
+
+        delivered = self._deliver(done_second, fuera_de_orden=True, motivo_orden="PARTB material is late")
+        self.assertEqual(delivered["delivered_tools"], 2)
+        warned = workflow_api.get_kit(first["id"])
+        self.assertEqual(warned["state"], "ready")
+        self.assertTrue(warned["alerts"])
+        # Compared against what is mounted now, the waiting kit is brought up to date.
+        refreshed = workflow_api.refresh_kit(first["id"], workflow_api.SurtidoAction(realizado_por="op"))
+        self.assertTrue(refreshed["changed"])
+        self.assertEqual(refreshed["kit"]["alerts"], [])
+
+    def test_cancelling_a_kit_warns_the_one_behind_it(self):
+        first, second = self._queued_kits()
+        self._scan(second, "P500", "D500")
+        self.assertEqual(workflow_api.get_kit(second["id"])["alerts"], [])
+        workflow_api.cancel_kit(first["id"], workflow_api.SurtidoAction(realizado_por="op", motivo="wrong part"))
+        warned = workflow_api.get_kit(second["id"])
+        self.assertEqual(warned["queue_position"], 1)
+        self.assertTrue(warned["alerts"])
+        refreshed = workflow_api.refresh_kit(second["id"], workflow_api.SurtidoAction(realizado_por="op"))
+        self.assertEqual(refreshed["kit"]["alerts"], [])
+        self.assertEqual({row["action"] for row in refreshed["kit"]["components"] if row["tn"] == "100"}, {"keep"})
+
+    def test_a_kit_in_line_can_be_compared_by_hand_against_any_part_when_the_user_chooses_it(self):
+        self._queued_kits()
+        self._create_location("C3", "cart")
+        other_text = setup_text("OTHER", "0.075", [("201", "100", "0")])
+        with self.assertRaises(HTTPException) as refused:
+            workflow_api.create_kit(workflow_api.SurtidoCreate(
+                maquina_codigo="M1", carro_codigo="C3", nombre_archivo="PARTD.stp", creado_por="op",
+                contenido=setup_text("PARTD", "0.075", [("301", "100", "0"), ("302", "200", "90")]),
+                setup_anterior_nombre="OTHER.stp", setup_anterior_contenido=other_text,
+            ))
+        self.assertEqual(refused.exception.status_code, 409)
+        kit = workflow_api.create_kit(workflow_api.SurtidoCreate(
+            maquina_codigo="M1", carro_codigo="C3", nombre_archivo="PARTD.stp", creado_por="op",
+            contenido=setup_text("PARTD", "0.075", [("301", "100", "0"), ("302", "200", "90")]),
+            setup_anterior_nombre="OTHER.stp", setup_anterior_contenido=other_text, comparacion_manual=True,
+        ))
+        self.assertTrue(kit["anterior_manual"])
+        actions = {(row["tn"], row["category"]): row["action"] for row in kit["components"]}
+        # OTHER has TN 100 (its tools are carried from the kit before it) and no TN 200.
+        self.assertEqual(actions, {("100", "punzon"): "keep", ("100", "matriz"): "keep",
+                                   ("200", "punzon"): "new", ("200", "matriz"): "new"})
+
+    def test_a_manual_comparison_does_not_change_what_the_system_has_on_the_machine(self):
+        self._baseline()
+        other_text = setup_text("OTHER", "0.075", [("201", "100", "0")])
+        new_text = setup_text("NEWPART", "0.075", [("301", "100", "0"), ("302", "200", "90")])
+        with self.assertRaises(HTTPException) as mismatch:
+            workflow_api.create_kit(workflow_api.SurtidoCreate(
+                maquina_codigo="M1", carro_codigo="C1", nombre_archivo="NEWPART.stp", creado_por="op",
+                contenido=new_text, setup_anterior_nombre="OTHER.stp", setup_anterior_contenido=other_text,
+            ))
+        self.assertIn("SETUP_NO_COINCIDE", str(mismatch.exception.detail))
+        kit = workflow_api.create_kit(workflow_api.SurtidoCreate(
+            maquina_codigo="M1", carro_codigo="C1", nombre_archivo="NEWPART.stp", creado_por="op",
+            contenido=new_text, setup_anterior_nombre="OTHER.stp", setup_anterior_contenido=other_text,
+            comparacion_manual=True,
+        ))
+        self.assertTrue(kit["anterior_manual"])
+        self.assertEqual({row["action"] for row in kit["components"] if row["tn"] == "100"}, {"keep"})
+        self.assertEqual({row["action"] for row in kit["components"] if row["tn"] == "200"}, {"new"})
+        session = self.session_factory()
+        try:
+            active = session.query(EstadoMaquina).filter_by(maquina_codigo="M1").one()
+            self.assertEqual(session.query(Setup).filter_by(id=active.setup_activo_id).one().nombre_archivo, "current.stp")
+        finally:
+            session.close()
+
+    def test_a_kit_in_line_can_be_compared_by_hand_against_the_mounted_part_but_not_an_unknown_one(self):
+        first, _second = self._queued_kits()
+        self._create_location("C3", "cart")
+        current_text = setup_text("CURRENT", "0.075", [("201", "100", "0"), ("202", "200", "90")])
+        with self.assertRaises(HTTPException) as unknown:
+            workflow_api.create_kit(workflow_api.SurtidoCreate(
+                maquina_codigo="M1", carro_codigo="C3", nombre_archivo="PARTD.stp", creado_por="op",
+                contenido=setup_text("PARTD", "0.075", [("301", "100", "0")]),
+                setup_anterior_nombre="OTHER.stp", setup_anterior_contenido=current_text,
+            ))
+        self.assertEqual(unknown.exception.status_code, 409)
+
+        manual = workflow_api.create_kit(workflow_api.SurtidoCreate(
+            maquina_codigo="M1", carro_codigo="C3", nombre_archivo="PARTD.stp", creado_por="op",
+            contenido=setup_text("PARTD", "0.075", [("301", "100", "0"), ("202", "200", "90")]),
+            setup_anterior_nombre="current.stp", setup_anterior_contenido=current_text,
+        ))
+        # Against what is mounted, TN 100 and TN 200 both stay; against the kit in front TN 200 would be new.
+        self.assertTrue(manual["anterior_manual"])
+        self.assertEqual({row["action"] for row in manual["components"]}, {"keep"})
+        self.assertEqual(manual["alerts"], [])
+        self.assertEqual(manual["queue_position"], 3)
+        self.assertEqual(workflow_api.get_kit(first["id"])["alerts"], [])
+
     def test_pick_sheet_lists_what_is_missing_by_rack_with_alternates(self):
         _, kit = self._create_new_setup_kit()
         self._create_tool("D300B", "300", "matriz", "0.021")
@@ -2399,9 +2764,6 @@ class WorkflowApiTests(unittest.TestCase):
 
         self._as("op1", "PUNCHING_OPERATOR")
         demandas_api.actualizar_demanda(demand_id, demandas_api.DemandaUpdate(piezas_producidas=10))
-        with self.assertRaises(HTTPException) as too_many:
-            demandas_api.actualizar_demanda(demand_id, demandas_api.DemandaUpdate(piezas_producidas=101))
-        self.assertEqual(too_many.exception.status_code, 400)
 
         request = ops.request_part_number("M1", ops.PartRequestCreate(demand_id=demand_id))
         self.assertEqual((request["type"], request["state"], request["part_number"], request["work_order"], request["quantity"]),

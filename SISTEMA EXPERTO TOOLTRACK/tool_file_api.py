@@ -10,6 +10,8 @@ from sqlalchemy import func
 import auth
 import records_api
 import scan_codes
+import tool_images
+import tool_params
 import tool_tracking_api
 import workflow_api
 from models.inventory import (
@@ -17,6 +19,7 @@ from models.inventory import (
     HerramientaCatalogo,
     IncidenteHerramienta,
     MovimientoHerramienta,
+    NumeroHerramienta,
     ServicioHerramienta,
     SolicitudServicio,
     TicketMantenimiento,
@@ -52,14 +55,25 @@ def get_tool_file(tool_id: str):
             raise HTTPException(status_code=404, detail=f"Tool '{tool_id}' is not in the inventory")
         described = tool_tracking_api._describe_tool(db, tool, *tool_tracking_api._location_context(db))
         linked = db.query(HerramientaCatalogo.variante_id).filter(HerramientaCatalogo.herramienta_id == tool.id).first()
+        params = tool_params.load(db)
+        stripper = tool_params.stripper_for(params, tool.size, tool.stripper_override) if tool.categoria == "punzon" else None
+        tn_row = db.query(NumeroHerramienta).filter(NumeroHerramienta.tn == tool.tn).first() if tool.tn else None
         identity = {
             "id": tool.id,
             "tn": tool.tn,
             "size": tool.size,
             "type": tool.type,
             "life": tool.life,
+            "altura_total": tool.altura_total,
+            "stripper": f"{stripper:.3f}" if stripper is not None else None,
+            "stripper_custom": bool(tool.stripper_override),
+            "life_alert": tool_params.life_alert(tool.categoria, tool.life, params),
+            "life_minimum": f"{params['punch_min_life' if tool.categoria == 'punzon' else 'die_min_height']:.3f}"
+            if tool.categoria in ("punzon", "matriz") else None,
             "clearance": tool.clearance,
             "so": tool.so,
+            "proveedor": tool.proveedor,
+            "image": tool_images.image_source(tool, tn_row),
             "categoria": tool.categoria,
             "ubicacion": tool.ubicacion,
             "catalog_linked": linked is not None and linked[0] is not None,

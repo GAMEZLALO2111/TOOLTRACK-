@@ -101,6 +101,7 @@ export interface RunningMachine {
   since: string | null;
   kit_state: KitState | null;
   kit_cart: string | null;
+  kit_count?: number;
 }
 
 export interface MachineStation {
@@ -152,6 +153,9 @@ export interface ServiceRequest {
   tool_location: string | null;
   service: ToolServiceResult | null;
   replacement_tool_id: string | null;
+  pilot_change?: boolean;
+  installed_tn?: string | null;
+  tn_difference?: string | null;
   destination: string | null;
   requested_by: string;
   requested_by_name: string;
@@ -345,6 +349,9 @@ export interface ManufacturingWorkspace {
       tool_status: string | null;
       clearance: string | null;
       clearance_valid: boolean | null;
+      substitute?: boolean;
+      pilot_change?: boolean;
+      tn_difference?: string | null;
       state: "installed" | "missing" | "elsewhere" | "incompatible";
       open_request: ServiceRequest | null;
     }[];
@@ -369,6 +376,9 @@ export interface CartRow {
   total: number;
   pending: { tn: string; category: string }[];
   reason: string | null;
+  part_number?: string | null;
+  queue_position?: number | null;
+  alerts?: string[];
 }
 
 export interface KitOverview {
@@ -390,6 +400,8 @@ export interface KitPlan {
   machine: string;
   tipo: string;
   mounted_part: string | null;
+  automatic_part?: string | null;
+  manual_comparison?: boolean;
   current_part: string | null;
   new_part: string;
   needs_current: boolean;
@@ -418,6 +430,13 @@ export interface KitComponent {
   category: string;
   action: "new" | "keep" | "replace";
   previous_tool_id: string | null;
+  previous_angle?: string | null;
+  reorient?: boolean;
+  tool_tn?: string | null;
+  substitute?: boolean;
+  tn_difference?: string | null;
+  life_alert?: boolean;
+  previous_tn?: string | null;
   tool_id: string | null;
   state: "missing" | "ready" | "cancelled";
   source_location: string | null;
@@ -436,6 +455,10 @@ export interface Kit {
   qr_token: string | null;
   created_at: string;
   delivered_at: string | null;
+  queue_position?: number | null;
+  queue_total?: number;
+  ahead?: { kit_id: string; part_number: string | null; cart: string; state: KitState }[];
+  alerts?: string[];
   components: KitComponent[];
   warnings?: string[];
 }
@@ -457,6 +480,9 @@ export interface Candidate {
   clearance: string | null;
   life: string | null;
   location: string;
+  substitute?: boolean;
+  tn_difference?: string | null;
+  life_alert?: boolean;
 }
 
 export interface PickSheet {
@@ -572,6 +598,14 @@ export interface InvRow {
   size: string | null;
   type: string | null;
   life: string | null;
+  altura_total?: string | null;
+  stripper?: string | null;
+  stripper_custom?: boolean;
+  life_alert?: boolean;
+  life_minimum?: string | null;
+  proveedor?: string | null;
+  has_image?: boolean;
+  image?: string | null;
   clearance: string | null;
   so: string | null;
   categoria: string;
@@ -591,8 +625,20 @@ export interface InvPage {
 export interface InvOptions {
   categorias: string[];
   tipos: Record<string, string[]>;
+  tipos_en_uso?: string[];
   sizes: string[];
   estados: string[];
+  proveedores?: string[];
+  claridades?: string[];
+  stripper_por_tamano?: Record<string, string>;
+  vida_minima_punzon?: string;
+  altura_minima_matriz?: string;
+}
+
+export interface ToolParameters {
+  valores: Record<string, string>;
+  por_defecto: Record<string, string>;
+  tamanos: string[];
 }
 
 export interface CatalogConfig {

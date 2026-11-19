@@ -1,4 +1,5 @@
 import tkinter as tk
+import urllib.parse
 from datetime import datetime, timedelta
 from tkinter import messagebox, simpledialog, ttk
 
@@ -21,7 +22,7 @@ NIVELES = {
 ESTADO_COLORS = {
     "TERMINADO": "#C6EFCE",
     "CORRIENDO": "#BDD7EE",
-    "EN MÁQUINA": "#CDEBC5",
+    "KIT LISTO": "#CDEBC5",
     "SURTIENDO": "#FFE699",
     "FALTA HERRAMIENTAS": "#F4B183",
     "NO INICIADO": "#E7E9ED",
@@ -297,14 +298,14 @@ class DemandBoardWindow:
         tk.Label(body, text=summary, bg="white", fg="#555", font=(FONT, 9), anchor="w").pack(
             fill=tk.X, pady=(4, 0))
 
-        if siguiente and siguiente["estado"] != "EN MÁQUINA" and api_client.can("kitting.operate"):
+        if siguiente and siguiente["estado"] != "KIT LISTO" and api_client.can("kitting.operate"):
             urgent_btn = urgent
             tk.Button(card, text="⚠ SURTIR SIGUIENTE YA" if urgent_btn else "Surtir siguiente",
                       bg="#C0392B" if urgent_btn else "#1F3864", fg="white", relief=tk.FLAT,
                       font=(FONT, 10, "bold"), cursor="hand2", pady=4,
                       command=lambda m=machine["maquina"], np=siguiente["numero_parte"]: self.on_surtir(m, np)
                       ).pack(fill=tk.X, padx=10, pady=(0, 10))
-        elif siguiente and siguiente["estado"] != "EN MÁQUINA":
+        elif siguiente and siguiente["estado"] != "KIT LISTO":
             tk.Label(card, text="⚠ Siguiente por surtir" if urgent else "Siguiente por surtir", bg="white",
                      fg="#C0392B" if urgent else "#555", font=(FONT, 9, "bold")).pack(pady=(0, 10))
         elif not siguiente and machine["nivel"] == "SIN_COLA" and api_client.can("demand.manage"):
@@ -480,10 +481,15 @@ class DemandBoardWindow:
 
     def delete_item(self, machine, item):
         parent = self._action_parent()
-        if not messagebox.askyesno("Quitar demanda",
-                                   f"¿Quitar {item['numero_parte']} de {machine['maquina']}?", parent=parent):
+        reason = simpledialog.askstring(
+            "Quitar demanda",
+            f"¿Por qué se quita {item['numero_parte']} de {machine['maquina']}? Lo producido se conserva en el historial.",
+            parent=parent)
+        if not reason or len(reason.strip()) < 3:
             return
-        if self._api("DELETE", f"{DEMANDAS_URL}/{item['id']}", parent=parent) is not None:
+        state = "terminada" if item["pendiente"] == 0 else "cancelada"
+        url = f"{DEMANDAS_URL}/{item['id']}?estado={state}&motivo={urllib.parse.quote(reason.strip())}"
+        if self._api("DELETE", url, parent=parent) is not None:
             self.refresh()
 
     def _demand_dialog(self, parent, title, preset_code, editing):

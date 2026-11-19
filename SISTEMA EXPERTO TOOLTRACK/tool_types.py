@@ -7,9 +7,16 @@ PUNCH_DIE_TYPES = (
     "SPECIAL",
     "FORMED",
     "1 RADIUS",
-    "2 RADII",
-    "4 RADII",
+    "2 RADIUS",
+    "4 RADIUS",
 )
+
+# Names used before the rename; data stored with them is migrated at startup.
+LEGACY_TYPE_NAMES = {
+    "2 RADII": "2 RADIUS",
+    "4 RADII": "4 RADIUS",
+    "REDONDO": "ROUND",
+}
 
 HOLDER_TYPES = tuple(f"HOLDER {size}" for size in "ABCDE")
 

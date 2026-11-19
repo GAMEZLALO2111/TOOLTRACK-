@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
+from sqlalchemy import Float, cast, func
 from sqlalchemy.exc import IntegrityError
 from catalog_reconciliation import preview_legacy_reconciliation
 from models.inventory import (
@@ -30,7 +31,7 @@ from models.inventory import (
     VarianteHerramienta,
     Base,
 )
-from tool_types import ALL_INVENTORY_TYPES, INVENTORY_TYPES_BY_CATEGORY, PUNCH_DIE_TYPES
+from tool_types import ALL_INVENTORY_TYPES, INVENTORY_TYPES_BY_CATEGORY, LEGACY_TYPE_NAMES, PUNCH_DIE_TYPES
 from db import DB_PATH, SessionLocal, engine
 from workflow_api import router as workflow_router, seed_default_locations
 from tool_tracking_api import router as tool_tracking_router
@@ -44,8 +45,12 @@ from maintenance_api import router as maintenance_router
 from retirement_api import router as retirement_router
 from machine_operators_api import router as machine_operators_router
 from insights_api import router as insights_router
+from planning_api import router as planning_router
 from records_api import router as records_router
 from tool_file_api import router as tool_file_router
+from tool_params import router as tool_params_router
+import tool_params
+from tool_images import router as tool_images_router
 from auth import AuthMiddleware, normalize_role as _canonical_role
 from passwords import hash_password, verify_password, secrets_compare, ensure_password_hash
 from planning import calcular_planeacion
@@ -64,8 +69,11 @@ app.include_router(maintenance_router)
 app.include_router(retirement_router)
 app.include_router(machine_operators_router)
 app.include_router(insights_router)
+app.include_router(planning_router)
 app.include_router(records_router)
 app.include_router(tool_file_router)
+app.include_router(tool_params_router)
+app.include_router(tool_images_router)
 # Aplicación web (web/dist). Se compila con build_web.bat; sin compilar, "/" avisa cómo hacerlo.
 WEB_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
 if os.path.isdir(os.path.join(WEB_DIST, "assets")):
@@ -341,6 +349,8 @@ def ensure_surtido_columns():
     columns = [row[1] for row in cursor.fetchall()]
     if columns and 'motivo' not in columns:
         cursor.execute("ALTER TABLE surtidos ADD COLUMN motivo TEXT")
+    if columns and 'anterior_manual' not in columns:
+        cursor.execute("ALTER TABLE surtidos ADD COLUMN anterior_manual BOOLEAN NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -375,15 +385,14 @@ def ensure_planeacion_columns():
 
 
 def ensure_unique_open_kits(path='tooltrack.db'):
-    """Un solo surtido abierto por máquina y por carro, garantizado por la base (evita carreras entre operadores)."""
+    """Un solo surtido abierto por carro, garantizado por la base. Una máquina puede tener varios en fila."""
     conn = sqlite3.connect(path)
     try:
-        for name, column in (("uq_surtido_abierto_maquina", "maquina_codigo"),
-                             ("uq_surtido_abierto_carro", "carro_codigo")):
-            conn.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON surtidos({column}) "
-                "WHERE estado IN ('preparing', 'paused', 'ready')"
-            )
+        conn.execute("DROP INDEX IF EXISTS uq_surtido_abierto_maquina")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_surtido_abierto_carro ON surtidos(carro_codigo) "
+            "WHERE estado IN ('preparing', 'paused', 'ready')"
+        )
         conn.commit()
     except sqlite3.IntegrityError:
         # Ya existen surtidos abiertos duplicados: no se bloquea el arranque, pero queda sin candado.
@@ -392,9 +401,72 @@ def ensure_unique_open_kits(path='tooltrack.db'):
         conn.close()
 
 
+def ensure_tool_inventory_columns(path=None):
+    """Altura medida, stripper propio e imágenes; y los tipos con nombre anterior pasan al nombre vigente."""
+    conn = sqlite3.connect(path or DB_PATH)
+    try:
+        for table, new_columns in (
+            ("herramientas", {"altura_total": "TEXT", "stripper_override": "TEXT", "imagen": "TEXT"}),
+            ("numeros_herramienta", {"imagen": "TEXT"}),
+            ("solicitudes_servicio", {"cambio_piloto": "INTEGER NOT NULL DEFAULT 0", "tn_instalado": "TEXT"}),
+        ):
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if not existing:
+                continue
+            for column, kind in new_columns.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        for old, new in LEGACY_TYPE_NAMES.items():
+            for table in ("herramientas", "configuraciones_tn"):
+                try:
+                    conn.execute(f"UPDATE {table} SET type=? WHERE type=?", (new, old))
+                except sqlite3.OperationalError:
+                    pass
+        conn.commit()
+    finally:
+        conn.close()
+
+
 ensure_surtido_columns()
 ensure_planeacion_columns()
 ensure_unique_open_kits()
+ensure_tool_inventory_columns()
+
+
+def ensure_production_log(path=None):
+    """Cierre de demandas y registro histórico de producción; lo ya producido entra como saldo inicial."""
+    conn = sqlite3.connect(path or DB_PATH)
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(demandas_planeacion)")}
+        if not existing:
+            return
+        for column, kind in (
+            ("estado_cierre", "TEXT"), ("motivo_cierre", "TEXT"), ("cerrado_por", "TEXT"), ("cerrado_en", "DATETIME"),
+        ):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE demandas_planeacion ADD COLUMN {column} {kind}")
+        conn.execute("UPDATE demandas_planeacion SET numero_parte = UPPER(numero_parte) WHERE numero_parte != UPPER(numero_parte)")
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='registros_produccion'").fetchone():
+            return
+        conn.execute(
+            """
+            INSERT INTO registros_produccion
+                (demanda_id, numero_parte, maquina_codigo, piezas, fecha_produccion, fecha_estimada,
+                 fuente, capturado_por, capturado_en, nota)
+            SELECT d.id, d.numero_parte, d.maquina_codigo, d.piezas_producidas, d.actualizado_en, 1,
+                   'saldo_inicial', 'migration', CURRENT_TIMESTAMP,
+                   'Produced before the history existed; the date is the last update of the demand'
+            FROM demandas_planeacion d
+            WHERE d.piezas_producidas > 0
+              AND NOT EXISTS (SELECT 1 FROM registros_produccion r WHERE r.demanda_id = d.id)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+ensure_production_log()
 
 class HerramientaCreate(BaseModel):
     id: str
@@ -448,8 +520,11 @@ class RegistroInventarioCreate(BaseModel):
     tn: Optional[str] = None
     size: Optional[str] = None
     life: Optional[str] = None
+    altura: Optional[str] = None  # Punzones: altura total medida de la punta
+    stripper: Optional[str] = None  # Espesor del stripper propio (si no, el de su tamaño)
     clearance: Optional[str] = None
     so: Optional[str] = None
+    proveedor: Optional[str] = None
     ubicacion: Optional[str] = None
 
 class RegistroInventarioUpdate(RegistroInventarioCreate):
@@ -618,6 +693,8 @@ def crear_variante_herramienta(tn: str, size: str, item: VarianteHerramientaCrea
         if clearance_value.normalize().as_tuple().exponent < -3:
             raise HTTPException(status_code=422, detail="CLEARANCE supports at most three decimal places")
         clearance = f"{clearance_value:.3f}"
+        if clearance not in CLEARANCE_CHOICES:
+            raise HTTPException(status_code=422, detail="CLEARANCE must be chosen from 0.004 to 0.030 in steps of 0.001")
 
     db = SessionLocal()
     try:
@@ -759,11 +836,36 @@ def crear_herramienta_catalogada(item: HerramientaCatalogoCreate):
     finally:
         db.close()
 
+CLEARANCE_CHOICES = tuple(f"{Decimal(step) / 1000:.3f}" for step in range(4, 31))
+
+
+def _three_decimals(text: str, label: str) -> Decimal:
+    try:
+        value = Decimal(text.strip())
+    except InvalidOperation:
+        raise HTTPException(status_code=422, detail=f"{label} must be numeric") from None
+    if not value.is_finite() or value < 0:
+        raise HTTPException(status_code=422, detail=f"{label} must be a non-negative number")
+    if value.normalize().as_tuple().exponent < -3:
+        raise HTTPException(status_code=422, detail=f"{label} supports at most three decimal places")
+    return value
+
+
+def _same_decimal(stored: str, value: Decimal) -> bool:
+    try:
+        return Decimal(str(stored)) == value
+    except InvalidOperation:
+        return False
+
+
 def normalize_inventory_item(
     item: RegistroInventarioCreate,
     existing_type: Optional[str] = None,
     existing_category: Optional[str] = None,
+    params=None,
+    existing_clearance: Optional[str] = None,
 ):
+    params = params or {key: Decimal(value) for key, value in tool_params.DEFAULTS.items()}
     tool_id = item.id.strip()
     categoria_input = item.categoria.strip().lower()
     categoria_aliases = {
@@ -798,21 +900,33 @@ def normalize_inventory_item(
     size = item.size.strip().upper() if item.size else ""
     clearance = None
     life = None
+    altura_total = None
+    stripper_override = None
 
     if categoria in {"punzon", "matriz"}:
         if not tn or size not in {"A", "B", "C", "D", "E"}:
             raise HTTPException(status_code=422, detail="TN and SIZE A-E are required for punches and dies")
-        if not item.life or not item.life.strip():
-            raise HTTPException(status_code=422, detail="LIFE is required for punches and dies")
-        try:
-            life_value = Decimal(item.life.strip())
-        except InvalidOperation:
-            raise HTTPException(status_code=422, detail="LIFE must be numeric")
-        if not life_value.is_finite() or life_value < 0:
-            raise HTTPException(status_code=422, detail="LIFE must be a non-negative number")
-        if life_value.normalize().as_tuple().exponent < -3:
-            raise HTTPException(status_code=422, detail="LIFE supports at most three decimal places")
-        life = f"{life_value:.3f}"
+        height_text = item.altura.strip() if item.altura and item.altura.strip() else ""
+        if categoria == "punzon" and height_text:
+            height = _three_decimals(height_text, "TOTAL HEIGHT")
+            override_text = item.stripper.strip() if item.stripper and item.stripper.strip() else ""
+            if override_text:
+                stripper_override = f"{_three_decimals(override_text, 'STRIPPER'):.3f}"
+            stripper = tool_params.stripper_for(params, size, stripper_override)
+            if height <= stripper:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"TOTAL HEIGHT must be greater than the stripper plate ({stripper:.3f} in)",
+                )
+            altura_total = f"{height:.3f}"
+            life = f"{height - stripper:.3f}"
+        else:
+            if not item.life or not item.life.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail="TOTAL HEIGHT is required for punches" if categoria == "punzon" else "HEIGHT is required for dies",
+                )
+            life = f"{_three_decimals(item.life.strip(), 'LIFE'):.3f}"
 
         if categoria == "punzon":
             if item.clearance and item.clearance.strip():
@@ -820,15 +934,14 @@ def normalize_inventory_item(
         else:
             if not item.clearance or not item.clearance.strip():
                 raise HTTPException(status_code=422, detail="CLEARANCE is required for dies")
-            try:
-                clearance_value = Decimal(item.clearance.strip())
-            except InvalidOperation:
-                raise HTTPException(status_code=422, detail="CLEARANCE must be numeric")
-            if not clearance_value.is_finite() or clearance_value < 0:
-                raise HTTPException(status_code=422, detail="CLEARANCE must be a non-negative number")
-            if clearance_value.normalize().as_tuple().exponent < -3:
-                raise HTTPException(status_code=422, detail="CLEARANCE supports at most three decimal places")
+            clearance_value = _three_decimals(item.clearance.strip(), "CLEARANCE")
             clearance = f"{clearance_value:.3f}"
+            kept_legacy = existing_clearance is not None and _same_decimal(existing_clearance, clearance_value)
+            if clearance not in CLEARANCE_CHOICES and not kept_legacy:
+                raise HTTPException(
+                    status_code=422,
+                    detail="CLEARANCE must be chosen from 0.004 to 0.030 in steps of 0.001",
+                )
 
         if item.tn and item.tn.strip() and not type_:
             raise HTTPException(status_code=422, detail="TYPE is required")
@@ -847,8 +960,12 @@ def normalize_inventory_item(
         "size": size or None,
         "type": type_,
         "life": life,
+        "altura_total": altura_total,
+        "stripper_override": stripper_override,
         "clearance": clearance,
         "so": item.so.strip() if item.so and item.so.strip() else None,
+        "proveedor": item.proveedor.strip().upper() if item.proveedor and item.proveedor.strip() else None,
+        "proveedor_given": item.proveedor is not None,
         "ubicacion": item.ubicacion.strip() if item.ubicacion and item.ubicacion.strip() else None,
     }
 
@@ -914,8 +1031,12 @@ def apply_inventory_record(tool, record, variant):
     tool.size = record["size"]
     tool.type = record["type"]
     tool.life = record["life"]
+    tool.altura_total = record["altura_total"]
+    tool.stripper_override = record["stripper_override"]
     tool.clearance = record["clearance"]
     tool.so = record["so"]
+    if record["proveedor_given"]:
+        tool.proveedor = record["proveedor"]
     tool.categoria = record["categoria"]
     tool.ubicacion = record["ubicacion"]
     tool.catalogo = HerramientaCatalogo(variante=variant) if variant else None
@@ -996,29 +1117,58 @@ def reject_tracked_identity_change(db, tool, record):
         )
 
 
-def inventory_record_read(tool, variant):
+DEFAULT_PARAMS = {key: Decimal(value) for key, value in tool_params.DEFAULTS.items()}
+
+
+def inventory_record_read(tool, variant, params=None):
+    params = params or DEFAULT_PARAMS
+    stripper = tool_params.stripper_for(params, tool.size, tool.stripper_override) if tool.categoria == "punzon" else None
     return {
         "id": tool.id,
         "tn": tool.tn,
         "size": tool.size,
         "type": tool.type,
         "life": tool.life,
+        "altura_total": tool.altura_total,
+        "stripper": f"{stripper:.3f}" if stripper is not None else None,
+        "stripper_custom": bool(tool.stripper_override),
+        "life_alert": tool_params.life_alert(tool.categoria, tool.life, params),
         "clearance": tool.clearance,
         "so": tool.so,
+        "proveedor": tool.proveedor,
         "categoria": tool.categoria,
         "ubicacion": tool.ubicacion,
         "catalog_linked": variant is not None,
+        "has_image": bool(tool.imagen),
     }
 
 
 @app.get("/inventario/opciones")
 def opciones_inventario():
     """Listas controladas que usan los formularios (categorías, tipos por categoría y tamaños)."""
+    db = SessionLocal()
+    try:
+        suppliers = sorted(
+            row[0] for row in db.query(Herramienta.proveedor).filter(Herramienta.proveedor.isnot(None)).distinct()
+            if row[0] and row[0].strip()
+        )
+        types_in_use = sorted(
+            row[0] for row in db.query(Herramienta.type).filter(Herramienta.type.isnot(None)).distinct() if row[0]
+        )
+        params = tool_params.load(db)
+    finally:
+        db.close()
     return {
         "categorias": list(INVENTORY_TYPES_BY_CATEGORY),
         "tipos": {category: list(types) for category, types in INVENTORY_TYPES_BY_CATEGORY.items()},
+        "tipos_en_uso": types_in_use,
         "sizes": ["A", "B", "C", "D", "E"],
         "estados": ["disponible", "afilado", "danado", "baja"],
+        "proveedores": suppliers,
+        "claridades": list(CLEARANCE_CHOICES),
+        "stripper_por_tamano": {size: f"{params['stripper_' + size]:.3f}" for size in tool_params.SIZES},
+        "vida_minima_punzon": f"{params['punch_min_life']:.3f}",
+        "altura_minima_matriz": f"{params['die_min_height']:.3f}",
     }
 
 
@@ -1029,14 +1179,24 @@ def listar_inventario(
     estado: Optional[str] = None,
     ubicacion: Optional[str] = None,
     vinculo: Optional[str] = None,
+    f_id: Optional[str] = None,
+    f_tn: Optional[str] = None,
+    f_type: Optional[str] = None,
+    f_size: Optional[str] = None,
+    f_clearance: Optional[str] = None,
+    f_life: Optional[str] = None,
+    f_so: Optional[str] = None,
+    f_supplier: Optional[str] = None,
+    f_alert: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ):
-    """Inventario físico paginado, con filtros, estado y vínculo al catálogo."""
+    """Inventario físico paginado, con filtros por columna, estado y vínculo al catálogo."""
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
     db = SessionLocal()
     try:
+        params = tool_params.load(db)
         base = db.query(Herramienta, HerramientaCatalogo.variante_id).outerjoin(
             HerramientaCatalogo, HerramientaCatalogo.herramienta_id == Herramienta.id
         )
@@ -1045,7 +1205,31 @@ def listar_inventario(
             like = f"%{text}%"
             base = base.filter(
                 Herramienta.id.ilike(like) | Herramienta.tn.ilike(like) | Herramienta.type.ilike(like)
-                | Herramienta.so.ilike(like) | Herramienta.ubicacion.ilike(like)
+                | Herramienta.so.ilike(like) | Herramienta.ubicacion.ilike(like) | Herramienta.proveedor.ilike(like)
+            )
+        for column, value in (
+            (Herramienta.id, f_id), (Herramienta.tn, f_tn), (Herramienta.so, f_so),
+            (Herramienta.life, f_life),
+        ):
+            if value and value.strip():
+                base = base.filter(column.ilike(f"%{value.strip()}%"))
+        for column, value in (
+            (Herramienta.type, f_type), (Herramienta.size, f_size), (Herramienta.proveedor, f_supplier),
+        ):
+            if value and value.strip():
+                base = base.filter(func.upper(column) == value.strip().upper())
+        if f_clearance and f_clearance.strip():
+            try:
+                wanted = f"{Decimal(f_clearance.strip()):.3f}"
+            except InvalidOperation:
+                wanted = f_clearance.strip()
+            base = base.filter(Herramienta.clearance == wanted)
+        if f_alert == "low":
+            life_number = cast(Herramienta.life, Float)
+            base = base.filter(
+                Herramienta.life.isnot(None),
+                ((Herramienta.categoria == "punzon") & (life_number <= float(params["punch_min_life"])))
+                | ((Herramienta.categoria == "matriz") & (life_number <= float(params["die_min_height"]))),
             )
         if categoria:
             base = base.filter(Herramienta.categoria == categoria.strip().lower())
@@ -1069,7 +1253,7 @@ def listar_inventario(
             "offset": offset,
             "summary": {"total": everything, "linked": linked, "unlinked": everything - linked},
             "items": [
-                {**inventory_record_read(tool, variant_id), "estado": tool.estado or "disponible"}
+                {**inventory_record_read(tool, variant_id, params), "estado": tool.estado or "disponible"}
                 for tool, variant_id in rows
             ],
         }
@@ -1079,9 +1263,10 @@ def listar_inventario(
 
 @app.post("/inventario/herramientas", status_code=201)
 def registrar_herramienta_inventario(item: RegistroInventarioCreate):
-    record = normalize_inventory_item(item)
     db = SessionLocal()
     try:
+        params = tool_params.load(db)
+        record = normalize_inventory_item(item, params=params)
         if db.query(Herramienta).filter(Herramienta.id == record["id"]).first():
             raise HTTPException(status_code=409, detail="Physical tool ID already exists")
         require_registered_rack(db, None, record["ubicacion"])
@@ -1089,7 +1274,7 @@ def registrar_herramienta_inventario(item: RegistroInventarioCreate):
         tool = apply_inventory_record(Herramienta(id=record["id"]), record, variant)
         db.add(tool)
         db.commit()
-        return inventory_record_read(tool, variant)
+        return inventory_record_read(tool, variant, params)
     except HTTPException:
         db.rollback()
         raise
@@ -1107,10 +1292,13 @@ def actualizar_herramienta_inventario(herramienta_id: str, item: RegistroInventa
         tool = db.query(Herramienta).filter(Herramienta.id == herramienta_id).first()
         if not tool:
             raise HTTPException(status_code=404, detail="Physical tool not found")
+        params = tool_params.load(db)
         record = normalize_inventory_item(
             item,
             existing_type=tool.type,
             existing_category=tool.categoria,
+            params=params,
+            existing_clearance=tool.clearance,
         )
         reject_untracked_location_change(db, tool, record["ubicacion"])
         require_registered_rack(db, tool, record["ubicacion"])
@@ -1120,7 +1308,7 @@ def actualizar_herramienta_inventario(herramienta_id: str, item: RegistroInventa
         variant = get_or_create_catalog_variant(db, record)
         apply_inventory_record(tool, record, variant)
         db.commit()
-        return inventory_record_read(tool, variant)
+        return inventory_record_read(tool, variant, params)
     except HTTPException:
         db.rollback()
         raise

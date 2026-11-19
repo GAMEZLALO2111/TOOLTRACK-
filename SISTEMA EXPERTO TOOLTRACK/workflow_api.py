@@ -2,7 +2,7 @@ import hashlib
 import re
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from db import SessionLocal
 import scan_codes
+import tool_params
 from machine_rules import setup_warnings
 from models.inventory import (
     BajaHerramienta,
@@ -37,9 +38,11 @@ from setup_workflow import (
     SetupReviewRequired,
     clearance_range_for_thickness,
     compare_setup_requirements,
+    pair_positions,
     parse_setup_text,
     validate_setup_requirements,
 )
+from tn_tolerance import compatible_tns, describe_difference, tn_compatible, tolerance_for
 
 
 router = APIRouter(prefix="/workflow", tags=["setup workflow"])
@@ -55,8 +58,36 @@ CATEGORY_ALIASES = {
 COMPONENT_CATEGORIES = ("punzon", "matriz")
 
 
+_last_now = None
+
+
 def utcnow():
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    """Naive UTC, strictly increasing: kits created in the same clock tick still keep their order in line."""
+    global _last_now
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if _last_now is not None and now <= _last_now:
+        now = _last_now + timedelta(microseconds=1)
+    _last_now = now
+    return now
+
+
+def _tolerance(db=None):
+    if db is not None:
+        return tolerance_for(db)
+    own = SessionLocal()
+    try:
+        return tolerance_for(own)
+    finally:
+        own.close()
+
+
+def _pairs(db, old_items, new_items):
+    return pair_positions(old_items, new_items, _tolerance(db))
+
+
+def _tn_fits(db, required_tn, tool_tn):
+    """A tool fits a required TN when it is that TN or is within the dimensional tolerance of it."""
+    return required_tn == tool_tn or tn_compatible(required_tn, tool_tn, _tolerance(db))
 
 
 def seed_default_locations():
@@ -300,6 +331,21 @@ def _write_setup(db, parsed_setup, machine_code, actor, state, source_text):
     return setup_record, requirement_records
 
 
+def _manual_reference(db, parsed_setup, source_text, machine_code, actor, carry_from):
+    """Baseline chosen by hand for one kit: a reference copy of that program, not the machine record.
+
+    The physical tools of the expected previous setup are carried over by TN, so «keep» still means
+    a tool that is really there.
+    """
+    reference, reference_requirements = _write_setup(db, parsed_setup, machine_code, actor, "reference", source_text)
+    carried = db.query(RequisitoSetup).filter(RequisitoSetup.setup_id == carry_from.id).all()
+    for old, new in _pairs(db, carried, list(reference_requirements.values()))[0]:
+        new.punch_tool_id = old.punch_tool_id
+        new.die_tool_id = old.die_tool_id
+    db.flush()
+    return reference
+
+
 class LocationCreate(BaseModel):
     codigo: str
     nombre: str
@@ -355,6 +401,7 @@ class SurtidoCreate(BaseModel):
     setup_anterior_contenido: Optional[str] = None
     corregir_actual: bool = False
     motivo_correccion: Optional[str] = None
+    comparacion_manual: bool = False
 
 
 class SurtidoToolSelect(BaseModel):
@@ -372,6 +419,8 @@ class DeliveryScan(BaseModel):
     scan_value: str
     machine_scan: str = ""
     realizado_por: str
+    fuera_de_orden: bool = False
+    motivo_orden: Optional[str] = None
 
 
 class PendingPickupMove(BaseModel):
@@ -457,12 +506,10 @@ def compare_setup_files(item: SetupFilesComparisonRequest):
         item.setup_nuevo_contenido,
         item.setup_nuevo_nombre,
     )
-    comparison = compare_setup_requirements(current, new)
+    comparison = compare_setup_requirements(current, new, _tolerance())
     clearance_range = clearance_range_for_thickness(new.thickness)
-    current_by_key = {requirement.key: requirement for requirement in current.requirements}
     unchanged = []
-    for new_requirement in comparison["unchanged"]:
-        old_requirement = current_by_key[new_requirement.key]
+    for old_requirement, new_requirement in comparison["pairs"]:
         if comparison["thickness_changed"]:
             die_action = "verify_clearance" if clearance_range else "manual_die_selection"
         else:
@@ -472,6 +519,7 @@ def compare_setup_files(item: SetupFilesComparisonRequest):
             "previous_station": old_requirement.station,
             "tn": new_requirement.tn,
             "angle": new_requirement.angle,
+            "previous_angle": old_requirement.angle,
             "punch_action": "keep",
             "die_action": die_action,
         })
@@ -521,14 +569,13 @@ def compare_with_machine_setup(item: SetupComparisonRequest):
         current_requirements = db.query(RequisitoSetup).filter(
             RequisitoSetup.setup_id == active_setup.id
         ).all()
-        current_by_key = {(row.tn, row.angle): row for row in current_requirements}
+        pairs, _added, removed_rows = _pairs(db, current_requirements, parsed.requirements)
+        previous_by_new = {id(new): old for old, new in pairs}
         clearance_range = clearance_range_for_thickness(parsed.thickness)
         thickness_changed = Decimal(active_setup.thickness) != parsed.thickness
         rows = []
-        new_keys = set()
         for requirement in parsed.requirements:
-            key = requirement.key
-            previous = current_by_key.get(key)
+            previous = previous_by_new.get(id(requirement))
             if previous is None:
                 punch_action = die_action = "new"
             else:
@@ -546,12 +593,12 @@ def compare_with_machine_setup(item: SetupComparisonRequest):
                 "station": requirement.station,
                 "tn": requirement.tn,
                 "angle": requirement.angle,
+                "previous_angle": previous.angle if previous else None,
                 "punch_action": punch_action,
                 "die_action": die_action,
                 "current_punch_id": previous.punch_tool_id if previous else None,
                 "current_die_id": previous.die_tool_id if previous else None,
             })
-            new_keys.add(key)
         removed = [
             {
                 "tn": row.tn,
@@ -560,8 +607,7 @@ def compare_with_machine_setup(item: SetupComparisonRequest):
                 "punch_id": row.punch_tool_id,
                 "die_id": row.die_tool_id,
             }
-            for key, row in current_by_key.items()
-            if key not in new_keys
+            for row in removed_rows
         ]
         return {
             "machine": machine_code,
@@ -615,7 +661,7 @@ def create_machine_baseline(item: SetupBaselineCreate):
                 tool = db.query(Herramienta).filter(Herramienta.id == physical_id).first()
                 if not tool:
                     raise HTTPException(status_code=404, detail=f"Tool '{physical_id}' is not in inventory")
-                if tool.tn != assignment.tn.strip() or _category(tool) != category:
+                if not _tn_fits(db, assignment.tn.strip(), tool.tn) or _category(tool) != category:
                     raise HTTPException(
                         status_code=409,
                         detail=f"Tool '{physical_id}' does not match TN {assignment.tn} as {category}",
@@ -721,12 +767,13 @@ def _create_kit_components(db, kit, old_setup, new_setup, new_requirements, acto
     old_requirements = db.query(RequisitoSetup).filter(
         RequisitoSetup.setup_id == old_setup.id
     ).all()
-    old_by_key = {(row.tn, row.angle): row for row in old_requirements}
+    pairs, _added, _removed = _pairs(db, old_requirements, list(new_requirements.values()))
+    previous_by_new = {new.id: old for old, new in pairs}
     clearance_range = clearance_range_for_thickness(Decimal(new_setup.thickness))
     thickness_changed = Decimal(old_setup.thickness) != Decimal(new_setup.thickness)
 
     for key, new_requirement in new_requirements.items():
-        previous = old_by_key.get(key)
+        previous = previous_by_new.get(new_requirement.id)
         for category in COMPONENT_CATEGORIES:
             old_tool_id = None
             if previous:
@@ -789,6 +836,7 @@ def create_kit(item: SurtidoCreate):
     if not actor:
         raise HTTPException(status_code=422, detail="Created-by user is required")
     db = SessionLocal()
+    manual_baseline = False
     try:
         _location(db, machine_code, {"machine"})
         _location(db, cart_code, {"cart"})
@@ -818,13 +866,62 @@ def create_kit(item: SurtidoCreate):
             old_setup = db.query(Setup).filter(
                 Setup.id == machine_state.setup_activo_id
             ).one()
-            if previous_parsed:
+            queued = _open_kits(db, machine_code)
+            if len(queued) >= MAX_OPEN_KITS_PER_MACHINE:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{machine_code} already has {len(queued)} kits in line (maximum {MAX_OPEN_KITS_PER_MACHINE}). "
+                           "Deliver or cancel one first.",
+                )
+            if queued:
+                # By default the new kit is compared against the one before it in line, not against what is
+                # mounted today. The user may pick the mounted part or any kit in line instead.
+                old_setup = db.query(Setup).filter(Setup.id == queued[-1].setup_nuevo_id).one()
+                if previous_parsed:
+                    wanted = _part_from_name(previous_name).upper()
+                    candidates = [db.query(Setup).filter(Setup.id == machine_state.setup_activo_id).one()] + [
+                        db.query(Setup).filter(Setup.id == other.setup_nuevo_id).one() for other in queued
+                    ]
+                    chosen = next(
+                        (row for row in reversed(candidates) if _part_from_name(row.nombre_archivo).upper() == wanted),
+                        None,
+                    )
+                    if chosen is None:
+                        if not item.comparacion_manual:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"{machine_code} has a line of kits: compare against the part mounted on it or "
+                                       "against one of the kits in line, or choose a manual comparison.",
+                            )
+                        chosen = _manual_reference(db, previous_parsed, previous_content, machine_code, actor, old_setup)
+                    if chosen.id != old_setup.id:
+                        old_setup = chosen
+                        manual_baseline = True
+                        _log_machine_event(
+                            db, machine_code, "kit_manual_baseline",
+                            f"Kit of {_part_from_name(item.nombre_archivo)} compared against {wanted} chosen by the user",
+                            actor,
+                        )
+            elif previous_parsed:
                 active_requirements = db.query(RequisitoSetup).filter(
                     RequisitoSetup.setup_id == old_setup.id
                 ).all()
                 active_keys = {(row.tn, row.angle) for row in active_requirements}
                 uploaded_keys = {requirement.key for requirement in previous_parsed.requirements}
                 if (
+                    active_keys != uploaded_keys
+                    or Decimal(old_setup.thickness) != previous_parsed.thickness
+                ) and item.comparacion_manual:
+                    # Compare only: the machine record is left as it is; the kit is delivered against what is mounted.
+                    old_setup = _manual_reference(db, previous_parsed, previous_content, machine_code, actor, old_setup)
+                    manual_baseline = True
+                    _log_machine_event(
+                        db, machine_code, "kit_manual_baseline",
+                        f"Kit of {_part_from_name(item.nombre_archivo)} compared against "
+                        f"{_part_from_name(previous_name).upper()} chosen by the user",
+                        actor,
+                    )
+                elif (
                     active_keys != uploaded_keys
                     or Decimal(old_setup.thickness) != previous_parsed.thickness
                 ):
@@ -843,7 +940,7 @@ def create_kit(item: SurtidoCreate):
                         f"{_part_from_name(previous_parsed.source_name)}. Motivo: {item.motivo_correccion.strip()}",
                         actor,
                     )
-                    old_setup, _old_requirements = _write_setup(
+                    old_setup, corrected_requirements = _write_setup(
                         db,
                         previous_parsed,
                         machine_code,
@@ -851,17 +948,11 @@ def create_kit(item: SurtidoCreate):
                         "active",
                         previous_content,
                     )
+                    for earlier, corrected in _pairs(db, active_requirements, list(corrected_requirements.values()))[0]:
+                        corrected.punch_tool_id = earlier.punch_tool_id
+                        corrected.die_tool_id = earlier.die_tool_id
                     machine_state.setup_activo_id = old_setup.id
                     db.flush()
-        open_kit = db.query(Surtido).filter(
-            Surtido.maquina_codigo == machine_code,
-            Surtido.estado.in_(("preparing", "paused", "ready")),
-        ).first()
-        if open_kit:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Machine already has an unfinished kit ({open_kit.id})",
-            )
         cart_kit = db.query(Surtido).filter(
             Surtido.carro_codigo == cart_code,
             Surtido.estado.in_(("preparing", "paused", "ready")),
@@ -881,6 +972,7 @@ def create_kit(item: SurtidoCreate):
             setup_anterior_id=old_setup.id,
             setup_nuevo_id=new_setup.id,
             estado="preparing",
+            anterior_manual=manual_baseline,
             creado_por=actor,
             creado_en=utcnow(),
             actualizado_en=utcnow(),
@@ -888,6 +980,8 @@ def create_kit(item: SurtidoCreate):
         db.add(kit)
         db.flush()
         _create_kit_components(db, kit, old_setup, new_setup, new_requirements, actor)
+        db.flush()
+        _try_mark_ready(db, kit)
         db.commit()
         result = _kit_read(db, kit)
         result["warnings"] = setup_warnings(db, machine_code, parsed)
@@ -900,7 +994,7 @@ def create_kit(item: SurtidoCreate):
         if "uq_surtido_abierto" in str(error):
             raise HTTPException(
                 status_code=409,
-                detail="Another kit was just started for this machine or cart. Refresh and check the open kits.",
+                detail="Another kit was just started for this cart. Refresh and check the open kits.",
             ) from error
         raise HTTPException(status_code=409, detail="Kit conflicts with existing setup data") from error
     finally:
@@ -916,12 +1010,44 @@ def _kit_read(db, kit):
         .all()
     )
     new_setup = db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).first()
+    old_requirements = db.query(RequisitoSetup).filter(RequisitoSetup.setup_id == kit.setup_anterior_id).all()
+    new_requirements = [requirement for _component, requirement in components]
+    seen = set()
+    new_requirements = [r for r in new_requirements if not (r.id in seen or seen.add(r.id))]
+    previous_by_new = {new.id: old for old, new in _pairs(db, old_requirements, new_requirements)[0]}
+    queue = _open_kits(db, kit.maquina_codigo) if kit.estado in OPEN_KIT_STATES else []
+    ahead = []
+    for other in queue:
+        if (other.creado_en, other.id) >= (kit.creado_en, kit.id):
+            break
+        other_setup = db.query(Setup).filter(Setup.id == other.setup_nuevo_id).first()
+        ahead.append({
+            "kit_id": other.id,
+            "part_number": _part_from_name(other_setup.nombre_archivo).upper() if other_setup else None,
+            "cart": other.carro_codigo,
+            "state": other.estado,
+        })
     clearance_range = None
     if new_setup:
         try:
             clearance_range = clearance_range_for_thickness(Decimal(new_setup.thickness))
         except (InvalidOperation, TypeError):
             clearance_range = None
+    tool_ids = {component.herramienta_nueva_id for component, _r in components if component.herramienta_nueva_id}
+    tools_by_id = (
+        {tool.id: tool for tool in db.query(Herramienta).filter(Herramienta.id.in_(tool_ids)).all()}
+        if tool_ids else {}
+    )
+    params = tool_params.load(db)
+
+    def tool_tn(component):
+        tool = tools_by_id.get(component.herramienta_nueva_id)
+        return tool.tn if tool else None
+
+    def tool_alert(component):
+        tool = tools_by_id.get(component.herramienta_nueva_id)
+        return bool(tool and tool_params.life_alert(component.categoria, tool.life, params))
+
     return {
         "id": kit.id,
         "machine": kit.maquina_codigo,
@@ -933,6 +1059,11 @@ def _kit_read(db, kit):
         "clearance_min": str(clearance_range[0]) if clearance_range else None,
         "clearance_max": str(clearance_range[1]) if clearance_range else None,
         "qr_token": kit.qr_token,
+        "queue_position": len(ahead) + 1 if kit.estado in OPEN_KIT_STATES else None,
+        "queue_total": len(queue),
+        "anterior_manual": bool(kit.anterior_manual),
+        "ahead": ahead,
+        "alerts": _kit_alerts(db, kit),
         "created_at": kit.creado_en.isoformat(),
         "delivered_at": kit.entregado_en.isoformat() if kit.entregado_en else None,
         "components": [
@@ -942,10 +1073,22 @@ def _kit_read(db, kit):
                 "station": requirement.station,
                 "tn": requirement.tn,
                 "angle": requirement.angle,
+                "previous_angle": (
+                    previous_by_new[requirement.id].angle if requirement.id in previous_by_new else None
+                ),
+                "reorient": (
+                    component.accion == "keep" and requirement.id in previous_by_new
+                    and previous_by_new[requirement.id].angle != requirement.angle
+                ),
                 "category": component.categoria,
                 "action": component.accion,
                 "previous_tool_id": component.herramienta_anterior_id,
                 "tool_id": component.herramienta_nueva_id,
+                "tool_tn": tool_tn(component),
+                "substitute": bool(tool_tn(component) and tool_tn(component) != requirement.tn),
+                "tn_difference": describe_difference(requirement.tn, tool_tn(component)),
+                "life_alert": tool_alert(component),
+                "previous_tn": previous_by_new[requirement.id].tn if requirement.id in previous_by_new else None,
                 "state": component.estado,
                 "source_location": component.origen_codigo,
             }
@@ -968,6 +1111,27 @@ def get_kit(kit_id: str):
 
 PART_IN_NAME = re.compile(r"[A-Z]{2,6}-\d{5,9}(?:-\d{2})?_\d{2}-[A-Z]{1,4}")
 OPEN_KIT_STATES = ("preparing", "paused", "ready")
+MAX_OPEN_KITS_PER_MACHINE = 5
+
+
+def _open_kits(db, machine_code):
+    """Open kits of a machine in the order they will be delivered (the order they were started)."""
+    return db.query(Surtido).filter(
+        Surtido.maquina_codigo == machine_code, Surtido.estado.in_(OPEN_KIT_STATES)
+    ).order_by(Surtido.creado_en, Surtido.id).all()
+
+
+def _expected_previous_setup_id(db, kit):
+    """What this kit is compared against: the kit before it in line, or what is mounted on the machine
+    (or the setup the user chose by hand when the kit was started)."""
+    if kit.anterior_manual:
+        return kit.setup_anterior_id
+    before = [other for other in _open_kits(db, kit.maquina_codigo)
+              if (other.creado_en, other.id) < (kit.creado_en, kit.id)]
+    if before:
+        return before[-1].setup_nuevo_id
+    state = db.query(EstadoMaquina).filter(EstadoMaquina.maquina_codigo == kit.maquina_codigo).first()
+    return state.setup_activo_id if state else None
 
 
 def _part_from_name(name):
@@ -1000,10 +1164,13 @@ def _log_machine_event(db, machine_code, kind, detail, actor):
 def machines_running():
     db = SessionLocal()
     try:
-        kits = {
-            kit.maquina_codigo: kit
-            for kit in db.query(Surtido).filter(Surtido.estado.in_(OPEN_KIT_STATES)).all()
-        }
+        kits = {}
+        kit_counts = {}
+        for kit in db.query(Surtido).filter(Surtido.estado.in_(OPEN_KIT_STATES)).order_by(
+            Surtido.creado_en, Surtido.id
+        ).all():
+            kits.setdefault(kit.maquina_codigo, kit)
+            kit_counts[kit.maquina_codigo] = kit_counts.get(kit.maquina_codigo, 0) + 1
         result = []
         machines = db.query(Ubicacion).filter(
             Ubicacion.tipo == "machine", Ubicacion.activa.is_(True)
@@ -1026,6 +1193,7 @@ def machines_running():
                 "since": setup.creado_en.isoformat() if setup else None,
                 "kit_state": kit.estado if kit else None,
                 "kit_cart": kit.carro_codigo if kit else None,
+                "kit_count": kit_counts.get(machine.codigo, 0),
             })
         return result
     finally:
@@ -1202,16 +1370,19 @@ def _component_candidates(db, kit, component):
     ).one()
     setup = db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one()
     clearance_range = clearance_range_for_thickness(Decimal(setup.thickness))
+    tolerance = _tolerance(db)
+    tns = compatible_tns(db, requirement.tn, tolerance)
     query = (
         db.query(Herramienta)
         .join(Ubicacion, Ubicacion.codigo == Herramienta.ubicacion)
         .filter(
-            Herramienta.tn == requirement.tn,
+            Herramienta.tn.in_(tns),
             Ubicacion.tipo == "rack",
             Ubicacion.activa.is_(True),
         )
     )
-    tools = query.order_by(Herramienta.id).all()
+    tools = sorted(query.order_by(Herramienta.id).all(), key=lambda row: tns.index(row.tn))
+    params = tool_params.load(db)
     candidates = []
     for tool in tools:
         if _category(tool) != component.categoria or (tool.estado or "disponible") != "disponible":
@@ -1232,6 +1403,9 @@ def _component_candidates(db, kit, component):
             "clearance": tool.clearance,
             "life": tool.life,
             "location": tool.ubicacion,
+            "substitute": tool.tn != requirement.tn,
+            "tn_difference": describe_difference(requirement.tn, tool.tn),
+            "life_alert": tool_params.life_alert(component.categoria, tool.life, params),
         })
     return candidates
 
@@ -1315,7 +1489,7 @@ def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None, capture=None
     if not tool:
         raise HTTPException(status_code=404, detail="That tool ID is not in the inventory")
     normalized_tool_id = tool.id
-    if tool.tn != requirement.tn or _category(tool) != component.categoria:
+    if not _tn_fits(db, requirement.tn, tool.tn) or _category(tool) != component.categoria:
         raise HTTPException(status_code=409, detail="That tool ID does not match the required TN and type")
     if tool.ubicacion == kit.carro_codigo and component.herramienta_nueva_id == normalized_tool_id:
         return _kit_read(db, kit)
@@ -1385,7 +1559,10 @@ def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None, capture=None
         kit_cart.codigo,
         "rack_to_cart_for_kit",
         actor,
-        details=f"Reserved for TN {requirement.tn} {component.categoria}",
+        details=f"Reserved for TN {requirement.tn} {component.categoria}" + (
+            f" (substitute TN {tool.tn}, {describe_difference(requirement.tn, tool.tn)} in. from the required size)"
+            if tool.tn != requirement.tn else ""
+        ),
         kit_id=kit.id,
         capture=capture,
     )
@@ -1403,6 +1580,8 @@ def _assign_kit_tool(db, kit, component, tool_id, actor, tool=None, capture=None
         requirement.die_tool_id = tool.id
     kit.estado = "preparing"
     kit.actualizado_en = utcnow()
+    db.flush()
+    _try_mark_ready(db, kit)
     db.commit()
     return _kit_read(db, kit)
 
@@ -1423,7 +1602,8 @@ def scan_kit_tool(kit_id: str, item: SurtidoToolSelect):
         if kit.estado not in {"preparing", "paused"}:
             raise HTTPException(status_code=409, detail="This kit is not accepting tool scans")
 
-        component = db.query(ComponenteSurtido).join(
+        tolerance = _tolerance(db)
+        candidates = db.query(ComponenteSurtido, RequisitoSetup).join(
             RequisitoSetup,
             RequisitoSetup.id == ComponenteSurtido.requisito_id,
         ).filter(
@@ -1431,12 +1611,17 @@ def scan_kit_tool(kit_id: str, item: SurtidoToolSelect):
             ComponenteSurtido.estado == "missing",
             ComponenteSurtido.accion.in_(("new", "replace")),
             ComponenteSurtido.categoria == _category(tool),
-            RequisitoSetup.tn == tool.tn,
         ).order_by(
             RequisitoSetup.station,
             RequisitoSetup.id,
             ComponenteSurtido.id,
-        ).with_for_update().first()
+        ).with_for_update().all()
+        matches = [
+            component for component, requirement in candidates
+            if requirement.tn == tool.tn or tn_compatible(requirement.tn, tool.tn, tolerance)
+        ]
+        exact = [component for component, requirement in candidates if requirement.tn == tool.tn]
+        component = (exact or matches or [None])[0]
         if not component:
             raise HTTPException(
                 status_code=409,
@@ -1572,13 +1757,41 @@ def cancel_kit(kit_id: str, item: SurtidoAction):
         db.close()
 
 
+def _kit_baseline_outdated(db, kit, old_setup_id=None):
+    """True when a position already supplied by the previous setup or kit is still asked as new."""
+    old_setup_id = old_setup_id or _expected_previous_setup_id(db, kit)
+    old_requirements = db.query(RequisitoSetup).filter(RequisitoSetup.setup_id == old_setup_id).all()
+    new_requirements = db.query(RequisitoSetup).filter(RequisitoSetup.setup_id == kit.setup_nuevo_id).all()
+    components = {
+        (component.requisito_id, component.categoria): component
+        for component in db.query(ComponenteSurtido).filter(ComponenteSurtido.surtido_id == kit.id).all()
+    }
+    for old, new in _pairs(db, old_requirements, new_requirements)[0]:
+        for category in COMPONENT_CATEGORIES:
+            old_tool_id = old.punch_tool_id if category == "punzon" else old.die_tool_id
+            component = components.get((new.id, category))
+            if (
+                old_tool_id and component is not None and component.accion == "new"
+                and not _position_was_returned(db, old.setup_id, old.tn, category)
+            ):
+                return True
+    return False
+
+
+def _kit_alerts(db, kit):
+    """Warnings for an open kit whose comparison no longer matches the line in front of it."""
+    if kit.estado not in OPEN_KIT_STATES:
+        return []
+    expected = _expected_previous_setup_id(db, kit)
+    if expected != kit.setup_anterior_id:
+        return ["The kit before this one changed, was cancelled or was delivered: refresh this kit to compare it again."]
+    if _kit_baseline_outdated(db, kit, expected):
+        return ["The previous kit or the machine already has tools this kit asks for again: refresh it to reuse them."]
+    return []
+
+
 @router.post("/kits/{kit_id}/refresh")
 def refresh_kit(kit_id: str, item: SurtidoAction):
-    """Re-reads the saved program of the part being kitted (Engineering may have changed its tools).
-
-    What was already scanned and still applies stays on the cart; what changed is released and the
-    result says which tools go back to their rack.
-    """
     actor = item.realizado_por.strip()
     db = SessionLocal()
     try:
@@ -1587,108 +1800,9 @@ def refresh_kit(kit_id: str, item: SurtidoAction):
             raise HTTPException(status_code=404, detail="Kit not found")
         if kit.estado not in OPEN_KIT_STATES:
             raise HTTPException(status_code=409, detail="Only an unfinished kit can be refreshed")
-        draft = db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one()
-        old_setup = db.query(Setup).filter(Setup.id == kit.setup_anterior_id).one()
-        part = _part_from_name(draft.nombre_archivo).upper()
-        profile = db.query(Maquina).filter(Maquina.codigo == kit.maquina_codigo).first()
-        program = db.query(ProgramaParte).filter(
-            ProgramaParte.tipo_maquina == (_machine_kind(profile.tipo_maquina) if profile else ""),
-            ProgramaParte.numero_parte == part,
-        ).first()
-        if not program:
-            raise HTTPException(status_code=409, detail=f"There is no saved program for {part} to refresh from")
-        if hashlib.sha256(program.contenido.encode("utf-8")).hexdigest() == draft.contenido_hash:
-            return {"kit": _kit_read(db, kit), "changed": False, "returned": [], "added": [], "removed": [], "kept": 0}
-
-        parsed = _parse_and_validate(program.contenido, f"{program.numero_parte}.stp")
-        previous = {}
-        for component, requirement in (
-            db.query(ComponenteSurtido, RequisitoSetup)
-            .join(RequisitoSetup, RequisitoSetup.id == ComponenteSurtido.requisito_id)
-            .filter(ComponenteSurtido.surtido_id == kit.id)
-            .all()
-        ):
-            if component.accion != "keep" and component.herramienta_nueva_id and component.estado == "ready":
-                previous[(requirement.tn, requirement.angle, component.categoria)] = (
-                    component.herramienta_nueva_id, component.origen_codigo, requirement.station,
-                )
-        old_keys = {
-            (row.tn, row.angle): row.station
-            for row in db.query(RequisitoSetup).filter(RequisitoSetup.setup_id == draft.id).all()
-        }
-
-        db.query(ReservaHerramienta).filter(ReservaHerramienta.surtido_id == kit.id).delete()
-        db.query(ComponenteSurtido).filter(ComponenteSurtido.surtido_id == kit.id).delete()
-        draft.estado = "superseded"
-        new_setup, new_requirements = _write_setup(db, parsed, kit.maquina_codigo, actor, "draft", program.contenido)
-        kit.setup_nuevo_id = new_setup.id
-        db.flush()
-        _create_kit_components(db, kit, old_setup, new_setup, new_requirements, actor)
-        db.flush()
-
-        try:
-            clearance_range = clearance_range_for_thickness(Decimal(new_setup.thickness))
-        except (InvalidOperation, TypeError):
-            clearance_range = None
-        kept = 0
-        applied = set()
-        for component, requirement in (
-            db.query(ComponenteSurtido, RequisitoSetup)
-            .join(RequisitoSetup, RequisitoSetup.id == ComponenteSurtido.requisito_id)
-            .filter(ComponenteSurtido.surtido_id == kit.id, ComponenteSurtido.accion != "keep")
-            .all()
-        ):
-            key = (requirement.tn, requirement.angle, component.categoria)
-            chosen = previous.get(key)
-            if not chosen:
-                continue
-            tool = db.query(Herramienta).filter(Herramienta.id == chosen[0]).first()
-            if (
-                not tool or tool.ubicacion != kit.carro_codigo or tool.tn != requirement.tn
-                or (component.categoria == "matriz" and clearance_range and not _clearance_in_range(tool, clearance_range))
-            ):
-                continue
-            component.herramienta_nueva_id = tool.id
-            component.origen_codigo = chosen[1]
-            component.estado = "ready"
-            db.add(ReservaHerramienta(herramienta_id=tool.id, surtido_id=kit.id, componente_id=component.id))
-            if component.categoria == "punzon":
-                requirement.punch_tool_id = tool.id
-            else:
-                requirement.die_tool_id = tool.id
-            applied.add(key)
-            kept += 1
-
-        returned = []
-        for key, (tool_id, origin, station) in previous.items():
-            if key in applied:
-                continue
-            tool = db.query(Herramienta).filter(Herramienta.id == tool_id).first()
-            if tool and tool.ubicacion == kit.carro_codigo:
-                destination = origin or _home_rack(db, tool.id)
-                if destination:
-                    _append_movement(
-                        db, tool, kit.carro_codigo, destination, "kit_refresh_returned", actor,
-                        details="Kit refreshed: the program changed this position", kit_id=kit.id,
-                    )
-                returned.append({
-                    "tool_id": tool.id, "to": destination, "station": station,
-                    "tn": key[0], "category": key[2],
-                })
-        new_keys = {(row.tn, row.angle): row.station for row in new_requirements.values()}
-        added = [{"station": station, "tn": tn, "angle": angle} for (tn, angle), station in new_keys.items() if (tn, angle) not in old_keys]
-        removed = [{"station": station, "tn": tn, "angle": angle} for (tn, angle), station in old_keys.items() if (tn, angle) not in new_keys]
-        kit.estado = "paused" if kit.estado == "paused" else "preparing"
-        kit.qr_token = None
-        kit.actualizado_en = utcnow()
-        _log_machine_event(
-            db, kit.maquina_codigo, "kit_refresh",
-            f"{part}: kit refreshed from the saved program; {kept} kept, {len(returned)} returned to racks", actor,
-        )
+        result = _refresh_open_kit(db, kit, actor)
         db.commit()
-        result = _kit_read(db, kit)
-        result["warnings"] = setup_warnings(db, kit.maquina_codigo, parsed)
-        return {"kit": result, "changed": True, "returned": returned, "added": added, "removed": removed, "kept": kept}
+        return result
     except HTTPException:
         db.rollback()
         raise
@@ -1696,8 +1810,133 @@ def refresh_kit(kit_id: str, item: SurtidoAction):
         db.close()
 
 
-def _kit_blockers(db, kit, components):
-    # Each position needs a punch and a die; kept tools must still be on the machine.
+def _refresh_open_kit(db, kit, actor, against_setup_id=None):
+    """Compares the kit again against its place in line (or a given setup) and re-reads the saved program.
+
+    What was already scanned and still applies stays on the cart; what changed is released and the
+    result says which tools go back to their rack. The caller commits.
+    """
+    draft = db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one()
+    expected_id = against_setup_id or _expected_previous_setup_id(db, kit)
+    old_setup = db.query(Setup).filter(Setup.id == expected_id).one()
+    part = _part_from_name(draft.nombre_archivo).upper()
+    profile = db.query(Maquina).filter(Maquina.codigo == kit.maquina_codigo).first()
+    program = db.query(ProgramaParte).filter(
+        ProgramaParte.tipo_maquina == (_machine_kind(profile.tipo_maquina) if profile else ""),
+        ProgramaParte.numero_parte == part,
+    ).first()
+    stale = expected_id != kit.setup_anterior_id or _kit_baseline_outdated(db, kit, expected_id)
+    if not program and not stale:
+        raise HTTPException(status_code=409, detail=f"There is no saved program for {part} to refresh from")
+    program_changed = bool(program) and (
+        hashlib.sha256(program.contenido.encode("utf-8")).hexdigest() != draft.contenido_hash
+    )
+    if not program_changed and not stale:
+        return {"kit": _kit_read(db, kit), "changed": False, "returned": [], "added": [], "removed": [], "kept": 0}
+
+    parsed = _parse_and_validate(program.contenido, f"{program.numero_parte}.stp") if program_changed else None
+    previous = {}
+    for component, requirement in (
+        db.query(ComponenteSurtido, RequisitoSetup)
+        .join(RequisitoSetup, RequisitoSetup.id == ComponenteSurtido.requisito_id)
+        .filter(ComponenteSurtido.surtido_id == kit.id)
+        .all()
+    ):
+        if component.accion != "keep" and component.herramienta_nueva_id and component.estado == "ready":
+            previous[(requirement.tn, requirement.angle, component.categoria)] = (
+                component.herramienta_nueva_id, component.origen_codigo, requirement.station,
+            )
+    old_keys = {
+        (row.tn, row.angle): row.station
+        for row in db.query(RequisitoSetup).filter(RequisitoSetup.setup_id == draft.id).all()
+    }
+
+    db.query(ReservaHerramienta).filter(ReservaHerramienta.surtido_id == kit.id).delete()
+    db.query(ComponenteSurtido).filter(ComponenteSurtido.surtido_id == kit.id).delete()
+    if parsed is not None:
+        draft.estado = "superseded"
+        new_setup, new_requirements = _write_setup(db, parsed, kit.maquina_codigo, actor, "draft", program.contenido)
+        kit.setup_nuevo_id = new_setup.id
+    else:
+        new_setup = draft
+        rows = db.query(RequisitoSetup).filter(RequisitoSetup.setup_id == draft.id).all()
+        for row in rows:
+            row.punch_tool_id = row.die_tool_id = None
+        new_requirements = {(row.tn, row.angle): row for row in rows}
+    kit.setup_anterior_id = old_setup.id
+    db.flush()
+    _create_kit_components(db, kit, old_setup, new_setup, new_requirements, actor)
+    db.flush()
+
+    try:
+        clearance_range = clearance_range_for_thickness(Decimal(new_setup.thickness))
+    except (InvalidOperation, TypeError):
+        clearance_range = None
+    kept = 0
+    applied = set()
+    for component, requirement in (
+        db.query(ComponenteSurtido, RequisitoSetup)
+        .join(RequisitoSetup, RequisitoSetup.id == ComponenteSurtido.requisito_id)
+        .filter(ComponenteSurtido.surtido_id == kit.id, ComponenteSurtido.accion != "keep")
+        .all()
+    ):
+        key = (requirement.tn, requirement.angle, component.categoria)
+        chosen = previous.get(key)
+        if not chosen:
+            continue
+        tool = db.query(Herramienta).filter(Herramienta.id == chosen[0]).first()
+        if (
+            not tool or tool.ubicacion != kit.carro_codigo or not _tn_fits(db, requirement.tn, tool.tn)
+            or (component.categoria == "matriz" and clearance_range and not _clearance_in_range(tool, clearance_range))
+        ):
+            continue
+        component.herramienta_nueva_id = tool.id
+        component.origen_codigo = chosen[1]
+        component.estado = "ready"
+        db.add(ReservaHerramienta(herramienta_id=tool.id, surtido_id=kit.id, componente_id=component.id))
+        if component.categoria == "punzon":
+            requirement.punch_tool_id = tool.id
+        else:
+            requirement.die_tool_id = tool.id
+        applied.add(key)
+        kept += 1
+
+    returned = []
+    for key, (tool_id, origin, station) in previous.items():
+        if key in applied:
+            continue
+        tool = db.query(Herramienta).filter(Herramienta.id == tool_id).first()
+        if tool and tool.ubicacion == kit.carro_codigo:
+            destination = origin or _home_rack(db, tool.id)
+            if destination:
+                _append_movement(
+                    db, tool, kit.carro_codigo, destination, "kit_refresh_returned", actor,
+                    details="Kit refreshed: this position changed", kit_id=kit.id,
+                )
+            returned.append({
+                "tool_id": tool.id, "to": destination, "station": station,
+                "tn": key[0], "category": key[2],
+            })
+    new_keys = {(row.tn, row.angle): row.station for row in new_requirements.values()}
+    added = [{"station": station, "tn": tn, "angle": angle} for (tn, angle), station in new_keys.items() if (tn, angle) not in old_keys]
+    removed = [{"station": station, "tn": tn, "angle": angle} for (tn, angle), station in old_keys.items() if (tn, angle) not in new_keys]
+    kit.estado = "paused" if kit.estado == "paused" else "preparing"
+    kit.qr_token = None
+    kit.actualizado_en = utcnow()
+    db.flush()
+    _try_mark_ready(db, kit)
+    _log_machine_event(
+        db, kit.maquina_codigo, "kit_refresh",
+        f"{part}: kit compared again; {kept} kept, {len(returned)} returned to racks", actor,
+    )
+    result = _kit_read(db, kit)
+    result["warnings"] = setup_warnings(db, kit.maquina_codigo, parsed) if parsed else []
+    return {"kit": result, "changed": True, "returned": returned, "added": added, "removed": removed, "kept": kept}
+
+
+def _kit_blockers(db, kit, components, strict=True):
+    # Each position needs a punch and a die; kept tools must be on the machine. While the kit waits in
+    # line (not strict), a kept tool may still be on the cart of the kit before it.
     blockers = []
     open_requests = db.query(SolicitudServicio).filter(
         SolicitudServicio.maquina_codigo == kit.maquina_codigo,
@@ -1727,11 +1966,41 @@ def _kit_blockers(db, kit, components):
                 continue
             if component.accion == "keep":
                 tool = db.query(Herramienta).filter(Herramienta.id == tool_id).first()
-                if not tool or tool.ubicacion != kit.maquina_codigo or tool.estado != "disponible":
+                on_machine = bool(tool) and tool.ubicacion == kit.maquina_codigo and tool.estado == "disponible"
+                waiting_in_line = (
+                    not strict and bool(tool) and db.query(ReservaHerramienta.herramienta_id).join(
+                        Surtido, Surtido.id == ReservaHerramienta.surtido_id
+                    ).filter(
+                        ReservaHerramienta.herramienta_id == tool_id,
+                        ReservaHerramienta.surtido_id != kit.id,
+                        Surtido.maquina_codigo == kit.maquina_codigo,
+                        Surtido.estado.in_(OPEN_KIT_STATES),
+                    ).first() is not None
+                )
+                if not (on_machine or waiting_in_line):
                     blockers.append(
                         f"{label}: {name} {tool_id} is no longer mounted on {kit.maquina_codigo}"
                     )
     return blockers
+
+
+def _try_mark_ready(db, kit):
+    """A finished kit goes to 'ready' by itself (with its delivery QR); delivery to the machine can wait."""
+    if kit.estado != "preparing":
+        return False
+    components = db.query(ComponenteSurtido).filter(ComponenteSurtido.surtido_id == kit.id).all()
+    if not components or any(
+        component.estado != "ready" or (component.accion != "keep" and not component.herramienta_nueva_id)
+        for component in components
+    ):
+        return False
+    if _kit_blockers(db, kit, components, strict=False):
+        return False
+    if not kit.qr_token:
+        kit.qr_token = secrets.token_urlsafe(32)
+    kit.estado = "ready"
+    kit.actualizado_en = utcnow()
+    return True
 
 
 @router.post("/kits/{kit_id}/qr")
@@ -1752,7 +2021,7 @@ def generate_kit_qr_token(kit_id: str):
             if component.estado != "ready"
             or (component.accion != "keep" and not component.herramienta_nueva_id)
         ]
-        blockers = _kit_blockers(db, kit, components)
+        blockers = _kit_blockers(db, kit, components, strict=False)
         if missing or blockers:
             raise HTTPException(
                 status_code=409,
@@ -1798,6 +2067,53 @@ def confirm_kit_delivery(item: DeliveryScan):
                 status_code=409,
                 detail=f"This kit is for machine {kit.maquina_codigo}, but {scanned_machine} was scanned",
             )
+        mounted_state = db.query(EstadoMaquina).filter(
+            EstadoMaquina.maquina_codigo == kit.maquina_codigo
+        ).first()
+        queue = _open_kits(db, kit.maquina_codigo)
+        head = queue[0] if queue else kit
+        if kit.id != head.id or kit.setup_anterior_id != (mounted_state.setup_activo_id if mounted_state else None):
+            reason = (item.motivo_orden or "").strip()
+            if not (item.fuera_de_orden and reason):
+                if kit.id != head.id:
+                    head_setup = db.query(Setup).filter(Setup.id == head.setup_nuevo_id).first()
+                    head_part = _part_from_name(head_setup.nombre_archivo).upper() if head_setup else head.id
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"OUT_OF_ORDER: deliver {head_part} (cart {head.carro_codigo}) first, it is next in line "
+                            f"on {kit.maquina_codigo}."
+                        ),
+                    )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"OUT_OF_ORDER: this kit was compared by hand against a part that is not what is mounted on {kit.maquina_codigo}. "
+                        "Deliver it with a reason to compare it again against what is mounted."
+                        if kit.anterior_manual else
+                        f"OUT_OF_ORDER: what is mounted on {kit.maquina_codigo} changed after this kit was compared. "
+                        "Refresh the kit, or deliver it anyway with a reason."
+                    ),
+                )
+            # Exceptional case chosen by Tool Crib: compare again against what is really mounted.
+            outcome = _refresh_open_kit(
+                db, kit, item.realizado_por, against_setup_id=mounted_state.setup_activo_id if mounted_state else None
+            )
+            _log_machine_event(
+                db, kit.maquina_codigo, "delivery_out_of_order",
+                f"{_part_from_name(db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one().nombre_archivo)} "
+                f"delivered out of line. Reason: {reason}", item.realizado_por,
+            )
+            db.commit()
+            if kit.estado != "ready":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"The kit was compared again with what is mounted and now needs "
+                        f"{sum(c['state'] == 'missing' for c in outcome['kit']['components'])} more tool(s); "
+                        "it went back to in progress."
+                    ),
+                )
         old_setup = db.query(Setup).filter(Setup.id == kit.setup_anterior_id).one()
         new_setup = db.query(Setup).filter(Setup.id == kit.setup_nuevo_id).one()
         machine = _location(db, kit.maquina_codigo, {"machine"})
@@ -1815,10 +2131,10 @@ def confirm_kit_delivery(item: DeliveryScan):
         new_requirements = db.query(RequisitoSetup).filter(
             RequisitoSetup.setup_id == new_setup.id
         ).all()
-        new_by_key = {(row.tn, row.angle): row for row in new_requirements}
         old_requirements = db.query(RequisitoSetup).filter(
             RequisitoSetup.setup_id == old_setup.id
         ).all()
+        new_for_old = {old.id: new for old, new in _pairs(db, old_requirements, new_requirements)[0]}
         component_by_req_cat = {
             (component.requisito_id, component.categoria): component
             for component in components
@@ -1839,7 +2155,7 @@ def confirm_kit_delivery(item: DeliveryScan):
 
         now = utcnow()
         for old_requirement in old_requirements:
-            new_requirement = new_by_key.get((old_requirement.tn, old_requirement.angle))
+            new_requirement = new_for_old.get(old_requirement.id)
             for category in COMPONENT_CATEGORIES:
                 old_tool_id = (
                     old_requirement.punch_tool_id
@@ -1851,7 +2167,7 @@ def confirm_kit_delivery(item: DeliveryScan):
                 replacement_id = None
                 if new_requirement:
                     new_component = component_by_req_cat[(new_requirement.id, category)]
-                    if new_component.accion == "replace":
+                    if new_component.accion != "keep":
                         replacement_id = new_component.herramienta_nueva_id
                 removed_position = new_requirement is None
                 if removed_position or replacement_id:

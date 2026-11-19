@@ -530,7 +530,7 @@ class HerramientaApp:
                 ("TYPE", ttk.Combobox(
                     form,
                     textvariable=type_var,
-                    values=["ROUND", "SQUARE", "RECTANGULAR", "OVAL", "HEXAGONAL", "SPECIAL", "FORMED", "1 RADIUS", "2 RADII", "4 RADII"],
+                    values=list(PUNCH_DIE_TYPES),
                     state="readonly",
                 )),
             )
@@ -1112,9 +1112,7 @@ class HerramientaApp:
         win.configure(bg="#f4f6fa")
         fields = {}
         size_options = ["A", "B", "C", "D", "E"]
-        type_options = [
-            "ROUND", "SQUARE", "RECTANGULAR", "OVAL", "HEXAGONAL", "SPECIAL", "FORMED", "1 RADIUS", "2 RADII", "4 RADII"
-        ]
+        type_options = list(PUNCH_DIE_TYPES)
         labels = [
             ("ID", True),
             ("TN", True),
@@ -1221,9 +1219,7 @@ class HerramientaApp:
         win.configure(bg="#f4f6fa")
         fields = {}
         size_options = ["A", "B", "C", "D", "E"]
-        type_options = [
-            "ROUND", "SQUARE", "RECTANGULAR", "OVAL", "HEXAGONAL", "SPECIAL", "FORMED", "1 RADIUS", "2 RADII", "4 RADII"
-        ]
+        type_options = list(PUNCH_DIE_TYPES)
         labels = [
             ("ID", True),
             ("TN", True),

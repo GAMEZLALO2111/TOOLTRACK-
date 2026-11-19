@@ -5,6 +5,7 @@ import { Dialog, ErrorNote } from "../components/Dialog";
 import { LocationPicker } from "../components/LocationPicker";
 import { Chip } from "../components/MachineCard";
 import { RecordTable, type RecordColumn, type RecordRow } from "../components/RecordTable";
+import { ToolImage } from "../components/ToolImage";
 import { when } from "../components/Service";
 import { CATEGORY_LABEL, TOOL_STATE_CLASS } from "../labels";
 import { go } from "../router";
@@ -271,12 +272,27 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
         <Fact label="Type" value={`${CATEGORY_LABEL[tool.categoria] ?? tool.categoria}${tool.type ? ` · ${tool.type}` : ""}${tool.size ? ` · size ${tool.size}` : ""}`} />
         <Fact label="Home rack" value={where.home_rack ?? "—"} />
         {tool.clearance && <Fact label="Clearance" value={tool.clearance} />}
-        <Fact label="Life" value={tool.life ?? "—"} />
+        <Fact
+          label={tool.categoria === "matriz" ? "Height" : "Life"}
+          value={
+            <>
+              {tool.life ?? "—"} {tool.life_alert && <Chip text="At minimum" className="st-missing" />}
+            </>
+          }
+        />
+        {tool.altura_total && <Fact label="Measured height" value={`${tool.altura_total}${tool.stripper ? ` (stripper ${tool.stripper}${tool.stripper_custom ? ", own" : ""})` : ""}`} />}
+        {tool.proveedor && <Fact label="Supplier" value={tool.proveedor} />}
         {tool.so && <Fact label="SO" value={tool.so} />}
         {where.drawing_name && <Fact label="On part number" value={`${where.drawing_name}${where.station ? ` · station ${where.station}` : ""}`} />}
         <Fact label="Catalog" value={tool.catalog_linked ? "Linked" : "Not linked"} />
         <Fact label="Last movement" value={when(summary.last_movement_at)} />
       </div>
+      {tool.life_alert && (
+        <div className="note note-warn">
+          This {tool.categoria === "matriz" ? "die is at or under its minimum height" : "punch is at its minimum life"} ({tool.life_minimum ?? "—"} in). It can still be kitted and sent to a machine, but it is flagged for the next purchase.
+        </div>
+      )}
+      <ToolImage toolId={tool.id} tn={tool.tn} source={tool.image ?? null} canEditTool={can("inventory.edit")} canEditTn={can("catalog.edit")} onChanged={() => void load()} />
       {summary.sharpenings !== undefined && (
         <div className="summary">
           <span className="chip sum lvl-PARO">{summary.movements} movements</span>

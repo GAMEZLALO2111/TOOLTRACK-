@@ -4,6 +4,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
 
+from tn_tolerance import DEFAULT_TOLERANCE, tn_compatible, tn_difference
+
 
 THICKNESS_CLEARANCE_BANDS = (
     (Decimal("0.020"), Decimal("0.036"), Decimal("0.004"), Decimal("0.006")),
@@ -206,14 +208,43 @@ def clearance_range_for_thickness(thickness: Decimal, tolerance: Decimal = THICK
     return min(item[0] for item in touched), max(item[1] for item in touched)
 
 
-def compare_setup_requirements(current: ParsedSetup, new: ParsedSetup):
-    current_by_key = {requirement.key: requirement for requirement in current.requirements}
-    new_by_key = {requirement.key: requirement for requirement in new.requirements}
-    current_keys = set(current_by_key)
-    new_keys = set(new_by_key)
+def pair_positions(old_items, new_items, tolerance=None):
+    """Pairs the positions of the setup on the machine with those of the new one.
+
+    The same TN is the same physical tool: first it pairs TN + angle, then a TN whose angle changed
+    (the tool is only re-oriented), then a TN within the dimensional tolerance (the mounted tool
+    still fits). Returns (pairs of (old, new), added new, removed old).
+    """
+    tolerance = DEFAULT_TOLERANCE if tolerance is None else tolerance
+    old_left = list(old_items)
+    pairs, unmatched = [], []
+    for new in new_items:
+        match = next((old for old in old_left if (old.tn, old.angle) == (new.tn, new.angle)), None)
+        if match is None:
+            unmatched.append(new)
+        else:
+            old_left.remove(match)
+            pairs.append((match, new))
+    added = []
+    for new in unmatched:
+        match = next((old for old in old_left if old.tn == new.tn), None)
+        if match is None:
+            close = [old for old in old_left if tn_compatible(new.tn, old.tn, tolerance)]
+            match = min(close, key=lambda old: max(abs(value) for value in tn_difference(new.tn, old.tn)), default=None)
+        if match is None:
+            added.append(new)
+        else:
+            old_left.remove(match)
+            pairs.append((match, new))
+    return pairs, added, old_left
+
+
+def compare_setup_requirements(current: ParsedSetup, new: ParsedSetup, tolerance=None):
+    pairs, added, removed = pair_positions(current.requirements, new.requirements, tolerance)
     return {
-        "removed": tuple(current_by_key[key] for key in sorted(current_keys - new_keys)),
-        "added": tuple(new_by_key[key] for key in sorted(new_keys - current_keys)),
-        "unchanged": tuple(new_by_key[key] for key in sorted(current_keys & new_keys)),
+        "removed": tuple(sorted(removed, key=lambda item: (item.tn, item.angle or ""))),
+        "added": tuple(sorted(added, key=lambda item: (item.tn, item.angle or ""))),
+        "unchanged": tuple(sorted((new for _old, new in pairs), key=lambda item: (item.tn, item.angle or ""))),
+        "pairs": tuple(pairs),
         "thickness_changed": current.thickness != new.thickness,
     }

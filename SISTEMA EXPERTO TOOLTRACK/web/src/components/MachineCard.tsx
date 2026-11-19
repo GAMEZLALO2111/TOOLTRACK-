@@ -40,7 +40,7 @@ export function MachineCard({ machine, tv, canKit, canAdd, onOpen, onKit, onAdd 
   const more = pending.length - (actual ? 1 : 0) - (next ? 1 : 0);
   const big = machine.hr_restante !== null ? fmtDuration(machine.hr_restante) : LEVEL_LABEL[machine.nivel];
   const eta = machine.nivel === "PARO" || !actual ? null : fmtEta(actual.hr_pendiente);
-  const needsKit = next && next.estado !== "EN MÁQUINA";
+  const needsKit = next && next.estado !== "KIT LISTO";
   const clickable = !!onOpen;
 
   return (

@@ -26,6 +26,7 @@ class StartRequest(BaseModel):
     carro_codigo: Optional[str] = None
     corregir_actual: bool = False
     motivo_correccion: Optional[str] = None
+    comparacion_manual: bool = False
     creado_por: str
 
 
@@ -45,11 +46,13 @@ def _machine_kind(db, code):
 
 
 def _mounted_name(db, code):
-    state = db.query(EstadoMaquina).filter(EstadoMaquina.maquina_codigo == code).first()
-    setup = (
-        db.query(Setup).filter(Setup.id == state.setup_activo_id).first()
-        if state and state.setup_activo_id else None
-    )
+    """The part the next kit is compared against: the last kit in line for the machine, or what is mounted."""
+    queued = workflow_api._open_kits(db, code)
+    setup_id = queued[-1].setup_nuevo_id if queued else None
+    if setup_id is None:
+        state = db.query(EstadoMaquina).filter(EstadoMaquina.maquina_codigo == code).first()
+        setup_id = state.setup_activo_id if state else None
+    setup = db.query(Setup).filter(Setup.id == setup_id).first() if setup_id else None
     return workflow_api._part_from_name(setup.nombre_archivo).upper() if setup else None
 
 
@@ -94,7 +97,8 @@ def _cart_rows(db, kits):
         kit = by_cart.get(cart.codigo)
         if not kit:
             rows.append({"codigo": cart.codigo, "state": "free", "kit_id": None, "machine": None,
-                         "done": 0, "total": 0, "pending": [], "reason": None})
+                         "done": 0, "total": 0, "pending": [], "reason": None,
+                         "part_number": None, "queue_position": None, "alerts": []})
             continue
         needed = [c for c in kit["components"] if c["action"] != "keep"]
         missing = [c for c in needed if c["state"] == "missing"]
@@ -103,6 +107,9 @@ def _cart_rows(db, kits):
             "done": len(needed) - len(missing), "total": len(needed),
             "pending": [{"tn": c["tn"], "category": c["category"]} for c in missing],
             "reason": kit.get("reason"),
+            "part_number": kit.get("part_number"),
+            "queue_position": kit.get("queue_position"),
+            "alerts": kit.get("alerts", []),
         })
     return rows
 
@@ -127,9 +134,10 @@ def plan(item: PlanRequest):
         kind = _machine_kind(db, code)
         new_program = _stored_program(db, kind, item.setup_nuevo_parte)
         mounted = _mounted_name(db, code)
+        automatic = _default_current(db, kind, mounted)
         current_program = (
             _stored_program(db, kind, item.setup_anterior_parte)
-            if (item.setup_anterior_parte or "").strip() else _default_current(db, kind, mounted)
+            if (item.setup_anterior_parte or "").strip() else automatic
         )
         kits = workflow_api.list_open_kits()
         carts = _cart_rows(db, kits)
@@ -137,6 +145,10 @@ def plan(item: PlanRequest):
             "machine": code,
             "tipo": kind,
             "mounted_part": mounted,
+            "automatic_part": automatic.numero_parte if automatic else None,
+            "manual_comparison": bool(
+                current_program and (automatic is None or current_program.numero_parte != automatic.numero_parte)
+            ),
             "current_part": current_program.numero_parte if current_program else None,
             "new_part": new_program.numero_parte,
             "needs_current": current_program is None,
@@ -203,6 +215,7 @@ def start(item: StartRequest):
             setup_anterior_contenido=current_program.contenido,
             corregir_actual=item.corregir_actual,
             motivo_correccion=item.motivo_correccion,
+            comparacion_manual=item.comparacion_manual,
         )
         chosen_current = current_program.numero_parte
     finally:

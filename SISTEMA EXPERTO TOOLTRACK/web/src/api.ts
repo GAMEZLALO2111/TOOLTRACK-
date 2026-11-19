@@ -98,6 +98,19 @@ export async function download(path: string, fallbackName: string): Promise<void
   URL.revokeObjectURL(url);
 }
 
+/** Loads an image the server protects with the session token. Returns an object URL, or null when there is none. */
+export async function fetchImageUrl(path: string): Promise<string | null> {
+  const session = getSession();
+  let response: Response;
+  try {
+    response = await fetch(path, { headers: session ? { Authorization: `Bearer ${session.token}` } : {} });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  return URL.createObjectURL(await response.blob());
+}
+
 export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
   const session = getSession();
   const headers: Record<string, string> = {};

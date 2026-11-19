@@ -14,6 +14,7 @@ from sqlalchemy import or_
 import auth
 import records_api
 import shifts
+import tool_params
 import workflow_api
 from models.inventory import (
     BajaHerramienta,
@@ -150,6 +151,26 @@ def build_overview(db, days):
     b = _stats(requests, incidents, services, tickets, retirements, kits, previous)
 
     tools = db.query(Herramienta).all()
+    params = tool_params.load(db)
+    watch = defaultdict(lambda: {"at_minimum": [], "healthy": 0})
+    for tool in tools:
+        if (tool.estado or "disponible") == "baja":
+            continue
+        entry = watch[(tool.tn, tool.categoria)]
+        if tool_params.life_alert(tool.categoria, tool.life, params):
+            entry["at_minimum"].append(tool.id)
+        else:
+            entry["healthy"] += 1
+    purchase_watch = sorted(
+        (
+            {
+                "tn": tn, "category": category, "at_minimum": len(entry["at_minimum"]),
+                "healthy": entry["healthy"], "tool_ids": sorted(entry["at_minimum"])[:6],
+            }
+            for (tn, category), entry in watch.items() if entry["at_minimum"]
+        ),
+        key=lambda item: (item["healthy"], -item["at_minimum"], item["tn"] or ""),
+    )
     locations = {row.codigo: row.tipo for row in db.query(Ubicacion).all()}
     status = Counter((tool.estado or "disponible") for tool in tools)
     in_service = Counter(
@@ -284,6 +305,12 @@ def build_overview(db, days):
             "in_service": [{"key": key, "label": key, "value": value} for key, value in in_service.most_common()],
         },
         "tools_attention": tools_attention,
+        "purchase_watch": {
+            "at_minimum": sum(item["at_minimum"] for item in purchase_watch),
+            "without_stock": sum(1 for item in purchase_watch if item["healthy"] == 0),
+            "limits": {"punch_min_life": float(params["punch_min_life"]), "die_min_height": float(params["die_min_height"])},
+            "rows": purchase_watch[:TOP],
+        },
         "maintenance": maintenance,
         "kits": kits_summary,
         "plan": plan,
@@ -355,6 +382,11 @@ def _insights(data, a, b):
         notes.append(f"{top['label']} has {share}% of the damage reports.")
     if a["abnormal"]:
         notes.append(f"{a['abnormal']} sharpening(s) removed more than the normal amount of material and were justified one by one.")
+    watch = data["purchase_watch"]
+    if watch["at_minimum"]:
+        notes.append(
+            f"{watch['at_minimum']} tool(s) reached their minimum life or height; {watch['without_stock']} TN(s) have no healthy stock left: plan the next purchase."
+        )
     if data["maintenance"]["open_now"]:
         notes.append(f"{data['maintenance']['open_now']} tool(s) are in Maintenance now; the oldest has waited {data['maintenance']['oldest_open_days']} days.")
     plan = data["plan"]

@@ -32,6 +32,12 @@ interface Overview {
   damage_by_tn: Datum[];
   inventory: { total: number; status: Datum[]; in_service: Datum[] };
   tools_attention: { tool_id: string; tn: string | null; category: string | null; status: string | null; life: string | null; services: number; ground_off: number; abnormal: number; incidents: number }[];
+  purchase_watch: {
+    at_minimum: number;
+    without_stock: number;
+    limits: { punch_min_life: number; die_min_height: number };
+    rows: { tn: string | null; category: string | null; at_minimum: number; healthy: number; tool_ids: string[] }[];
+  };
   maintenance: { opened: number; closed: number; open_now: number; oldest_open_days: number; avg_days: number | null; results: Datum[] };
   kits: { delivered: number; avg_minutes: number | null; cancelled: number; open_now: number; by_machine: Datum[] };
   plan: { levels: Datum[]; machines_total: number; queue_hours: number; completion_pct: number | null; planned_pieces: number; produced_pieces: number; demands: number; queue_by_machine: Datum[] };
@@ -265,6 +271,50 @@ export function InsightsPage() {
                           <td>{tool.abnormal || "—"}</td>
                           <td>{tool.incidents || "—"}</td>
                           <td>{tool.life ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Panel>
+            <Panel
+              title="Next purchase"
+              subtitle={`Tools at or below the minimum (punch tip ${data.purchase_watch.limits.punch_min_life.toFixed(3)} in. over the stripper, die height ${data.purchase_watch.limits.die_min_height.toFixed(3)} in.). They keep working; this is the watch list`}
+              wide
+            >
+              {data.purchase_watch.rows.length === 0 ? (
+                <p className="muted chart-empty">No tool is at its minimum.</p>
+              ) : (
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>TN</th>
+                        <th>Type</th>
+                        <th>At minimum</th>
+                        <th>Healthy in stock</th>
+                        <th>Tools</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.purchase_watch.rows.map((row) => (
+                        <tr key={`${row.tn}/${row.category}`}>
+                          <td>
+                            <strong>{row.tn ?? "—"}</strong>
+                          </td>
+                          <td>{row.category === "punzon" ? "Punch" : row.category === "matriz" ? "Die" : "—"}</td>
+                          <td>{row.at_minimum}</td>
+                          <td>{row.healthy === 0 ? <span className="warn-text">None: buy</span> : row.healthy}</td>
+                          <td>
+                            {row.tool_ids.map((id, index) => (
+                              <span key={id}>
+                                {index > 0 && ", "}
+                                <ToolLink id={id} />
+                              </span>
+                            ))}
+                            {row.at_minimum > row.tool_ids.length ? "…" : ""}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

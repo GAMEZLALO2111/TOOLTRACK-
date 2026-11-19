@@ -137,6 +137,21 @@ export function KitDetailPage({ kitId }: { kitId: string }) {
             {kit.reason && <Stat label="Reason" value={kit.reason} />}
           </div>
 
+          {kit.ahead && kit.ahead.length > 0 && (
+            <div className="note note-info">
+              Line for {kit.machine}: this kit is number {kit.queue_position}. Deliver first {kit.ahead.map((a) => `${a.part_number ?? "kit"} (cart ${a.cart})`).join(" → ")}.
+            </div>
+          )}
+          {kit.alerts && kit.alerts.length > 0 && (
+            <div className="note note-warn">
+              ⚠ {kit.alerts.join(" ")}{" "}
+              {canOperate && (
+                <button className="btn" disabled={busy} onClick={() => void refresh()}>
+                  Compare again
+                </button>
+              )}
+            </div>
+          )}
           {kit.state === "paused" && <div className="note note-warn">This kit is paused. Resume it to keep scanning tools.</div>}
           {kit.state === "cancelled" && <div className="note note-info">This kit was cancelled. Its tools went back to their racks.</div>}
           {kit.state === "delivered" && !delivered && <div className="note note-info">This kit was delivered{kit.delivered_at ? ` on ${new Date(kit.delivered_at + "Z").toLocaleString()}` : ""}.</div>}
@@ -314,17 +329,30 @@ function DeliveryPanel({ kit, qr, onDelivered }: { kit: Kit; qr: KitQr; onDelive
   const [kitScan, setKitScan] = useState(qr.scan_value);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [outOfLine, setOutOfLine] = useState(false);
+  const [reason, setReason] = useState("");
 
-  async function confirm(event: FormEvent) {
-    event.preventDefault();
+  async function confirm(event: FormEvent | null, override = false) {
+    event?.preventDefault();
     if (!machineScan.trim()) return setError(`First scan the QR on machine ${kit.machine} (or type ${kit.machine}).`);
     if (!kitScan.trim()) return setError("Scan or paste the kit QR value.");
+    if (override && !reason.trim()) return setError("Write why this kit is delivered out of line.");
     setBusy(true);
     setError(null);
     try {
-      onDelivered(await api<DeliveryResult>("POST", "/workflow/delivery/scan", { scan_value: kitScan.trim(), machine_scan: machineScan.trim(), realizado_por: "web" }));
+      onDelivered(
+        await api<DeliveryResult>("POST", "/workflow/delivery/scan", {
+          scan_value: kitScan.trim(),
+          machine_scan: machineScan.trim(),
+          realizado_por: "web",
+          fuera_de_orden: override,
+          motivo_orden: override ? reason.trim() : null,
+        }),
+      );
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "The delivery could not be confirmed.");
+      const message = caught instanceof ApiError ? caught.message : "The delivery could not be confirmed.";
+      setOutOfLine(message.startsWith("OUT_OF_ORDER"));
+      setError(message.replace(/^OUT_OF_ORDER:\s*/, ""));
       setBusy(false);
     }
   }
@@ -349,6 +377,15 @@ function DeliveryPanel({ kit, qr, onDelivered }: { kit: Kit; qr: KitQr; onDelive
             <input value={kitScan} onChange={(event) => setKitScan(event.target.value)} autoComplete="off" />
           </label>
           <ErrorNote message={error} />
+          {outOfLine && (
+            <div className="note note-warn">
+              <p className="small">Exceptional case: the kit is compared again with what is mounted and delivered only if it is still complete. The reason is saved.</p>
+              <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why deliver it out of line?" aria-label="Reason" />
+              <button type="button" className="btn" disabled={busy} onClick={() => void confirm(null, true)}>
+                Deliver anyway
+              </button>
+            </div>
+          )}
           <div className="form-actions">
             <button type="button" className="btn" onClick={() => window.print()}>
               Print label
@@ -440,11 +477,19 @@ function ComponentTable({ rows, onChoose, clearance }: { rows: KitComponent[]; o
               <td>
                 <strong>{c.tn}</strong>
               </td>
-              <td>{c.angle ?? "—"}</td>
+              <td>
+                {c.angle ?? "—"}
+                {c.reorient && <div className="muted small">was {c.previous_angle ? `${c.previous_angle}°` : "—"}: re-orient</div>}
+              </td>
               <td>{CATEGORY_LABEL[c.category] ?? c.category}</td>
               {clearance !== undefined && <td>{c.category === "matriz" ? clearance ?? "—" : "—"}</td>}
               <td>{ACTION_LABEL[c.action] ?? c.action}</td>
-              <td>{c.tool_id ?? "—"}</td>
+              <td>{c.tool_id ?? "—"}
+                {c.substitute && c.tool_tn && (
+                  <div className="muted small">TN {c.tool_tn}{c.tn_difference ? ` (${c.tn_difference} in.)` : ""}</div>
+                )}
+                {c.life_alert && <Chip text="At minimum" className="st-missing" />}
+              </td>
               <td className="hide-sm muted">{c.source_location ?? "—"}</td>
               <td>
                 <Chip text={COMPONENT_STATE_LABEL[c.state] ?? c.state} className={c.state === "ready" ? "st-onmachine" : c.state === "cancelled" ? "st-notstarted" : "st-kitting"} />
@@ -535,6 +580,8 @@ function ChooseDialog({ kit, component, onClose, onChosen }: { kit: Kit; compone
                 <tr key={c.id}>
                   <td>
                     <strong>{c.id}</strong>
+                    {c.substitute && <div className="muted small">TN {c.tn}{c.tn_difference ? ` (${c.tn_difference} in.)` : ""}</div>}
+                    {c.life_alert && <Chip text="At minimum" className="st-missing" />}
                   </td>
                   <td>{c.type ?? "—"}</td>
                   <td>{c.size ?? "—"}</td>

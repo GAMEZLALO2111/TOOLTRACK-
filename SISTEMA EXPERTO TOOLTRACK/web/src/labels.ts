@@ -24,7 +24,7 @@ export const STATUS_LABEL: Record<string, string> = {
   "NO INICIADO": "NOT STARTED",
   SURTIENDO: "KITTING",
   "FALTA HERRAMIENTAS": "MISSING TOOLS",
-  "EN MÁQUINA": "ON MACHINE",
+  "KIT LISTO": "KIT READY",
   CORRIENDO: "RUNNING",
   TERMINADO: "DONE",
 };
@@ -33,7 +33,7 @@ export const STATUS_CLASS: Record<string, string> = {
   "NO INICIADO": "st-notstarted",
   SURTIENDO: "st-kitting",
   "FALTA HERRAMIENTAS": "st-missing",
-  "EN MÁQUINA": "st-onmachine",
+  "KIT LISTO": "st-onmachine",
   CORRIENDO: "st-running",
   TERMINADO: "st-done",
 };

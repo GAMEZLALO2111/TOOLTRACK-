@@ -78,6 +78,10 @@ export function PickSheetPage({ kitId }: { kitId: string }) {
                         <>
                           <strong>{item.suggested.id}</strong>
                           <div className="muted">{toolText(item.suggested)}</div>
+                          {item.suggested.substitute && (
+                            <div className="muted">TN {item.suggested.tn}{item.suggested.tn_difference ? ` (${item.suggested.tn_difference} in.)` : ""}</div>
+                          )}
+                          {item.suggested.life_alert && <div><strong>At minimum life</strong></div>}
                         </>
                       ) : (
                         <strong>No tool in a rack</strong>

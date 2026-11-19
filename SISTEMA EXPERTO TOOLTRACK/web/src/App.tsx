@@ -13,6 +13,7 @@ import { ManufacturingPage } from "./pages/Manufacturing";
 import { MaintenancePage } from "./pages/Maintenance";
 import { RecordsPage } from "./pages/Records";
 import { InsightsPage } from "./pages/Insights";
+import { PlanningPage } from "./pages/Planning";
 import { ServiceRequestsPage } from "./pages/ServiceRequests";
 import { RequestsTab } from "./components/RequestsTab";
 import { UsersPage } from "./pages/Users";
@@ -38,6 +39,7 @@ function Shell() {
   const tabs = [
     { path: "/board", label: "Board", show: can("demand.view") },
     { path: "/insights", label: "Dashboard", show: can("insights.view") },
+    { path: "/planning", label: "Planning", show: can("planning.view") },
     { path: "/kitting", label: "Kitting", show: can("kitting.view") },
     { path: "/requests", label: "Requests", show: can("service.view") },
     { path: "/maintenance", label: "Maintenance", show: can("maintenance.view") },
@@ -58,10 +60,12 @@ function Shell() {
   const machinesMatch = route.path.match(/^\/machines(?:\/([^/]+))?$/);
   const manufacturingMatch = route.path === "/manufacturing";
   const recordsMatch = route.path.match(/^\/records(?:\/([a-z]+))?$/);
+  const planningMatch = route.path.match(/^\/planning(?:\/([a-z]+))?$/);
   const returnsRoute = route.path === "/kitting/returns" || route.path === "/kitting/pending" || oldTrackingMatch?.[1] === "returns";
   let page;
   if (route.path === "/users" && can("user.manage")) page = <UsersPage />;
   else if (route.path === "/insights" && can("insights.view")) page = <InsightsPage />;
+  else if (planningMatch && can("planning.view")) page = <PlanningPage tab={planningMatch[1] ?? ""} />;
   else if (programsMatch && can("program.view")) page = <ProgramsPage tab={programsMatch[1] ?? ""} />
   else if (machinesMatch && can("machine.view")) page = <MachinesPage code={machinesMatch[1] ? decodeURIComponent(machinesMatch[1]) : null} />
   else if (manufacturingMatch && can("manufacturing.view")) page = <ManufacturingPage route={route} />

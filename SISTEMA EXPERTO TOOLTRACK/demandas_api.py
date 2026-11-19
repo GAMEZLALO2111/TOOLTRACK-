@@ -6,11 +6,13 @@ from sqlalchemy import func
 
 from db import SessionLocal
 from auth import require_permission
+import shifts
 from models.inventory import (
     DemandaPlaneacion,
     EstadoMaquina,
     Maquina,
     ProgramaParte,
+    RegistroProduccion,
     Setup,
     SolicitudServicio,
     Surtido,
@@ -27,7 +29,7 @@ MARCAS = ("PARO PROGRAMADO", "URGENTE", "LÁSER", "CORTE DE BLANCK")
 ESTADO_POR_KIT = {
     "preparing": "SURTIENDO",
     "paused": "FALTA HERRAMIENTAS",
-    "ready": "EN MÁQUINA",
+    "ready": "KIT LISTO",
 }
 
 
@@ -389,26 +391,41 @@ def actualizar_demanda(demand_id: int, item: DemandaUpdate):
         if "orden" in changes and (changes["orden"] or 0) < 0:
             raise HTTPException(status_code=400, detail="El orden no puede ser negativo")
         final_cantidad = changes.get("cantidad", demand.cantidad)
-        final_producido = changes.get("piezas_producidas", demand.piezas_producidas)
-        if final_producido > final_cantidad:
-            raise HTTPException(status_code=400, detail="Las piezas producidas no pueden superar la cantidad")
         marca = changes.get("marca", demand.marca)
         comentario = changes.get("comentario", demand.comentario)
         if marca == "":
             marca = None
         _validate_marca(marca, comentario)
+        previous_produced = demand.piezas_producidas
         for field, value in changes.items():
             setattr(demand, field, value)
         demand.marca = marca
-        demand.actualizado_en = utcnow()
+        now = utcnow()
+        demand.actualizado_en = now
+        if "piezas_producidas" in changes and demand.piezas_producidas != previous_produced:
+            delta = demand.piezas_producidas - previous_produced
+            registrar_produccion(
+                db, demand.numero_parte, delta, user.username, maquina=demand.maquina_codigo, demanda_id=demand.id,
+                nota=None if delta > 0 else "Correction: the total produced was lowered",
+            )
         db.commit()
         return {"id": demand.id, "ok": True}
     finally:
         db.close()
 
 
+CIERRES = ("terminada", "cancelada", "reemplazada")
+
+
 @router.delete("/{demand_id}")
-def desactivar_demanda(demand_id: int):
+def desactivar_demanda(demand_id: int, motivo: str = "", estado: str = "cancelada"):
+    """Quita la demanda del Board. No borra nada: lo producido queda en el registro de producción."""
+    user = require_permission("demand.manage")
+    reason = (motivo or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=400, detail="Escribe el motivo para quitar la demanda")
+    if estado not in CIERRES:
+        raise HTTPException(status_code=400, detail=f"Estado no válido: {estado}")
     db = SessionLocal()
     try:
         demand = db.query(DemandaPlaneacion).filter(
@@ -416,9 +433,54 @@ def desactivar_demanda(demand_id: int):
         ).first()
         if not demand:
             raise HTTPException(status_code=404, detail="Demanda no encontrada")
+        now = utcnow()
         demand.activa = False
-        demand.actualizado_en = utcnow()
+        demand.estado_cierre = estado
+        demand.motivo_cierre = reason
+        demand.cerrado_por = user.username
+        demand.cerrado_en = now
+        demand.actualizado_en = now
         db.commit()
         return {"id": demand.id, "ok": True}
     finally:
         db.close()
+
+
+@router.get("/production")
+def listar_produccion(numero_parte: Optional[str] = None, maquina: Optional[str] = None,
+                      demanda_id: Optional[int] = None, limit: int = 200):
+    db = SessionLocal()
+    try:
+        query = db.query(RegistroProduccion)
+        if numero_parte:
+            query = query.filter(RegistroProduccion.numero_parte == numero_parte.strip().upper())
+        if maquina:
+            query = query.filter(RegistroProduccion.maquina_codigo == maquina.strip().upper())
+        if demanda_id is not None:
+            query = query.filter(RegistroProduccion.demanda_id == demanda_id)
+        rows = query.order_by(RegistroProduccion.fecha_produccion.desc(), RegistroProduccion.id.desc()).limit(
+            max(1, min(limit, 1000))
+        ).all()
+        return [
+            {
+                "id": row.id, "demand_id": row.demanda_id, "part_number": row.numero_parte,
+                "machine": row.maquina_codigo, "pieces": row.piezas,
+                "produced_at": row.fecha_produccion.isoformat(), "estimated_date": bool(row.fecha_estimada),
+                "shift": row.turno, "source": row.fuente, "external_id": row.id_externo,
+                "captured_by": row.capturado_por, "note": row.nota,
+            }
+            for row in rows
+        ]
+    finally:
+        db.close()
+
+
+def registrar_produccion(db, numero_parte, piezas, usuario, maquina=None, demanda_id=None, fecha=None,
+                         fuente="manual", id_externo=None, nota=None):
+    """Appends a production record (never edited or deleted). A later BAAN/MESPRO import uses the same call."""
+    when = fecha or utcnow()
+    db.add(RegistroProduccion(
+        demanda_id=demanda_id, numero_parte=numero_parte.strip().upper(), maquina_codigo=maquina, piezas=piezas,
+        fecha_produccion=when, turno=shifts.shift_for(when), fuente=fuente, id_externo=id_externo,
+        capturado_por=usuario, capturado_en=utcnow(), nota=nota,
+    ))

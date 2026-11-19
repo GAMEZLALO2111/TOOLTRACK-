@@ -72,11 +72,13 @@ ROLE_PERMISSIONS = {
     "PLANNING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "demand.view",
         "demand.manage", "demand.mark", "program.view", "program.uph", "machine.view", "setup.view", "insights.view",
+        "planning.view", "planning.manage",
     }),
     "ENGINEERING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "setup.view",
         "demand.view", "demand.mark", "program.view", "program.manage", "program.uph", "machine.view",
         "maintenance.view", "audit.view", "service.view", "service.attend", "records.view", "insights.view",
+        "planning.view",
     }),
 }
 # El administrador puede todo lo que existe (incluye operación para poder probar y dar soporte);
@@ -85,7 +87,7 @@ ALL_PERMISSIONS = frozenset(set().union(*ROLE_PERMISSIONS.values()) | {
     "user.manage", "machine.manage", "inventory.delete", "demand.manage", "audit.view",
     "locations.manage", "catalog.edit", "setup.baseline", "program.manage", "inventory.edit",
     "inventory.adjust", "demand.mark", "maintenance.operate", "manufacturing.view", "program.uph",
-    "machine.operate",
+    "machine.operate", "planning.view", "planning.manage",
 })
 ROLE_PERMISSIONS["SYSTEM_ADMIN"] = ALL_PERMISSIONS
 
@@ -113,6 +115,14 @@ ROUTE_RULES = {
     ("POST", "/inventario/herramientas"): "inventory.edit",
     ("GET", "/inventario/herramientas"): "inventory.view",
     ("GET", "/inventario/opciones"): "inventory.view",
+    ("GET", "/inventario/parametros"): "inventory.view",
+    ("PUT", "/inventario/parametros"): "inventory.edit",
+    ("GET", "/inventario/herramientas/{herramienta_id}/imagen"): "inventory.view",
+    ("PUT", "/inventario/herramientas/{herramienta_id}/imagen"): "inventory.edit",
+    ("DELETE", "/inventario/herramientas/{herramienta_id}/imagen"): "inventory.edit",
+    ("GET", "/catalogo/tn/{tn}/imagen"): "catalog.view",
+    ("PUT", "/catalogo/tn/{tn}/imagen"): "catalog.edit",
+    ("DELETE", "/catalogo/tn/{tn}/imagen"): "catalog.edit",
     ("PUT", "/inventario/herramientas/{herramienta_id}"): "inventory.edit",
     ("POST", "/herramientas/"): "inventory.edit",
     ("GET", "/herramientas/"): "inventory.view",
@@ -222,6 +232,19 @@ ROUTE_RULES = {
     ("POST", "/workflow/demandas"): "demand.manage",
     ("PATCH", "/workflow/demandas/{demand_id}"): AUTHENTICATED,  # permisos por campo en el endpoint
     ("DELETE", "/workflow/demandas/{demand_id}"): "demand.manage",
+    ("GET", "/workflow/demandas/production"): "demand.view",
+    ("GET", "/planeacion/fg"): "planning.view",
+    ("POST", "/planeacion/fg"): "planning.manage",
+    ("PUT", "/planeacion/fg/{fg_id}"): "planning.manage",
+    ("DELETE", "/planeacion/fg/{fg_id}"): "planning.manage",
+    ("POST", "/planeacion/fg/importar"): "planning.manage",
+    ("GET", "/planeacion/partes"): "planning.view",
+    ("GET", "/planeacion/forecast"): "planning.view",
+    ("PUT", "/planeacion/forecast"): "planning.manage",
+    ("GET", "/planeacion/maquinas"): "planning.view",
+    ("PUT", "/planeacion/maquinas/{code}"): "planning.manage",
+    ("PUT", "/planeacion/parametros"): "planning.manage",
+    ("GET", "/planeacion/capacidad"): "planning.view",
 }
 
 

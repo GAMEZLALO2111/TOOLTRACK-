@@ -6,7 +6,7 @@ import { Chip } from "../components/MachineCard";
 import { ReasonDialog } from "../components/ReasonDialog";
 import { ScanInput } from "../components/ScanInput";
 import { locationCode, type Capture } from "../scan";
-import { canReceive, IncidentFields, incidentMissing, positionLabel, problemLabel, RequestChip, when, type IncidentValues } from "../components/Service";
+import { canReceive, IncidentFields, incidentMissing, PilotNote, positionLabel, problemLabel, RequestChip, when, type IncidentValues } from "../components/Service";
 import { KIT_STATE_LABEL, PROGRAM_PROBLEMS, SERVICE_TYPE_LABEL, SERVICE_TYPES, TOOL_STATE_CLASS, TOOL_STATE_LABEL } from "../labels";
 import { go, type Route } from "../router";
 import type { ManufacturingMachineOption, ManufacturingWorkspace, ServiceRequest } from "../types";
@@ -85,6 +85,10 @@ function ToolCell({ component, canRequest, onRequest, onRegister, onReceive }: T
       <span className="chips">
         <Chip text={TOOL_STATE_LABEL[status] ?? status} className={TOOL_STATE_CLASS[status] ?? ""} />
         {component.state === "incompatible" && <Chip text="Does not match" className="st-missing" />}
+        {component.pilot_change && <Chip text={`Pilot change · TN ${component.tn}`} className="st-kitting" />}
+        {component.substitute && !component.pilot_change && component.state !== "incompatible" && (
+          <Chip text={`TN ${component.tn} (${component.tn_difference} in.)`} className="st-kitting" />
+        )}
         {component.clearance_valid === false && <Chip text="Clearance out of range" className="st-missing" />}
         {component.state === "elsewhere" && <Chip text={`In ${component.location ?? "unknown"}`} className="st-kitting" />}
       </span>
@@ -121,11 +125,16 @@ function RequestDialog({ machine, station, component, onClose, onDone }: Request
   const chosen = SERVICE_TYPES.find((option) => option.value === type);
   const noteRequired = !!chosen?.noteRequired;
   const isDamage = type === "damage";
+  const isRound = /^1\d+$/.test(station.tn);
+  const [pilot, setPilot] = useState(false);
+  const canPilot = isRound && (type === "replacement" || type === "tool_request");
+  const pilotChange = canPilot && pilot;
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     if (!type) return setError("Choose what you need from Tool Crib.");
     if (noteRequired && !note.trim()) return setError("Describe what happened so Tool Crib knows what to expect.");
+    if (pilotChange && note.trim().length < 5) return setError("Write which pilot size is needed and why.");
     const missing = isDamage ? incidentMissing(incident) : null;
     if (missing) return setError(missing);
     setBusy(true);
@@ -142,6 +151,7 @@ function RequestDialog({ machine, station, component, onClose, onDone }: Request
           tipo: type,
           tool_id: component.tool_id,
           nota: note.trim() || null,
+          ...(pilotChange ? { cambio_piloto: true } : {}),
           ...(isDamage ? { operador: incident.operator, causa: incident.cause, momento: incident.moment } : {}),
         }),
       );
@@ -178,18 +188,40 @@ function RequestDialog({ machine, station, component, onClose, onDone }: Request
             <div className="muted small">What do you need?</div>
             <div className="svc-options">
               {SERVICE_TYPES.map((option) => (
-                <label key={option.value} className={`svc-option${type === option.value ? " selected" : ""}`}>
-                  <input type="radio" name="service-type" value={option.value} checked={type === option.value} onChange={() => setType(option.value)} />
+                <label key={option.value} className={`svc-option${type === option.value && !pilotChange ? " selected" : ""}`}>
+                  <input type="radio" name="service-type" value={option.value} checked={type === option.value && !pilotChange} onChange={() => { setType(option.value); setPilot(false); }} />
                   <span>
                     <strong>{option.label}</strong>
                   </span>
                 </label>
               ))}
+              {isRound && (
+                <label className={`svc-option${pilotChange ? " selected" : ""}`}>
+                  <input type="radio" name="service-type" value="pilot" checked={pilotChange} onChange={() => { setType("replacement"); setPilot(true); }} />
+                  <span>
+                    <strong>Pilot change</strong>
+                    <span className="muted small"> a different round size</span>
+                  </span>
+                </label>
+              )}
             </div>
             <p className="note note-warn">Take the tool off the machine first. This position will show as empty until Tool Crib brings the replacement.</p>
           </>
         )}
         {isDamage && <IncidentFields values={incident} onChange={setIncident} />}
+        {emptyPosition && isRound && (
+          <label className="check">
+            <input type="checkbox" checked={pilot} onChange={(event) => setPilot(event.target.checked)} />
+            <span>
+              <strong>Pilot change</strong> — I need a different round size than TN {station.tn}.
+            </span>
+          </label>
+        )}
+        {pilotChange && (
+          <p className="note note-info">
+            Tool Crib can bring any round tool, even outside the usual tolerance. The ticket keeps the size asked for ({station.tn}) and the one installed. Write the size you need and why.
+          </p>
+        )}
         {type && (
           <label>
             {noteRequired ? "What happened? (required)" : "Notes (optional)"}
@@ -381,6 +413,7 @@ function ReceiveDialog({ request, onClose, onDone }: { request: ServiceRequest; 
           <Fact label="Position" value={positionLabel(request)} />
           {request.tool_id && <Fact label="Tool removed" value={request.tool_id} />}
         </div>
+        <PilotNote request={request} />
         <ScanInput className="big-input" value={toolId} onValue={(value, mode) => { setToolId(value); setCapture(mode); }} placeholder="Scan the tool, or type its ID" autoFocus aria-label="Tool ID" />
         <ErrorNote message={error} />
       </form>

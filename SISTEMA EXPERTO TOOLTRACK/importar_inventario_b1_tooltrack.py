@@ -63,10 +63,10 @@ def normalize_category(value):
 def normalize_type(value):
     text = (clean(value) or "").upper()
     aliases = {
-        "ROUND": "REDONDO", "RD": "REDONDO",
-        "SQUARE": "CUADRADO", "SQ": "CUADRADO",
+        "ROUND": "ROUND", "RD": "ROUND", "REDONDO": "ROUND",
+        "SQUARE": "SQUARE", "SQ": "SQUARE", "CUADRADO": "SQUARE",
         "RECTANGULAR": "RECTANGULAR", "RECTANGLE": "RECTANGULAR", "RECT": "RECTANGULAR",
-        "OBROUND": "OBLONGO", "OBLONG": "OBLONGO",
+        "OBROUND": "OVAL", "OBLONG": "OVAL", "OBLONGO": "OVAL",
     }
     return aliases.get(text, text) or None
 

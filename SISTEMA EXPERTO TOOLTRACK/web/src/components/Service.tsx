@@ -105,14 +105,24 @@ export function canReceive(request: Pick<ServiceRequest, "state" | "type">): boo
   return request.state === "collected" || (request.type === "tool_request" && request.state === "attending");
 }
 
-export function positionLabel(request: Pick<ServiceRequest, "type" | "station" | "category" | "tn" | "part_number"> & Partial<Pick<ServiceRequest, "work_order" | "quantity">>): string {
+export function PilotNote({ request }: { request: Pick<ServiceRequest, "tn"> & Partial<Pick<ServiceRequest, "pilot_change" | "installed_tn" | "tn_difference">> }) {
+  if (!request.pilot_change) return null;
+  return (
+    <p className="note note-info">
+      <strong>Pilot change.</strong> Requested TN {request.tn}
+      {request.installed_tn ? ` · installed TN ${request.installed_tn}${request.tn_difference ? ` (${request.tn_difference} in.)` : ""}` : " · any round tool is accepted"}
+    </p>
+  );
+}
+
+export function positionLabel(request: Pick<ServiceRequest, "type" | "station" | "category" | "tn" | "part_number"> & Partial<Pick<ServiceRequest, "work_order" | "quantity" | "pilot_change">>): string {
   if (request.type === "part_request") {
     return `Part number ${request.part_number ?? "—"}${request.work_order ? ` · WO ${request.work_order}` : ""}${request.quantity ? ` · ${request.quantity} pcs` : ""}`;
   }
   if (request.type === "program_problem") {
     return `Part number ${request.part_number ?? "—"}${request.station ? ` · station ${request.station}` : ""}`;
   }
-  return `Station ${request.station} · ${request.category === "punzon" ? "Punch" : "Die"} · TN ${request.tn}`;
+  return `Station ${request.station} · ${request.category === "punzon" ? "Punch" : "Die"} · TN ${request.tn}${request.pilot_change ? " · PILOT CHANGE" : ""}`;
 }
 
 export function problemLabel(value: string | null): string {
@@ -144,6 +154,7 @@ export function needsServiceResult(request: Pick<ServiceRequest, "state" | "type
 }
 
 export const ABNORMAL_REBAJE = 0.02;
+export const REBAJE_CHOICES = Array.from({ length: 51 }, (_, step) => (step / 1000).toFixed(3));
 
 export function waitMinutes(request: Pick<ServiceRequest, "requested_at">): number {
   return Math.max(0, Math.floor((Date.now() - new Date(`${request.requested_at}Z`).getTime()) / 60000));

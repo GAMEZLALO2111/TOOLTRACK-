@@ -95,7 +95,7 @@ class KittingApiTests(unittest.TestCase):
             self.plan(maquina_codigo="T-999")
         self.assertEqual(caught.exception.status_code, 404)
 
-    def test_start_creates_kit_in_first_free_cart_and_blocks_a_second_one(self):
+    def test_start_creates_kit_in_first_free_cart_and_a_second_one_waits_behind_it(self):
         kit = kitting_api.start(kitting_api.StartRequest(
             maquina_codigo="M1", setup_nuevo_parte=NEW, setup_anterior_parte=CURRENT, creado_por="op"))
         self.assertEqual((kit["machine"], kit["cart"], kit["state"]), ("M1", "C1", "preparing"))
@@ -105,10 +105,33 @@ class KittingApiTests(unittest.TestCase):
         self.assertGreater(busy["total"], 0)
         self.assertEqual(next(c for c in overview["carts"] if c["codigo"] == "C2")["state"], "free")
         self.assertEqual(self.plan()["open_kit"]["id"], kit["id"])
+
+        # The next part is compared against the kit in front of it, not against what is mounted today.
+        self.assertEqual(self.plan(setup_anterior_parte=None)["current_part"], NEW)
+        second = kitting_api.start(kitting_api.StartRequest(
+            maquina_codigo="M1", setup_nuevo_parte=CURRENT, setup_anterior_parte=NEW, creado_por="op"))
+        self.assertEqual((second["cart"], second["queue_position"], second["part_number"]), ("C2", 2, CURRENT))
+        self.assertEqual([row["part_number"] for row in second["ahead"]], [NEW])
+        self.assertEqual(workflow_api.get_kit(kit["id"])["queue_position"], 1)
         with self.assertRaises(HTTPException) as caught:
             kitting_api.start(kitting_api.StartRequest(
                 maquina_codigo="M1", setup_nuevo_parte=NEW, setup_anterior_parte=CURRENT, creado_por="op"))
+        self.assertIn("No free carts", caught.exception.detail)
+
+    def test_a_machine_line_holds_at_most_five_kits(self):
+        for code in ("C3", "C4", "C5", "C6"):
+            workflow_api.create_location(workflow_api.LocationCreate(codigo=code, nombre=code, tipo="cart"))
+        parts = [NEW, CURRENT, NEW, CURRENT, NEW]
+        previous = CURRENT
+        for part in parts:
+            kitting_api.start(kitting_api.StartRequest(
+                maquina_codigo="M1", setup_nuevo_parte=part, setup_anterior_parte=previous, creado_por="op"))
+            previous = part
+        with self.assertRaises(HTTPException) as caught:
+            kitting_api.start(kitting_api.StartRequest(
+                maquina_codigo="M1", setup_nuevo_parte=CURRENT, setup_anterior_parte=previous, creado_por="op"))
         self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("maximum 5", caught.exception.detail)
 
     def test_start_without_free_carts_explains_what_to_do(self):
         for machine, cart in (("M1", "C1"),):

@@ -7,7 +7,7 @@ import { LocationPicker } from "../components/LocationPicker";
 import { MachineLink, ToolLink } from "../components/Links";
 import { ScanInput } from "../components/ScanInput";
 import { sameCode, toolCode, type Capture } from "../scan";
-import { ABNORMAL_REBAJE, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, positionLabel, problemLabel, RequestChip, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
+import { ABNORMAL_REBAJE, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, PilotNote, positionLabel, problemLabel, REBAJE_CHOICES, RequestChip, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
 import { RETIREMENT_STATE_LABEL, SERVICE_TYPE_LABEL, TICKET_STATE_LABEL, TOOL_STATE_LABEL } from "../labels";
 import type { LocationRow, ServiceRequest, ToolCribUser } from "../types";
 import { usePoll } from "../usePoll";
@@ -73,6 +73,7 @@ function CollectDialog({ request, destinations, relocate, onClose, onDone }: { r
           </div>
         </div>
         {request.note && <p className="note note-warn">Operator note: {request.note}</p>}
+        <PilotNote request={request} />
         <LocationPicker label={request.type === "return" ? "Where does the tool go?" : "Which service location?"} options={allowed} value={destination} onChange={setDestination} autoFocus showType />
         <label>
           Notes (optional)
@@ -162,7 +163,7 @@ function FinishDialog({ request, onClose, onDone }: { request: ServiceRequest; o
   const sharpening = request.type === "sharpening";
   const needsNote = request.type === "damage" || request.type === "performance";
   const amount = rebaje.trim() === "" ? null : Number(rebaje);
-  const abnormal = amount !== null && Number.isFinite(amount) && amount > ABNORMAL_REBAJE;
+  const abnormal = amount !== null && Number.isFinite(amount) && amount >= ABNORMAL_REBAJE - 1e-9;
   const OUTCOMES: { value: Outcome; label: string }[] = [
     { value: "ready", label: sharpening ? "Sharpened, ready for use" : "Repaired or fine, ready for use" },
     { value: "maintenance", label: "Needs Maintenance" },
@@ -193,7 +194,7 @@ function FinishDialog({ request, onClose, onDone }: { request: ServiceRequest; o
     }
     if (sharpening && amount === null) return setError("Record how much was ground off (0 if nothing was removed).");
     if (amount !== null && (!Number.isFinite(amount) || amount < 0)) return setError("The amount ground off must be a number, 0 or more.");
-    if (abnormal && justification.trim().length < 10) return setError(`More than ${ABNORMAL_REBAJE.toFixed(3)} in. is abnormal: explain what happened.`);
+    if (abnormal && justification.trim().length < 10) return setError(`${ABNORMAL_REBAJE.toFixed(3)} in. or more is abnormal: explain what happened.`);
     if (needsNote && !note.trim()) return setError("Describe what was found and repaired.");
     setBusy(true);
     try {
@@ -259,11 +260,18 @@ function FinishDialog({ request, onClose, onDone }: { request: ServiceRequest; o
           <>
             <label>
               Ground off (in.){sharpening ? "" : " (optional)"}
-              <input inputMode="decimal" value={rebaje} onChange={(event) => setRebaje(event.target.value)} placeholder="e.g. 0.015" autoFocus />
+              <select value={rebaje} onChange={(event) => setRebaje(event.target.value)} autoFocus>
+                <option value="">{sharpening ? "Select…" : "None"}</option>
+                {REBAJE_CHOICES.map((value) => (
+                  <option key={value} value={value}>
+                    {value === "0.000" ? "0.000 (nothing removed)" : value}
+                  </option>
+                ))}
+              </select>
             </label>
             {abnormal && (
               <>
-                <p className="note note-warn">More than {ABNORMAL_REBAJE.toFixed(3)} in. was ground off. That is abnormal, so it needs a good justification.</p>
+                <p className="note note-warn">{ABNORMAL_REBAJE.toFixed(3)} in. or more was ground off. That is abnormal, so it needs a good justification.</p>
                 <label>
                   Justification (required)
                   <textarea rows={2} maxLength={500} value={justification} onChange={(event) => setJustification(event.target.value)} />
@@ -646,6 +654,9 @@ export function ServiceRequestsPage() {
                         )}
                       </div>
                       {request.note && <div className="warn-text small">“{request.note}”</div>}
+                      {request.pilot_change && request.installed_tn && (
+                        <div className="small">Requested TN {request.tn} · installed TN {request.installed_tn}{request.tn_difference ? ` (${request.tn_difference} in.)` : ""}</div>
+                      )}
                       {request.incident && <IncidentSummary incident={request.incident} />}
                     </td>
                     <td className="hide-sm">
@@ -656,6 +667,7 @@ export function ServiceRequestsPage() {
                     </td>
                     <td>
                       <RequestChip request={request} />
+                      {request.pilot_change && <span className="chip st-kitting">Pilot change</span>}
                       <div className="muted small">
                         {waitingForTool && <strong className="wait-text">Waiting {waitText(minutes)}</strong>}
                         {request.state === "attending" && ` · ${request.attended_by_name}`}

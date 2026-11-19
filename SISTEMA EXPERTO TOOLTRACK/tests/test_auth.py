@@ -499,14 +499,36 @@ class DemandFieldPermissionTests(TempDbCase):
             self.patch("PLANNING", piezas_producidas=10)
         self.assertEqual(caught.exception.status_code, 403)
 
-    def test_produced_cannot_exceed_quantity(self):
-        with self.assertRaises(HTTPException) as caught:
-            self.patch("TOOLCRIB_OPERATOR", piezas_producidas=101)
-        self.assertEqual(caught.exception.status_code, 400)
+    def test_produced_can_exceed_quantity_and_every_change_is_logged(self):
+        self.patch("TOOLCRIB_OPERATOR", piezas_producidas=101)
         self.patch("TOOLCRIB_OPERATOR", piezas_producidas=60)
-        with self.assertRaises(HTTPException) as caught:
-            self.patch("PLANNING", cantidad=50)
-        self.assertEqual(caught.exception.status_code, 400)
+        self.patch("PLANNING", cantidad=50)
+        rows = demandas_api.listar_produccion(numero_parte="np1")
+        self.assertEqual([row["pieces"] for row in reversed(rows)], [101, -41])
+        self.assertEqual({row["source"] for row in rows}, {"manual"})
+        self.assertEqual(rows[0]["captured_by"], "tester")
+        self.assertIn("Correction", rows[0]["note"])
+        self.assertIsNotNone(rows[0]["shift"])
+
+    def test_removing_a_demand_needs_a_reason_and_keeps_what_was_produced(self):
+        self.patch("TOOLCRIB_OPERATOR", piezas_producidas=40)
+        token = auth.acting_as("planner", "PLANNING")
+        self.addCleanup(auth.CURRENT_USER.reset, token)
+        with self.assertRaises(HTTPException) as no_reason:
+            demandas_api.desactivar_demanda(1)
+        self.assertEqual(no_reason.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as bad_state:
+            demandas_api.desactivar_demanda(1, motivo="done early", estado="borrada")
+        self.assertEqual(bad_state.exception.status_code, 400)
+        demandas_api.desactivar_demanda(1, motivo="Customer cancelled the order", estado="cancelada")
+        db = self.factory()
+        try:
+            demand = db.query(DemandaPlaneacion).one()
+            self.assertEqual((demand.activa, demand.estado_cierre, demand.cerrado_por), (False, "cancelada", "planner"))
+            self.assertEqual(demand.motivo_cierre, "Customer cancelled the order")
+        finally:
+            db.close()
+        self.assertEqual([row["pieces"] for row in demandas_api.listar_produccion(numero_parte="NP1")], [40])
 
     def test_quantity_limit(self):
         with self.assertRaises(HTTPException):
@@ -528,21 +550,58 @@ class DemandFieldPermissionTests(TempDbCase):
         self.assertEqual(caught.exception.status_code, 401)
 
 
+class ProductionLogMigrationTests(unittest.TestCase):
+    def test_existing_production_becomes_an_initial_balance_once_and_part_numbers_are_normalized(self):
+        import sqlite3
+        from sqlalchemy import create_engine
+
+        handle, path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        try:
+            engine = create_engine(f"sqlite:///{path}")
+            Base.metadata.create_all(engine)
+            engine.dispose()
+            conn = sqlite3.connect(path)
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("ALTER TABLE demandas_planeacion DROP COLUMN estado_cierre")
+            conn.execute("ALTER TABLE demandas_planeacion DROP COLUMN motivo_cierre")
+            conn.execute("ALTER TABLE demandas_planeacion DROP COLUMN cerrado_por")
+            conn.execute("ALTER TABLE demandas_planeacion DROP COLUMN cerrado_en")
+            for number, part, produced, active in ((1, "tyeh-1_00-sw", 30, 0), (2, "TYEH-2_00-SW", 0, 1)):
+                conn.execute(
+                    "INSERT INTO demandas_planeacion (id, maquina_codigo, numero_parte, cantidad, piezas_producidas, orden, activa, creado_por, creado_en, actualizado_en)"
+                    " VALUES (?, 'T-101', ?, 100, ?, 1, ?, 'plan', '2026-11-01 10:00:00', '2026-11-02 10:00:00')",
+                    (number, part, produced, active),
+                )
+            conn.commit()
+            conn.close()
+            main.ensure_production_log(path)
+            main.ensure_production_log(path)  # a second run must not duplicate the balance
+            conn = sqlite3.connect(path)
+            rows = conn.execute("SELECT demanda_id, numero_parte, piezas, fuente, fecha_estimada FROM registros_produccion").fetchall()
+            parts = [row[0] for row in conn.execute("SELECT numero_parte FROM demandas_planeacion ORDER BY id")]
+            conn.close()
+            self.assertEqual(rows, [(1, "TYEH-1_00-SW", 30, "saldo_inicial", 1)])
+            self.assertEqual(parts, ["TYEH-1_00-SW", "TYEH-2_00-SW"])
+        finally:
+            os.remove(path)
+
+
 class OpenKitIndexTests(unittest.TestCase):
-    def test_database_blocks_second_open_kit_for_machine_or_cart(self):
+    def test_database_blocks_second_open_kit_for_a_cart_but_a_machine_can_queue_several(self):
         import sqlite3
         handle, path = tempfile.mkstemp(suffix=".db")
         os.close(handle)
         try:
             conn = sqlite3.connect(path)
             conn.execute("CREATE TABLE surtidos (id TEXT PRIMARY KEY, maquina_codigo TEXT, carro_codigo TEXT, estado TEXT)")
+            conn.execute("CREATE UNIQUE INDEX uq_surtido_abierto_maquina ON surtidos(maquina_codigo) WHERE estado IN ('preparing', 'paused', 'ready')")
             conn.commit()
             conn.close()
             main.ensure_unique_open_kits(path)
             conn = sqlite3.connect(path)
             conn.execute("INSERT INTO surtidos VALUES ('a', 'T-101', 'C1', 'preparing')")
-            with self.assertRaises(sqlite3.IntegrityError):
-                conn.execute("INSERT INTO surtidos VALUES ('b', 'T-101', 'C2', 'ready')")
+            conn.execute("INSERT INTO surtidos VALUES ('b', 'T-101', 'C2', 'ready')")
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute("INSERT INTO surtidos VALUES ('c', 'T-102', 'C1', 'paused')")
             conn.execute("UPDATE surtidos SET estado='delivered' WHERE id='a'")

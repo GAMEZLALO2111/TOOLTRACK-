@@ -803,6 +803,40 @@ textarea:disabled {
 .filters select {
   min-width: 150px;
 }
+.filter-row th {
+  padding: 4px;
+  background: var(--bg, #f4f6fa);
+}
+.filter-row input,
+.filter-row select {
+  width: 100%;
+  min-width: 64px;
+  font-size: 12px;
+  padding: 3px 4px;
+}
+.tool-image {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 10px 0;
+}
+.tool-image img {
+  max-width: 320px;
+  max-height: 240px;
+  border: 1px solid #d5dbe5;
+  border-radius: 6px;
+}
+.tool-image-empty {
+  padding: 18px 28px;
+  border: 1px dashed #c3cad6;
+  border-radius: 6px;
+}
+.tool-image-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 .filters .inline-field {
   display: flex;
   align-items: center;
@@ -1017,6 +1051,13 @@ textarea:disabled {
 }
 .check input {
   min-height: 0;
+}
+.compare-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 10px;
 }
 .tool-wait {
   display: flex;
@@ -1461,4 +1502,87 @@ textarea:disabled {
   .insights .kpi-grid { grid-template-columns: repeat(5, 1fr); }
   .insights .insight-grid { grid-template-columns: repeat(2, 1fr); }
   .insight-section { break-after: avoid; }
+}
+
+/* Planning */
+.plan-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+}
+.plan-table th,
+.plan-table td {
+  text-align: center;
+  white-space: nowrap;
+}
+.plan-table tbody th {
+  text-align: left;
+}
+.plan-table tr.clickable {
+  cursor: pointer;
+}
+.plan-table tr.clickable:hover th {
+  background: #eef1f5;
+}
+.plan-cell {
+  font-weight: 600;
+}
+.plan-cumple {
+  background: #dff3e6;
+  color: #1d6b3d;
+}
+.plan-justo {
+  background: #fdf0c8;
+  color: #8a6100;
+}
+.plan-no_cumple {
+  background: #f8d9d5;
+  color: #9a2a1e;
+}
+.plan-sin_programa {
+  background: #e4e7ec;
+  color: #475467;
+}
+.plan-sin_demanda {
+  background: transparent;
+  color: var(--muted);
+}
+.plan-late {
+  color: #9a2a1e;
+  font-weight: 600;
+}
+.plan-input {
+  width: 72px;
+  text-align: right;
+}
+.plan-input.edited {
+  border-color: var(--accent);
+  background: #fff7e6;
+}
+.plan-bom-row {
+  display: grid;
+  grid-template-columns: 1fr 90px auto auto;
+  align-items: center;
+  gap: 8px;
+}
+.plan-params {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 10px 0 16px;
+}
+.plan-params label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.plan-params input {
+  width: 110px;
+}
+.plan-detail {
+  margin-bottom: 14px;
 }

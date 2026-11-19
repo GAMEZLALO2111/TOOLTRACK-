@@ -3,7 +3,7 @@ import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { fmtDuration, LEVEL_LABEL } from "../labels";
 import type { Demand, Machine } from "../types";
-import { ConfirmDialog, Dialog, ErrorNote } from "./Dialog";
+import { Dialog, ErrorNote } from "./Dialog";
 import { MachineOperatorBar, requestNextPart, useOnMachine } from "./MachineOperatorBar";
 import { MarkChip, Progress, StatusChip } from "./MachineCard";
 
@@ -149,16 +149,14 @@ export function QueueDialog({ machine, onClose, onChanged, onKit, onAdd, onEdit 
       )}
 
       {removing && (
-        <ConfirmDialog
-          title="Remove demand"
-          message={`Remove ${removing.numero_parte} from ${machine.maquina}? It stays in the history.`}
-          confirmLabel="Remove"
-          danger
+        <RemoveDialog
+          demand={removing}
+          machine={machine.maquina}
           onClose={() => setRemoving(null)}
-          onConfirm={() => {
+          onConfirm={(state, reason) => {
             const target = removing;
             setRemoving(null);
-            void run(() => api("DELETE", `/workflow/demandas/${target.id}`));
+            void run(() => api("DELETE", `/workflow/demandas/${target.id}?estado=${state}&motivo=${encodeURIComponent(reason)}`));
           }}
         />
       )}
@@ -177,6 +175,61 @@ export function QueueDialog({ machine, onClose, onChanged, onKit, onAdd, onEdit 
   );
 }
 
+const REMOVE_STATES = [
+  { value: "terminada", label: "Finished" },
+  { value: "cancelada", label: "Cancelled" },
+  { value: "reemplazada", label: "Replaced by another demand" },
+];
+
+function RemoveDialog({ demand, machine, onClose, onConfirm }: { demand: Demand; machine: string; onClose: () => void; onConfirm: (state: string, reason: string) => void }) {
+  const [state, setState] = useState(demand.pendiente === 0 ? "terminada" : "cancelada");
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  function submit() {
+    if (reason.trim().length < 3) return setError("Write why the demand leaves the board.");
+    onConfirm(state, reason.trim());
+  }
+
+  return (
+    <Dialog
+      title="Remove demand"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Back
+          </button>
+          <button className="btn btn-danger" onClick={submit}>
+            Remove
+          </button>
+        </>
+      }
+    >
+      <p>
+        Remove <strong>{demand.numero_parte}</strong> from {machine}? The {demand.piezas_producidas} pcs already produced stay in the production history.
+      </p>
+      <div className="form">
+        <label>
+          Why is it leaving?
+          <select value={state} onChange={(event) => setState(event.target.value)}>
+            {REMOVE_STATES.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Reason (required)
+          <input value={reason} onChange={(event) => setReason(event.target.value)} autoFocus maxLength={200} onKeyDown={(event) => event.key === "Enter" && submit()} />
+        </label>
+      </div>
+      <ErrorNote message={error} />
+    </Dialog>
+  );
+}
+
 function ProducedDialog({ demand, onClose, onSave }: { demand: Demand; onClose: () => void; onSave: (value: number) => void }) {
   const [value, setValue] = useState(String(demand.piezas_producidas));
   const [error, setError] = useState<string | null>(null);
@@ -184,7 +237,6 @@ function ProducedDialog({ demand, onClose, onSave }: { demand: Demand; onClose: 
   function submit() {
     const amount = Number(value);
     if (!Number.isInteger(amount) || amount < 0) return setError("Enter a whole number of pieces.");
-    if (amount > demand.cantidad) return setError(`It cannot exceed the demand (${demand.cantidad} pcs).`);
     onSave(amount);
   }
 

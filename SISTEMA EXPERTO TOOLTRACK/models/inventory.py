@@ -2,6 +2,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -30,6 +31,9 @@ class Herramienta(Base):
     categoria = Column(String, nullable=True)
     estado = Column(String, nullable=False, default="disponible", server_default="disponible")
     ubicacion = Column(String, nullable=True)  # Nuevo campo para rack/ubicación
+    altura_total = Column(String, nullable=True)  # Punzones: altura medida de la punta; la vida es esa altura menos el stripper
+    stripper_override = Column(String, nullable=True)  # Espesor del stripper propio de esta herramienta (si no, el de su tamaño)
+    imagen = Column(String, nullable=True)  # Archivo de la imagen de la herramienta
     catalogo = relationship(
         "HerramientaCatalogo",
         back_populates="herramienta",
@@ -45,6 +49,16 @@ class NumeroHerramienta(Base):
     __tablename__ = "numeros_herramienta"
 
     tn = Column(String, primary_key=True)
+    imagen = Column(String, nullable=True)  # Imagen compartida por todas las herramientas de este TN
+
+
+class ParametroHerramienta(Base):
+    __tablename__ = "parametros_herramienta"
+
+    clave = Column(String, primary_key=True)
+    valor = Column(String, nullable=False)
+    actualizado_por = Column(String, nullable=True)
+    actualizado_en = Column(DateTime, nullable=True)
 
 
 class ConfiguracionTN(Base):
@@ -199,6 +213,7 @@ class Surtido(Base):
     actualizado_en = Column(DateTime, nullable=False)
     entregado_en = Column(DateTime, nullable=True)
     motivo = Column(String, nullable=True)
+    anterior_manual = Column(Boolean, nullable=False, default=False, server_default="0")
 
 
 class ComponenteSurtido(Base):
@@ -278,6 +293,8 @@ class SolicitudServicio(Base):
     cerrado_por = Column(String, nullable=True)
     cerrado_en = Column(DateTime, nullable=True)
     motivo_cancelacion = Column(Text, nullable=True)
+    cambio_piloto = Column(Boolean, nullable=False, default=False, server_default="0")
+    tn_instalado = Column(String, nullable=True)
 
 
 class ServicioHerramienta(Base):
@@ -535,6 +552,38 @@ class DemandaPlaneacion(Base):
     creado_por = Column(String, nullable=False)
     creado_en = Column(DateTime, nullable=False)
     actualizado_en = Column(DateTime, nullable=False)
+    estado_cierre = Column(String, nullable=True)
+    motivo_cierre = Column(Text, nullable=True)
+    cerrado_por = Column(String, nullable=True)
+    cerrado_en = Column(DateTime, nullable=True)
+
+
+class RegistroProduccion(Base):
+    """Append-only production log. It outlives the demand: removing a demand from the Board never removes it.
+
+    `fuente` says where it came from (manual today; baan or mespro later) and `id_externo` keeps an
+    imported record from being counted twice. A negative `piezas` is a correction.
+    """
+    __tablename__ = "registros_produccion"
+    __table_args__ = (
+        UniqueConstraint("fuente", "id_externo", name="uq_produccion_externo"),
+        Index("ix_produccion_parte_fecha", "numero_parte", "fecha_produccion"),
+        Index("ix_produccion_demanda", "demanda_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    demanda_id = Column(Integer, ForeignKey("demandas_planeacion.id"), nullable=True)
+    numero_parte = Column(String, nullable=False)
+    maquina_codigo = Column(String, nullable=True)
+    piezas = Column(Integer, nullable=False)
+    fecha_produccion = Column(DateTime, nullable=False)
+    fecha_estimada = Column(Boolean, nullable=False, default=False, server_default="0")
+    turno = Column(String, nullable=True)
+    fuente = Column(String, nullable=False, default="manual", server_default="manual")
+    id_externo = Column(String, nullable=True)
+    capturado_por = Column(String, nullable=False)
+    capturado_en = Column(DateTime, nullable=False)
+    nota = Column(Text, nullable=True)
 
 
 class AsignacionMaquina(Base):
@@ -580,3 +629,65 @@ class Auditoria(Base):
     entidad_id = Column(String, nullable=True)
     antes = Column(Text, nullable=True)
     despues = Column(Text, nullable=True)
+
+
+class FgPlaneacion(Base):
+    """Finish good (a rack, a shelf…) planned from its make items. Several FG numbers may share one BOM."""
+    __tablename__ = "fg_planeacion"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    numero_fg = Column(String, nullable=False, unique=True)
+    descripcion = Column(String, nullable=True)
+    cliente = Column(String, nullable=True)
+    bom_de_id = Column(Integer, ForeignKey("fg_planeacion.id"), nullable=True)
+    activa = Column(Boolean, nullable=False, default=True, server_default="1")
+    creado_por = Column(String, nullable=False)
+    creado_en = Column(DateTime, nullable=False)
+    actualizado_en = Column(DateTime, nullable=False)
+
+
+class FgParte(Base):
+    """One make item of the BOM of a FG and how many pieces of it each FG unit needs."""
+    __tablename__ = "fg_partes"
+    __table_args__ = (UniqueConstraint("fg_id", "numero_parte", name="uq_fg_parte"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fg_id = Column(Integer, ForeignKey("fg_planeacion.id"), nullable=False)
+    numero_parte = Column(String, nullable=False)
+    piezas_por_fg = Column(Integer, nullable=False)
+
+
+class ForecastSemana(Base):
+    """Weekly demand of a FG (week = its Monday)."""
+    __tablename__ = "forecast_semanas"
+    __table_args__ = (UniqueConstraint("fg_id", "semana", name="uq_forecast_fg_semana"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fg_id = Column(Integer, ForeignKey("fg_planeacion.id"), nullable=False)
+    semana = Column(Date, nullable=False)
+    cantidad = Column(Integer, nullable=False)
+    actualizado_por = Column(String, nullable=False)
+    actualizado_en = Column(DateTime, nullable=False)
+
+
+class CapacidadMaquina(Base):
+    """Weekly capacity of a machine: shifts × hours × days × efficiency. A machine without a row uses the defaults."""
+    __tablename__ = "capacidad_maquina"
+
+    maquina_codigo = Column(String, ForeignKey("ubicaciones.codigo"), primary_key=True)
+    turnos = Column(Integer, nullable=False)
+    horas_turno = Column(Float, nullable=False)
+    dias_semana = Column(Float, nullable=False)
+    eficiencia_pct = Column(Float, nullable=False)
+    incluida = Column(Boolean, nullable=False, default=True, server_default="1")
+    actualizado_por = Column(String, nullable=True)
+    actualizado_en = Column(DateTime, nullable=True)
+
+
+class ParametroPlaneacion(Base):
+    __tablename__ = "parametros_planeacion"
+
+    clave = Column(String, primary_key=True)
+    valor = Column(String, nullable=False)
+    actualizado_por = Column(String, nullable=True)
+    actualizado_en = Column(DateTime, nullable=True)

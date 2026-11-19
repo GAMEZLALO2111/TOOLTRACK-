@@ -31,6 +31,7 @@ export function CartsPanel({ carts }: { carts: CartRow[] }) {
             <th>Cart</th>
             <th>Status</th>
             <th>Machine</th>
+            <th>Part</th>
             <th>Progress</th>
             <th className="hide-sm">Left to pick</th>
             <th />
@@ -47,11 +48,15 @@ export function CartsPanel({ carts }: { carts: CartRow[] }) {
                 <td>
                   <Chip text={KIT_STATE_LABEL[cart.state]} className={KIT_STATE_CLASS[cart.state]} />
                 </td>
-                <td>{cart.machine ?? "—"}</td>
+                <td>{cart.machine ? `${cart.machine}${cart.queue_position ? ` · #${cart.queue_position}` : ""}` : "—"}</td>
+                <td>
+                  {cart.part_number ?? "—"}
+                  {cart.alerts && cart.alerts.length > 0 && <span title={cart.alerts.join(" ")}> ⚠</span>}
+                </td>
                 <td>{cart.kit_id ? `${cart.done}/${cart.total}` : "—"}</td>
                 <td className="hide-sm muted">
                   {cart.state === "ready"
-                    ? "Nothing. Scan the machine QR and the kit QR to deliver."
+                    ? "Complete, with its QR. Deliver when the machine needs it (scan the machine QR, then the kit QR)."
                     : cart.pending.length
                       ? `${cart.pending.length}: ${names.join(", ")}${cart.pending.length > 5 ? "…" : ""}`
                       : ""}

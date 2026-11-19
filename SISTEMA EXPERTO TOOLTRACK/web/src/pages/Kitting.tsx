@@ -4,9 +4,11 @@ import { useAuth } from "../auth";
 import { CartsPanel, useKitOverview } from "../components/Carts";
 import { Dialog, ErrorNote } from "../components/Dialog";
 import { Chip } from "../components/MachineCard";
-import { CATEGORY_LABEL, PICK_ACTION_LABEL } from "../labels";
+import { CATEGORY_LABEL, KIT_STATE_LABEL, PICK_ACTION_LABEL } from "../labels";
 import { go, type Route } from "../router";
 import type { Kit, KitPlan, ProgramRow } from "../types";
+
+const MAX_KITS_PER_MACHINE = 5;
 
 export function KittingPage({ route }: { route: Route }) {
   const { can } = useAuth();
@@ -14,6 +16,9 @@ export function KittingPage({ route }: { route: Route }) {
   const [machine, setMachine] = useState(route.query.get("machine") ?? "");
   const [newPart, setNewPart] = useState(route.query.get("part") ?? "");
   const [currentOverride, setCurrentOverride] = useState("");
+  const [manualMode, setManualMode] = useState(false);
+  const [manualText, setManualText] = useState("");
+  const [alsoCorrect, setAlsoCorrect] = useState(false);
   const [cart, setCart] = useState("");
   const [parts, setParts] = useState<string[]>([]);
   const [plan, setPlan] = useState<KitPlan | null>(null);
@@ -28,7 +33,9 @@ export function KittingPage({ route }: { route: Route }) {
   const machines = overview?.machines ?? [];
   const selected = machines.find((m) => m.machine === machine) ?? null;
   const freeCarts = useMemo(() => (plan?.carts ?? overview?.carts ?? []).filter((c) => c.state === "free"), [plan, overview]);
-  const machineKit = selected?.kit_state ? (overview?.carts.find((c) => c.machine === selected.machine) ?? null) : null;
+  const machineKits = selected?.kit_state ? (overview?.carts.filter((c) => c.machine === selected.machine && c.kit_id) ?? []).sort((a, b) => (a.queue_position ?? 0) - (b.queue_position ?? 0)) : [];
+  const lineFull = machineKits.length >= MAX_KITS_PER_MACHINE;
+  const manualMatch = parts.find((p) => p.toUpperCase() === manualText.trim().toUpperCase()) ?? null;
 
   // Piezas guardadas para el tipo de la máquina elegida.
   useEffect(() => {
@@ -70,7 +77,22 @@ export function KittingPage({ route }: { route: Route }) {
     setMachine(code);
     setNewPart("");
     setCurrentOverride("");
+    setManualMode(false);
+    setManualText("");
+    setAlsoCorrect(false);
     setCart("");
+  }
+
+  function chooseCompareMode(manual: boolean) {
+    setManualMode(manual);
+    setAlsoCorrect(false);
+    setCurrentOverride(manual ? (manualMatch ?? "") : "");
+  }
+
+  function typeManual(value: string) {
+    setManualText(value);
+    const match = parts.find((p) => p.toUpperCase() === value.trim().toUpperCase()) ?? null;
+    setCurrentOverride(match ?? "");
   }
 
   async function start(correction?: string) {
@@ -85,6 +107,7 @@ export function KittingPage({ route }: { route: Route }) {
         carro_codigo: cart || null,
         corregir_actual: correction !== undefined,
         motivo_correccion: correction ?? null,
+        comparacion_manual: manualMode && !alsoCorrect && !!plan.manual_comparison,
         creado_por: "web",
       });
       setMismatch(null);
@@ -105,7 +128,7 @@ export function KittingPage({ route }: { route: Route }) {
   }
 
   const comparison = plan?.comparison ?? null;
-  const canStart = can("kitting.operate") && !!comparison && !!cart && !machineKit && !starting;
+  const canStart = can("kitting.operate") && !!comparison && !!cart && !lineFull && !starting && !(manualMode && !manualMatch);
 
   return (
     <section className="page kitting">
@@ -132,7 +155,7 @@ export function KittingPage({ route }: { route: Route }) {
             {machines.map((m) => (
               <option key={m.machine} value={m.machine}>
                 {m.machine} · {m.tipo || "no type"} · {m.numero_parte ?? "empty"}
-                {m.kit_state ? " · kit open" : ""}
+                {m.kit_state ? ` · ${m.kit_count && m.kit_count > 1 ? `${m.kit_count} kits in line` : "kit open"}` : ""}
               </option>
             ))}
           </select>
@@ -142,13 +165,18 @@ export function KittingPage({ route }: { route: Route }) {
               {selected.thickness ? ` · thickness ${selected.thickness} in` : ""}
             </p>
           )}
-          {machineKit && (
-            <div className="note note-warn">
-              ⚠ {machineKit.machine} already has a kit ({machineKit.state === "paused" ? "paused" : machineKit.state === "ready" ? "ready to deliver" : "in progress"}) on cart{" "}
-              {machineKit.codigo}. Open it or cancel it before starting another.{" "}
-              <button className="btn" onClick={() => go(`/kitting/kit/${machineKit.kit_id}`)}>
-                Open kit
-              </button>
+          {machineKits.length > 0 && (
+            <div className="note note-info">
+              {selected?.machine} already has {machineKits.length} kit{machineKits.length > 1 ? "s" : ""} in line:{" "}
+              {machineKits.map((k, index) => (
+                <span key={k.kit_id}>
+                  {index > 0 ? " → " : ""}
+                  <button className="btn" onClick={() => go(`/kitting/kit/${k.kit_id}`)}>
+                    {k.part_number ?? "kit"} · {k.codigo} · {KIT_STATE_LABEL[k.state]}
+                  </button>
+                </span>
+              ))}
+              . {lineFull ? `The line is full (${MAX_KITS_PER_MACHINE}); deliver or cancel one first.` : "A new kit is compared against the last one in line, not against what is mounted today."}
             </div>
           )}
         </div>
@@ -172,20 +200,50 @@ export function KittingPage({ route }: { route: Route }) {
           </datalist>
           {machine && newPart.trim() && !newMatch && parts.length > 0 && <p className="muted small">Not found for {selected?.tipo}. Pick one from the list.</p>}
           {machine && parts.length === 0 && selected?.tipo && <p className="muted small">No saved programs for {selected.tipo} yet.</p>}
-          {plan && !plan.needs_current && (
-            <p className="muted small">
-              Current setup: <strong>{plan.current_part}</strong>
-              {plan.mounted_part && plan.mounted_part !== plan.current_part ? ` (the system has ${plan.mounted_part} registered)` : ""}
-              {" · "}
-              <select className="inline-select" value={currentOverride} onChange={(event) => setCurrentOverride(event.target.value)} aria-label="Change the current part">
-                <option value="">Use the one on the machine</option>
-                {parts.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </p>
+          {machine && (
+            <div className="compare-choice">
+              <div className="muted small">Compare against</div>
+              <label className="check">
+                <input type="radio" name="compare-mode" checked={!manualMode} onChange={() => chooseCompareMode(false)} />
+                <span>
+                  Automatic
+                  {plan?.automatic_part ? (
+                    <>
+                      : <strong>{plan.automatic_part}</strong>
+                      {machineKits.length > 0 ? " (the last kit in line)" : " (what is mounted)"}
+                    </>
+                  ) : (
+                    " (the line or what is mounted on the machine)"
+                  )}
+                </span>
+              </label>
+              <label className="check">
+                <input type="radio" name="compare-mode" checked={manualMode} onChange={() => chooseCompareMode(true)} />
+                <span>Manual: a part number I choose</span>
+              </label>
+              {manualMode && (
+                <>
+                  <input
+                    list="kit-parts"
+                    value={manualText}
+                    onChange={(event) => typeManual(event.target.value)}
+                    placeholder="Part number that is (or will be) running"
+                    aria-label="Part number to compare against"
+                    autoFocus
+                  />
+                  {manualText.trim() && !manualMatch && parts.length > 0 && <p className="muted small">Not found for {selected?.tipo}. Pick one from the list.</p>}
+                  {plan?.manual_comparison && (
+                    <label className="check">
+                      <input type="checkbox" checked={alsoCorrect} onChange={(event) => setAlsoCorrect(event.target.checked)} />
+                      <span>It is really mounted on the machine: also correct what the system has registered (asks for a reason)</span>
+                    </label>
+                  )}
+                  {plan?.manual_comparison && !alsoCorrect && (
+                    <p className="muted small">Only this kit is compared against {plan.current_part}; the machine record stays as it is. Delivery compares it again with what is really mounted.</p>
+                  )}
+                </>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -266,7 +324,7 @@ export function KittingPage({ route }: { route: Route }) {
               <span className="step-n">4</span> Which cart?
             </h2>
             <div className="start-row">
-              <select value={cart} onChange={(event) => setCart(event.target.value)} aria-label="Cart" disabled={!!machineKit}>
+              <select value={cart} onChange={(event) => setCart(event.target.value)} aria-label="Cart" disabled={lineFull}>
                 {freeCarts.length === 0 && <option value="">No free carts</option>}
                 {freeCarts.map((c) => (
                   <option key={c.codigo} value={c.codigo}>
@@ -282,7 +340,7 @@ export function KittingPage({ route }: { route: Route }) {
                 <span className="muted">Your role can look at this but cannot start a kit.</span>
               )}
             </div>
-            {freeCarts.length === 0 && !machineKit && <p className="muted small">All carts are busy. Finish or cancel an open kit below.</p>}
+            {freeCarts.length === 0 && !lineFull && <p className="muted small">All carts are busy. Finish or cancel an open kit below.</p>}
             <ErrorNote message={startError} />
           </div>
         </div>
