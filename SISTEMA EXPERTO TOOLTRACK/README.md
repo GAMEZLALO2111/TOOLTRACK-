@@ -214,6 +214,14 @@ Toda pantalla que recibe un ID de herramienta o un código de ubicación acepta 
 - **Cambio de piloto:** en una solicitud de reemplazo o de herramienta sobre una posición redonda, Manufacturing marca «Pilot change» (con nota obligatoria). Tool Crib puede entregar cualquier redondo aunque exceda la tolerancia; la solicitud conserva el TN pedido contra el instalado y se muestra en Requests y en la posición de la máquina.
 - **Imagen:** cada herramienta puede tener foto (o heredar la del TN) y se ve al consultar su ficha. Se guardan en `tool_images/`, junto a la base, fuera de git.
 
+## Máquinas deshabilitadas
+
+Una máquina se deshabilita con motivo (mantenimiento, inhabilitada u otro con texto), con fecha estimada de regreso opcional y con historial de quién y cuándo (ficha de la máquina, botón *Disable…*; permiso `machine.availability` para Planning, Engineering, supervisores de Tool Crib y administrador). Mientras está deshabilitada:
+
+- Planeación no cuenta su capacidad; con fecha de regreso la cuenta desde los días de la semana en que ya está de vuelta.
+- El Board la muestra marcada y no deja agregar demandas; Kitting no deja iniciar kits para ella; Manufactura no puede levantar tickets ni pedir el siguiente número de parte desde ella; la propuesta de Planeación no le envía líneas.
+- Lo que ya está corriendo o en cola se conserva tal cual. Es distinto de «Inactive», que retira la ubicación.
+
 ## Planeación de capacidad (menú Planning)
 
 Responde «¿cumplimos con el forecast?» por FG, familia y semana, en lugar del Excel de los planners.

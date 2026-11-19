@@ -139,6 +139,7 @@ def request_part_number(machine_code: str, item: PartRequestCreate):
     db = workflow_api.SessionLocal()
     try:
         code = workflow_api._location(db, machine_code.strip().upper(), {"machine"}).codigo
+        workflow_api.require_machine_enabled(db, code)
         if not is_on_machine(db, user.username, code):
             raise HTTPException(status_code=403, detail=f"Take machine {code} first: only its operator can request its part number")
         demand = db.query(DemandaPlaneacion).filter(

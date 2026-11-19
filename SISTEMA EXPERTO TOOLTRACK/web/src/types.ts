@@ -41,9 +41,18 @@ export interface MyMachine extends MachineOperator {
   until: string;
 }
 
+export interface MachineDisabled {
+  type: "maintenance" | "unavailable" | "other" | string;
+  reason: string;
+  since: string | null;
+  by: string | null;
+  expected_return: string | null;
+}
+
 export interface Machine {
   maquina: string;
   tipo: string;
+  deshabilitada?: MachineDisabled | null;
   corriendo: string | null;
   tie_total: number;
   tie_cubierto: number;
@@ -84,6 +93,7 @@ export interface ManufacturingMachineOption {
   tipo_maquina: string | null;
   edificio: string | null;
   linea: string | null;
+  disabled?: MachineDisabled | null;
 }
 
 export interface ProgramRow {
@@ -102,6 +112,7 @@ export interface RunningMachine {
   kit_state: KitState | null;
   kit_cart: string | null;
   kit_count?: number;
+  disabled?: MachineDisabled | null;
 }
 
 export interface MachineStation {
@@ -118,6 +129,7 @@ export interface MachineProfile {
   nombre: string;
   activa: boolean;
   estandar: boolean;
+  disabled?: MachineDisabled | null;
   tipo_maquina: string | null;
   linea: string | null;
   capacidad: string | null;
@@ -293,6 +305,7 @@ export interface ManufacturingWorkspace {
   machine: string;
   machine_name: string;
   active: boolean;
+  disabled?: MachineDisabled | null;
   building: string | null;
   line: string | null;
   machine_type: string | null;

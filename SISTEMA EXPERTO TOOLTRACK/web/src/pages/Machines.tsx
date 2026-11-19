@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { ConfirmDialog, Dialog, ErrorNote } from "../components/Dialog";
+import { DisabledBanner } from "../components/MachineCard";
 import { go } from "../router";
 import { KIT_STATE_LABEL } from "../labels";
 import type { MachineProfile, MachineStation, RunningMachine } from "../types";
@@ -32,6 +33,81 @@ interface KitOverview {
   machines: RunningMachine[];
 }
 
+interface AvailabilityEvent {
+  id: number;
+  action: "disabled" | "enabled";
+  type: string | null;
+  reason: string | null;
+  expected_return: string | null;
+  user: string;
+  at: string;
+}
+
+const DISABLE_LABEL: Record<string, string> = { maintenance: "Maintenance", unavailable: "Unavailable", other: "Other" };
+
+function DisableDialog({ code, onClose, onDone }: { code: string; onClose: () => void; onDone: () => void }) {
+  const [kind, setKind] = useState("maintenance");
+  const [reason, setReason] = useState("");
+  const [returns, setReturns] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setError(null);
+    if (reason.trim().length < (kind === "other" ? 5 : 3)) return setError("Write why the machine is being disabled.");
+    setBusy(true);
+    try {
+      await api("POST", `/workflow/machine-profiles/${encodeURIComponent(code)}/disable`, {
+        tipo: kind, motivo: reason.trim(), regreso_estimado: returns || null,
+      });
+      onDone();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The machine could not be disabled.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`Disable ${code}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Back
+          </button>
+          <button className="btn btn-danger" onClick={() => void submit()} disabled={busy}>
+            {busy ? "Saving…" : "Disable machine"}
+          </button>
+        </>
+      }
+    >
+      <p className="muted">While it is disabled, Planning does not count it and it accepts no new kits, demands or tickets. What it is running now stays as it is.</p>
+      <div className="form">
+        <label>
+          Reason
+          <select value={kind} onChange={(event) => setKind(event.target.value)}>
+            {Object.entries(DISABLE_LABEL).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          {kind === "other" ? "Explain (required)" : "Details"}
+          <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} autoFocus placeholder={kind === "maintenance" ? "e.g. Hydraulic repair" : ""} />
+        </label>
+        <label>
+          Expected back (optional)
+          <input type="date" value={returns} onChange={(event) => setReturns(event.target.value)} />
+        </label>
+        <ErrorNote message={error} />
+      </div>
+    </Dialog>
+  );
+}
+
 const PROFILE_FIELDS: { key: keyof ProfileForm; label: string }[] = [
   { key: "tipo_maquina", label: "Machine type / model" },
   { key: "edificio", label: "Building" },
@@ -55,6 +131,8 @@ export function MachinesPage({ code }: { code: string | null }) {
   const [transferring, setTransferring] = useState(false);
   const [editingStation, setEditingStation] = useState<MachineStation | null>(null);
   const [deletingStation, setDeletingStation] = useState<MachineStation | null>(null);
+  const [disabling, setDisabling] = useState(false);
+  const [history, setHistory] = useState<AvailabilityEvent[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -77,6 +155,13 @@ export function MachinesPage({ code }: { code: string | null }) {
 
   const runningByCode = useMemo(() => new Map(running.map((row) => [row.machine, row])), [running]);
   const machine = machines?.find((row) => row.codigo === code) ?? null;
+  const disabledSince = machine?.disabled?.since ?? null;
+  useEffect(() => {
+    if (!code) return setHistory([]);
+    api<AvailabilityEvent[]>("GET", `/workflow/machine-profiles/${encodeURIComponent(code)}/availability-history`)
+      .then(setHistory)
+      .catch(() => setHistory([]));
+  }, [code, disabledSince, machines]);
   const filteredMachines = useMemo(() => {
     const text = search.trim().toLowerCase();
     if (!text) return machines ?? [];
@@ -99,6 +184,18 @@ export function MachinesPage({ code }: { code: string | null }) {
       go(`/machines/${encodeURIComponent(result.codigo)}`);
     } catch (caught) {
       throw caught instanceof ApiError ? caught : new Error("The machine could not be created.");
+    }
+  }
+
+  async function enableMachine() {
+    if (!machine) return;
+    setActionError(null);
+    try {
+      await api("POST", `/workflow/machine-profiles/${encodeURIComponent(machine.codigo)}/enable`, {});
+      setMessage(`${machine.codigo} is enabled again.`);
+      await load();
+    } catch (caught) {
+      setActionError(caught instanceof ApiError ? caught.message : "The machine could not be enabled.");
     }
   }
 
@@ -228,6 +325,13 @@ export function MachinesPage({ code }: { code: string | null }) {
             <h1>{machine.codigo}</h1>
           </div>
           <div className="bar-right">
+            {can("machine.availability") && machine.activa && (
+              machine.disabled ? (
+                <button className="btn btn-primary" onClick={() => void enableMachine()}>Enable machine</button>
+              ) : (
+                <button className="btn btn-ghost-danger" onClick={() => setDisabling(true)}>Disable…</button>
+              )
+            )}
             {can("kitting.operate") && machine.activa && live?.numero_parte && (
               <button className="btn btn-primary" onClick={() => setTransferring(true)}>Transfer part</button>
             )}
@@ -237,8 +341,9 @@ export function MachinesPage({ code }: { code: string | null }) {
         <ErrorNote message={error} />
         <ErrorNote message={actionError} />
         {message && <div className="note note-info">{message}</div>}
+        {machine.disabled && <DisabledBanner disabled={machine.disabled} />}
         <section className="machine-facts panel" aria-label="Machine status">
-          <Fact label="Operational state" value={machine.activa ? "Active" : "Inactive"} />
+          <Fact label="Operational state" value={!machine.activa ? "Inactive" : machine.disabled ? `Disabled · ${DISABLE_LABEL[machine.disabled.type] ?? machine.disabled.type}` : "Active"} />
           <Fact label="Running part number" value={live?.numero_parte ?? "No part registered"} />
           <Fact label="Machine type" value={machine.tipo_maquina ?? "Not configured"} />
           <Fact label="Current thickness" value={live?.thickness ? `${live.thickness} in` : "—"} />
@@ -321,6 +426,49 @@ export function MachinesPage({ code }: { code: string | null }) {
         )}
         {!can("machine.manage") && <p className="muted small">Your role can view machine profiles but cannot edit them.</p>}
 
+        {history.length > 0 && (
+          <>
+            <div className="machine-section-head">
+              <h2>Availability history</h2>
+            </div>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Event</th>
+                    <th>Reason</th>
+                    <th>Expected back</th>
+                    <th>By</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((event) => (
+                    <tr key={event.id}>
+                      <td>{new Date(event.at).toLocaleString()}</td>
+                      <td>{event.action === "disabled" ? `Disabled · ${DISABLE_LABEL[event.type ?? ""] ?? event.type}` : "Enabled"}</td>
+                      <td>{event.reason ?? "—"}</td>
+                      <td>{event.expected_return ?? "—"}</td>
+                      <td>{event.user}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+        {disabling && (
+          <DisableDialog
+            code={machine.codigo}
+            onClose={() => setDisabling(false)}
+            onDone={() => {
+              setDisabling(false);
+              setMessage(`${machine.codigo} is disabled.`);
+              void load();
+            }}
+          />
+        )}
+
         {creating && <CreateMachineDialog onClose={() => setCreating(false)} onCreate={createMachine} />}
         {transferring && live && (
           <TransferDialog
@@ -386,7 +534,7 @@ export function MachinesPage({ code }: { code: string | null }) {
                       <strong>{row.codigo}</strong>
                       {row.estandar && <div className="muted small">Standard machine</div>}
                     </td>
-                    <td>{row.activa ? "Active" : "Inactive"}</td>
+                    <td>{!row.activa ? "Inactive" : row.disabled ? <span className="chip st-missing">Disabled · {DISABLE_LABEL[row.disabled.type] ?? row.disabled.type}</span> : "Active"}</td>
                     <td>{row.tipo_maquina ?? "Not configured"}</td>
                     <td>{[row.edificio, row.linea].filter(Boolean).join(" · ") || "—"}</td>
                     <td>{live?.numero_parte ?? "—"}</td>

@@ -468,6 +468,27 @@ def ensure_production_log(path=None):
 
 ensure_production_log()
 
+
+def ensure_machine_availability(path=None):
+    """Una máquina se puede deshabilitar con motivo; las columnas nuevas se agregan a la tabla existente."""
+    conn = sqlite3.connect(path or DB_PATH)
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(maquinas)")}
+        if not existing:
+            return
+        for column, kind in (
+            ("deshabilitada", "BOOLEAN NOT NULL DEFAULT 0"), ("deshab_tipo", "TEXT"), ("deshab_motivo", "TEXT"),
+            ("deshab_desde", "DATETIME"), ("deshab_por", "TEXT"), ("regreso_estimado", "DATE"),
+        ):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE maquinas ADD COLUMN {column} {kind}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+ensure_machine_availability()
+
 class HerramientaCreate(BaseModel):
     id: str
     tn: Optional[str] = None

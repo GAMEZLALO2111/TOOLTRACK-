@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -5,8 +6,9 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 import workflow_api
+from auth import require_permission
 from machine_rules import STATION_STATES
-from models.inventory import EstacionMaquina, EstadoMaquina, Maquina, RequisitoSetup, Setup, Ubicacion
+from models.inventory import EstacionMaquina, EstadoMaquina, Maquina, MaquinaDisponibilidad, RequisitoSetup, Setup, Ubicacion
 
 router = APIRouter(prefix="/workflow/machine-profiles", tags=["machines"])
 
@@ -82,6 +84,7 @@ def _profile_read(db, location):
         "nombre": location.nombre,
         "activa": location.activa,
         "estandar": bool(location.estandar),
+        "disabled": workflow_api.machine_availability(profile),
         "tipo_maquina": profile.tipo_maquina if profile else None,
         "linea": profile.linea if profile else None,
         "capacidad": profile.capacidad if profile else None,
@@ -150,6 +153,100 @@ def save_machine_profile(code: str, item: MachineProfile):
     except HTTPException:
         db.rollback()
         raise
+    finally:
+        db.close()
+
+
+class MachineDisable(BaseModel):
+    tipo: str
+    motivo: str
+    regreso_estimado: Optional[str] = None
+
+
+class MachineEnable(BaseModel):
+    nota: Optional[str] = None
+
+
+@router.post("/{code}/disable")
+def disable_machine(code: str, item: MachineDisable):
+    """Takes a machine out of service with a reason. Planning stops counting it and no new work is accepted."""
+    user = require_permission("machine.availability")
+    kind = (item.tipo or "").strip().lower()
+    if kind not in workflow_api.DISABLE_TYPES:
+        raise HTTPException(status_code=422, detail="Choose the reason type: maintenance, unavailable or other")
+    reason = (item.motivo or "").strip()
+    if len(reason) < 3 or (kind == "other" and len(reason) < 5):
+        raise HTTPException(status_code=422, detail="Write why the machine is disabled")
+    expected = None
+    if (item.regreso_estimado or "").strip():
+        try:
+            expected = date.fromisoformat(item.regreso_estimado.strip())
+        except ValueError:
+            raise HTTPException(status_code=422, detail="The expected return must be a date (YYYY-MM-DD)") from None
+    db = workflow_api.SessionLocal()
+    try:
+        location = workflow_api._location(db, code.strip().upper(), {"machine"})
+        profile = db.query(Maquina).filter(Maquina.codigo == location.codigo).first()
+        if profile is None:
+            profile = Maquina(codigo=location.codigo)
+            db.add(profile)
+        now = workflow_api.utcnow()
+        profile.deshabilitada = True
+        profile.deshab_tipo, profile.deshab_motivo = kind, reason
+        profile.deshab_desde, profile.deshab_por, profile.regreso_estimado = now, user.username, expected
+        db.add(MaquinaDisponibilidad(
+            maquina_codigo=location.codigo, accion="disabled", tipo=kind, motivo=reason,
+            regreso_estimado=expected, usuario=user.username, fecha=now,
+        ))
+        db.commit()
+        return _profile_read(db, location)
+    except HTTPException:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@router.post("/{code}/enable")
+def enable_machine(code: str, item: Optional[MachineEnable] = None):
+    user = require_permission("machine.availability")
+    db = workflow_api.SessionLocal()
+    try:
+        location = workflow_api._location(db, code.strip().upper(), {"machine"})
+        profile = db.query(Maquina).filter(Maquina.codigo == location.codigo).first()
+        if profile is None or not profile.deshabilitada:
+            raise HTTPException(status_code=409, detail="The machine is not disabled")
+        db.add(MaquinaDisponibilidad(
+            maquina_codigo=location.codigo, accion="enabled", tipo=profile.deshab_tipo,
+            motivo=(item.nota.strip() if item and item.nota and item.nota.strip() else None),
+            usuario=user.username, fecha=workflow_api.utcnow(),
+        ))
+        profile.deshabilitada = False
+        profile.deshab_tipo = profile.deshab_motivo = profile.deshab_desde = None
+        profile.deshab_por = profile.regreso_estimado = None
+        db.commit()
+        return _profile_read(db, location)
+    except HTTPException:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@router.get("/{code}/availability-history")
+def availability_history(code: str, limit: int = 50):
+    db = workflow_api.SessionLocal()
+    try:
+        location = workflow_api._location(db, code.strip().upper(), {"machine"})
+        rows = db.query(MaquinaDisponibilidad).filter(
+            MaquinaDisponibilidad.maquina_codigo == location.codigo
+        ).order_by(MaquinaDisponibilidad.id.desc()).limit(max(1, min(limit, 200))).all()
+        return [
+            {"id": row.id, "action": row.accion, "type": row.tipo, "reason": row.motivo,
+             "expected_return": row.regreso_estimado.isoformat() if row.regreso_estimado else None,
+             "user": row.usuario, "at": row.fecha.isoformat()}
+            for row in rows
+        ]
     finally:
         db.close()
 

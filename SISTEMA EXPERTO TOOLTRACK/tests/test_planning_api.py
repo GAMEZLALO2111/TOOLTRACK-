@@ -162,6 +162,29 @@ class PlanningApiTests(unittest.TestCase):
             planning_api.apply_proposal(planning_api.ApplyIn(items=[]))
         self.assertEqual(empty.exception.status_code, 422)
 
+    def test_a_disabled_machine_is_not_counted_and_cannot_receive_proposal_lines(self):
+        import machines_api
+
+        self._params(horizonte_semanas=2, setup_minutos=0, adelanto_semanas=0)
+        machines_api.workflow_api.SessionLocal = self.factory
+        self.addCleanup(setattr, machines_api.workflow_api, "SessionLocal", workflow_api.SessionLocal)
+        before = planning_api.build_capacity(self.factory(), 2)
+        self.assertEqual(before["summary"][0]["capacity_h"], 204.0)
+        machines_api.disable_machine("T-1", machines_api.MachineDisable(tipo="maintenance", motivo="Spindle repair"))
+        after = planning_api.build_capacity(self.factory(), 2)
+        self.assertEqual([w["capacity_h"] for w in after["summary"]], [102.0, 102.0])
+        self.assertTrue(any("T-1" in text for text in after["warnings"]))
+        with self.assertRaises(HTTPException) as blocked:
+            planning_api.apply_proposal(planning_api.ApplyIn(items=[
+                planning_api.ApplyItem(maquina="T-1", numero_parte="MAKE-A_00-SW", piezas=10)]))
+        self.assertEqual(blocked.exception.status_code, 409)
+        # With a return date the machine counts again from the week it comes back.
+        returns = (self.week + timedelta(days=4)).isoformat()
+        machines_api.enable_machine("T-1")
+        machines_api.disable_machine("T-1", machines_api.MachineDisable(tipo="other", motivo="Waiting for a part", regreso_estimado=returns))
+        partial = planning_api.build_capacity(self.factory(), 2)
+        self.assertEqual([w["capacity_h"] for w in partial["summary"]], [102.0 + round(102.0 * 3 / 7, 1), 204.0])
+
     def test_a_part_without_program_marks_its_fg_as_no_program_and_not_as_short(self):
         self._params(horizonte_semanas=2, setup_minutos=0, adelanto_semanas=0)
         self._fg("FG-9", parts=(("MAKE-A_00-SW", 1), ("MANUAL-MAKE", 1)))

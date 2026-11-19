@@ -2671,6 +2671,70 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(manual["queue_position"], 3)
         self.assertEqual(workflow_api.get_kit(first["id"])["alerts"], [])
 
+    def test_a_disabled_machine_takes_no_new_work_until_it_is_enabled_again(self):
+        import demandas_api
+        import machines_api
+
+        self._baseline()
+        original = demandas_api.SessionLocal
+        demandas_api.SessionLocal = self.session_factory
+        self.addCleanup(setattr, demandas_api, "SessionLocal", original)
+        session = self.session_factory()
+        try:
+            session.add(Maquina(codigo="M1", tipo_maquina="4 Index", edificio="B1"))
+            session.commit()
+        finally:
+            session.close()
+        self._ensure_user("op1")
+
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as denied:
+            machines_api.disable_machine("M1", machines_api.MachineDisable(tipo="maintenance", motivo="Spindle repair"))
+        self.assertEqual(denied.exception.status_code, 403)
+
+        self._as("planner", "PLANNING")
+        for bad in (
+            machines_api.MachineDisable(tipo="broken", motivo="Spindle repair"),
+            machines_api.MachineDisable(tipo="maintenance", motivo=" "),
+            machines_api.MachineDisable(tipo="other", motivo="odd"),
+            machines_api.MachineDisable(tipo="maintenance", motivo="Spindle repair", regreso_estimado="soon"),
+        ):
+            with self.assertRaises(HTTPException) as invalid:
+                machines_api.disable_machine("M1", bad)
+            self.assertEqual(invalid.exception.status_code, 422)
+        profile = machines_api.disable_machine(
+            "m1", machines_api.MachineDisable(tipo="maintenance", motivo="Spindle repair", regreso_estimado="2030-01-15"))
+        self.assertEqual(profile["disabled"]["type"], "maintenance")
+        self.assertEqual((profile["disabled"]["by"], profile["disabled"]["expected_return"]), ("planner", "2030-01-15"))
+
+        with self.assertRaises(HTTPException) as no_kit:
+            workflow_api.create_kit(workflow_api.SurtidoCreate(
+                maquina_codigo="M1", carro_codigo="C1", nombre_archivo="N.stp", creado_por="op",
+                contenido=setup_text("N", "0.075", [("301", "100", "0")])))
+        self.assertEqual(no_kit.exception.status_code, 409)
+        self.assertIn("disabled", str(no_kit.exception.detail))
+        with self.assertRaises(HTTPException) as no_demand:
+            demandas_api.crear_demanda(demandas_api.DemandaCreate(
+                maquina_codigo="M1", numero_parte="X", cantidad=5, creado_por="planner"))
+        self.assertEqual(no_demand.exception.status_code, 409)
+        self._as("op1", "PUNCHING_OPERATOR")
+        with self.assertRaises(HTTPException) as no_ticket:
+            self._open_request()
+        self.assertEqual(no_ticket.exception.status_code, 409)
+        board = next(m for m in demandas_api.demandas_board("B1")["maquinas"] if m["maquina"] == "M1")
+        self.assertEqual(board["deshabilitada"]["reason"], "Spindle repair")
+        self.assertEqual([m["disabled"]["type"] for m in workflow_api.machines_running() if m["machine"] == "M1"], ["maintenance"])
+
+        self._as("planner", "PLANNING")
+        machines_api.enable_machine("M1", machines_api.MachineEnable(nota="Back in service"))
+        with self.assertRaises(HTTPException) as not_disabled:
+            machines_api.enable_machine("M1")
+        self.assertEqual(not_disabled.exception.status_code, 409)
+        history = machines_api.availability_history("M1")
+        self.assertEqual([(row["action"], row["user"]) for row in history], [("enabled", "planner"), ("disabled", "planner")])
+        self._as("op1", "PUNCHING_OPERATOR")
+        self.assertEqual(self._open_request()["state"], "open")
+
     def test_pick_sheet_lists_what_is_missing_by_rack_with_alternates(self):
         _, kit = self._create_new_setup_kit()
         self._create_tool("D300B", "300", "matriz", "0.021")

@@ -433,12 +433,28 @@ def _machine_rows(db):
         rows.append({
             "code": location.codigo, "type": kind if kind in programs_api.MACHINE_TYPES else None,
             "configured": row is not None, "included": bool(row.incluida) if row else True,
+            "disabled": workflow_api.machine_availability(profile),
             "shifts": shifts_n, "hours_per_shift": hours, "days_per_week": days, "efficiency_pct": efficiency,
             "hours_week": round(shifts_n * hours * days * efficiency / 100, 1),
             "thickness_min": _number(profile.espesor_min) if profile else None,
             "thickness_max": _number(profile.espesor_max) if profile else None,
         })
     return rows
+
+
+def _available_fraction(disabled, monday):
+    """Share of the week a machine is in service: 0 while it is disabled, the days after its expected return."""
+    if not disabled:
+        return 1.0
+    if not disabled["expected_return"]:
+        return 0.0
+    returns = date.fromisoformat(disabled["expected_return"])
+    week_end = monday + timedelta(days=6)
+    if returns <= monday:
+        return 1.0
+    if returns > week_end:
+        return 0.0
+    return ((week_end - returns).days + 1) / 7
 
 
 def _number(text):
@@ -559,7 +575,7 @@ def build_capacity(db, weeks=None, with_plan=False):
             board[demand_row.numero_parte.upper()] += pending
             board_by_machine[demand_row.maquina_codigo].append((demand_row.numero_parte.upper(), pending))
 
-    machines, defaults_used, no_range, no_type = [], 0, 0, []
+    machines, defaults_used, no_range, no_type, disabled_machines = [], 0, 0, [], []
     for row in _machine_rows(db):
         if not row["included"]:
             continue
@@ -568,7 +584,9 @@ def build_capacity(db, weeks=None, with_plan=False):
             continue
         defaults_used += 0 if row["configured"] else 1
         no_range += 1 if row["thickness_min"] is None or row["thickness_max"] is None else 0
-        capacity = [row["hours_week"]] * count
+        capacity = [row["hours_week"] * _available_fraction(row["disabled"], monday) for monday in horizon]
+        if row["disabled"]:
+            disabled_machines.append(row["code"])
         committed = 0.0
         for part, pending in board_by_machine.get(row["code"], []):
             hours = demandas_api._hr(programs.get((part, row["type"])), pending)
@@ -584,6 +602,8 @@ def build_capacity(db, weeks=None, with_plan=False):
         machines.append({**row, "cap": capacity, "committed_h": round(committed, 1)})
     if no_type:
         warnings.append(f"Machines without a type are left out: {', '.join(no_type)}")
+    if disabled_machines:
+        warnings.append(f"Disabled machines are not counted while they are out of service: {', '.join(disabled_machines)}")
     if defaults_used:
         warnings.append(f"{defaults_used} machine(s) use the default shifts, days and efficiency: review them in Capacity settings")
     if no_range:
@@ -643,6 +663,7 @@ def build_capacity(db, weeks=None, with_plan=False):
         ],
         "machines": [
             {"code": m["code"], "type": m["type"], "hours_week": m["hours_week"], "configured": m["configured"],
+             "disabled": m["disabled"],
              "committed_h": m["committed_h"], "loads": result["machine_loads"][m["code"]]}
             for m in machines
         ],
@@ -660,7 +681,8 @@ def _proposal(horizon, machines, part_info, result):
         entry["hours"] += row["hours"]
         entry["setup_h"] += row["setup_h"]
     eligible = {
-        part: [m["code"] for m in machines if _hours_per_piece(m, info)] for part, info in part_info.items()
+        part: [m["code"] for m in machines if not m["disabled"] and _hours_per_piece(m, info)]
+        for part, info in part_info.items()
     }
     # Whole pieces: the rounding left over goes to the largest line of each part so no 1-piece line appears later.
     whole = {}
@@ -763,6 +785,7 @@ def apply_proposal(item: ApplyIn):
             profile = db.query(Maquina).filter(Maquina.codigo == code).first()
             if location is None or profile is None:
                 raise HTTPException(status_code=404, detail=f"Machine {code} not found or inactive")
+            workflow_api.require_machine_enabled(db, code)
             kind = workflow_api._machine_kind(profile.tipo_maquina)
             if (part, kind) not in programs:
                 raise HTTPException(status_code=422, detail=f"There is no saved program of {part} for {kind or 'this machine type'} ({code})")

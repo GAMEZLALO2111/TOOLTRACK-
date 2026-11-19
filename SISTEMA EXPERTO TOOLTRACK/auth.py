@@ -53,7 +53,7 @@ _OPERATOR = {
 _SUPERVISOR = _OPERATOR | {
     "inventory.edit", "inventory.adjust", "catalog.edit", "locations.manage",
     "setup.baseline", "demand.mark", "audit.view", "maintenance.operate", "records.view", "retirements.approve",
-    "insights.view",
+    "insights.view", "machine.availability",
 }
 _PUNCHING = {
     "manufacturing.view", "service.request", "machine.operate", "demand.view", "demand.progress",
@@ -72,13 +72,13 @@ ROLE_PERMISSIONS = {
     "PLANNING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "demand.view",
         "demand.manage", "demand.mark", "program.view", "program.uph", "machine.view", "setup.view", "insights.view",
-        "planning.view", "planning.manage",
+        "planning.view", "planning.manage", "machine.availability",
     }),
     "ENGINEERING": frozenset({
         "inventory.view", "catalog.view", "locations.view", "kitting.view", "setup.view",
         "demand.view", "demand.mark", "program.view", "program.manage", "program.uph", "machine.view",
         "maintenance.view", "audit.view", "service.view", "service.attend", "records.view", "insights.view",
-        "planning.view",
+        "planning.view", "machine.availability",
     }),
 }
 # El administrador puede todo lo que existe (incluye operación para poder probar y dar soporte);
@@ -87,7 +87,7 @@ ALL_PERMISSIONS = frozenset(set().union(*ROLE_PERMISSIONS.values()) | {
     "user.manage", "machine.manage", "inventory.delete", "demand.manage", "audit.view",
     "locations.manage", "catalog.edit", "setup.baseline", "program.manage", "inventory.edit",
     "inventory.adjust", "demand.mark", "maintenance.operate", "manufacturing.view", "program.uph",
-    "machine.operate", "planning.view", "planning.manage",
+    "machine.operate", "planning.view", "planning.manage", "machine.availability",
 })
 ROLE_PERMISSIONS["SYSTEM_ADMIN"] = ALL_PERMISSIONS
 
@@ -213,6 +213,9 @@ ROUTE_RULES = {
     ("GET", "/workflow/machine-profiles"): "machine.view",
     ("GET", "/workflow/machine-profiles/{code}"): "machine.view",
     ("PUT", "/workflow/machine-profiles/{code}"): "machine.manage",
+    ("POST", "/workflow/machine-profiles/{code}/disable"): "machine.availability",
+    ("POST", "/workflow/machine-profiles/{code}/enable"): "machine.availability",
+    ("GET", "/workflow/machine-profiles/{code}/availability-history"): "machine.view",
     ("POST", "/workflow/machine-profiles/{code}/stations"): "machine.manage",
     ("PATCH", "/workflow/machine-profiles/{code}/stations/{number}"): "machine.manage",
     ("DELETE", "/workflow/machine-profiles/{code}/stations/{number}"): "machine.manage",

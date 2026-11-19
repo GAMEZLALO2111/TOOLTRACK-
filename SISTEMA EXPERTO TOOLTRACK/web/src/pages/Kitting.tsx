@@ -3,7 +3,7 @@ import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { CartsPanel, useKitOverview } from "../components/Carts";
 import { Dialog, ErrorNote } from "../components/Dialog";
-import { Chip } from "../components/MachineCard";
+import { Chip, DisabledBanner } from "../components/MachineCard";
 import { CATEGORY_LABEL, KIT_STATE_LABEL, PICK_ACTION_LABEL } from "../labels";
 import { go, type Route } from "../router";
 import type { Kit, KitPlan, ProgramRow } from "../types";
@@ -128,7 +128,7 @@ export function KittingPage({ route }: { route: Route }) {
   }
 
   const comparison = plan?.comparison ?? null;
-  const canStart = can("kitting.operate") && !!comparison && !!cart && !lineFull && !starting && !(manualMode && !manualMatch);
+  const canStart = can("kitting.operate") && !!comparison && !!cart && !lineFull && !starting && !(manualMode && !manualMatch) && !selected?.disabled;
 
   return (
     <section className="page kitting">
@@ -156,6 +156,7 @@ export function KittingPage({ route }: { route: Route }) {
               <option key={m.machine} value={m.machine}>
                 {m.machine} · {m.tipo || "no type"} · {m.numero_parte ?? "empty"}
                 {m.kit_state ? ` · ${m.kit_count && m.kit_count > 1 ? `${m.kit_count} kits in line` : "kit open"}` : ""}
+                {m.disabled ? " · DISABLED" : ""}
               </option>
             ))}
           </select>
@@ -165,6 +166,7 @@ export function KittingPage({ route }: { route: Route }) {
               {selected.thickness ? ` · thickness ${selected.thickness} in` : ""}
             </p>
           )}
+          {selected?.disabled && <DisabledBanner disabled={selected.disabled} />}
           {machineKits.length > 0 && (
             <div className="note note-info">
               {selected?.machine} already has {machineKits.length} kit{machineKits.length > 1 ? "s" : ""} in line:{" "}

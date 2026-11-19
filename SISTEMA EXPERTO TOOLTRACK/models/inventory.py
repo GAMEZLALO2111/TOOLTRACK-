@@ -450,6 +450,27 @@ class Maquina(Base):
     blank_max = Column(String, nullable=True)
     area_pallet = Column(String, nullable=True)
     notas = Column(Text, nullable=True)
+    deshabilitada = Column(Boolean, nullable=False, default=False, server_default="0")
+    deshab_tipo = Column(String, nullable=True)
+    deshab_motivo = Column(Text, nullable=True)
+    deshab_desde = Column(DateTime, nullable=True)
+    deshab_por = Column(String, nullable=True)
+    regreso_estimado = Column(Date, nullable=True)
+
+
+class MaquinaDisponibilidad(Base):
+    """History of a machine being disabled and enabled, with the reason."""
+    __tablename__ = "maquina_disponibilidad"
+    __table_args__ = (Index("ix_maquina_disponibilidad_maquina", "maquina_codigo"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    maquina_codigo = Column(String, ForeignKey("ubicaciones.codigo"), nullable=False)
+    accion = Column(String, nullable=False)
+    tipo = Column(String, nullable=True)
+    motivo = Column(Text, nullable=True)
+    regreso_estimado = Column(Date, nullable=True)
+    usuario = Column(String, nullable=False)
+    fecha = Column(DateTime, nullable=False)
 
 
 class EstacionMaquina(Base):

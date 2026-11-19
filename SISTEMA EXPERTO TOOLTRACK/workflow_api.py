@@ -90,6 +90,33 @@ def _tn_fits(db, required_tn, tool_tn):
     return required_tn == tool_tn or tn_compatible(required_tn, tool_tn, _tolerance(db))
 
 
+DISABLE_TYPES = {"maintenance": "maintenance", "unavailable": "unavailable", "other": "other"}
+
+
+def machine_availability(profile):
+    """The disabled state of a machine profile, or None when it is available."""
+    if profile is None or not profile.deshabilitada:
+        return None
+    return {
+        "type": profile.deshab_tipo, "reason": profile.deshab_motivo,
+        "since": profile.deshab_desde.isoformat() if profile.deshab_desde else None,
+        "by": profile.deshab_por,
+        "expected_return": profile.regreso_estimado.isoformat() if profile.regreso_estimado else None,
+    }
+
+
+def require_machine_enabled(db, code):
+    """Blocks work on a machine that was disabled (maintenance, unavailable…)."""
+    profile = db.query(Maquina).filter(Maquina.codigo == code).first()
+    info = machine_availability(profile)
+    if info:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Machine {code} is disabled ({DISABLE_TYPES.get(info['type'], info['type'])}: {info['reason']}). "
+                   "Enable it first.",
+        )
+
+
 def seed_default_locations():
     db = SessionLocal()
     try:
@@ -840,6 +867,7 @@ def create_kit(item: SurtidoCreate):
     try:
         _location(db, machine_code, {"machine"})
         _location(db, cart_code, {"cart"})
+        require_machine_enabled(db, machine_code)
         machine_state = db.query(EstadoMaquina).filter(
             EstadoMaquina.maquina_codigo == machine_code
         ).first()
@@ -1194,6 +1222,7 @@ def machines_running():
                 "kit_state": kit.estado if kit else None,
                 "kit_cart": kit.carro_codigo if kit else None,
                 "kit_count": kit_counts.get(machine.codigo, 0),
+                "disabled": machine_availability(profile),
             })
         return result
     finally:
@@ -1220,6 +1249,7 @@ def transfer_running_part(item: MachineTransfer):
     try:
         _location(db, origin_code, {"machine"})
         _location(db, dest_code, {"machine"})
+        require_machine_enabled(db, dest_code)
         origin_state = db.query(EstadoMaquina).filter(
             EstadoMaquina.maquina_codigo == origin_code
         ).first()

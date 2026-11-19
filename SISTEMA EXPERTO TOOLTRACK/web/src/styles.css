@@ -1592,3 +1592,10 @@ textarea:disabled {
 .plan-machine h3 {
   margin: 0 0 6px;
 }
+.machine-disabled {
+  opacity: 0.8;
+  border-style: dashed;
+}
+.disabled-banner {
+  margin: 0 0 8px;
+}

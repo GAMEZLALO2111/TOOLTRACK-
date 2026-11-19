@@ -74,6 +74,7 @@ def list_manufacturing_machines():
                 "tipo_maquina": profiles[location.codigo].tipo_maquina if location.codigo in profiles else None,
                 "edificio": profiles[location.codigo].edificio if location.codigo in profiles else None,
                 "linea": profiles[location.codigo].linea if location.codigo in profiles else None,
+                "disabled": workflow_api.machine_availability(profiles.get(location.codigo)),
             }
             for location in locations
         ]
@@ -272,6 +273,7 @@ def manufacturing_machine_workspace(machine_code: str):
             "machine": code,
             "machine_name": machine.nombre,
             "active": bool(machine.activa),
+            "disabled": workflow_api.machine_availability(profile),
             "building": profile.edificio if profile else None,
             "line": profile.linea if profile else None,
             "machine_type": machine_type or None,

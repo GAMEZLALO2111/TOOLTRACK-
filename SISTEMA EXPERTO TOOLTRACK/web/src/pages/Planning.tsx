@@ -28,7 +28,7 @@ interface CapacityResult {
   summary: WeekSummary[];
   fgs: { id: number; numero_fg: string; cliente: string | null; parts: string[]; weeks: { forecast: number; status: string }[] }[];
   parts: { numero_parte: string; forecast_total: number; produced: number; board_pending: number; has_program: boolean; types: string[]; weeks: PartWeek[] }[];
-  machines: { code: string; type: string; hours_week: number; configured: boolean; committed_h: number; loads: number[] }[];
+  machines: { code: string; type: string; hours_week: number; configured: boolean; committed_h: number; loads: number[]; disabled?: { type: string; reason: string; expected_return: string | null } | null }[];
   warnings: string[];
 }
 interface FgRow {
@@ -310,6 +310,7 @@ function CapacityTab() {
                   <tr key={machine.code}>
                     <td>
                       <strong>{machine.code}</strong> {!machine.configured && <span className="muted small">default</span>}
+                      {machine.disabled && <span className="chip st-missing" title={machine.disabled.reason}>Disabled</span>}
                     </td>
                     <td>{machine.type}</td>
                     <td>{fmt(machine.hours_week)}</td>

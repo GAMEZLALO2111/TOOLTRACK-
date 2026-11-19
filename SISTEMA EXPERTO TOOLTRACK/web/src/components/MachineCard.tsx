@@ -1,5 +1,5 @@
 import { fmtDuration, fmtEta, LEVEL_LABEL, MARK_CLASS, MARK_LABEL, STATUS_CLASS, STATUS_LABEL } from "../labels";
-import type { Demand, Machine } from "../types";
+import type { Demand, Machine, MachineDisabled } from "../types";
 
 export function Chip({ text, className }: { text: string; className: string }) {
   return <span className={`chip ${className}`}>{text}</span>;
@@ -33,7 +33,18 @@ interface CardProps {
   onAdd?: (code: string) => void;
 }
 
+export function DisabledBanner({ disabled }: { disabled: MachineDisabled }) {
+  const label = disabled.type === "maintenance" ? "Maintenance" : disabled.type === "unavailable" ? "Unavailable" : "Other";
+  return (
+    <div className="note note-error disabled-banner">
+      <strong>Machine disabled · {label}</strong>: {disabled.reason}
+      {disabled.expected_return ? ` · expected back ${disabled.expected_return}` : ""}
+    </div>
+  );
+}
+
 export function MachineCard({ machine, tv, canKit, canAdd, onOpen, onKit, onAdd }: CardProps) {
+  const disabled = machine.deshabilitada ?? null;
   const actual = machine.demandas.find((d) => d.es_actual);
   const next = machine.demandas.find((d) => d.es_siguiente);
   const pending = machine.demandas.filter((d) => d.pendiente > 0);
@@ -45,7 +56,7 @@ export function MachineCard({ machine, tv, canKit, canAdd, onOpen, onKit, onAdd 
 
   return (
     <article
-      className={`card lvl-${machine.nivel}${machine.surtir_urgente ? " urgent" : ""}${clickable ? " clickable" : ""}`}
+      className={`card lvl-${machine.nivel}${machine.surtir_urgente ? " urgent" : ""}${clickable ? " clickable" : ""}${disabled ? " machine-disabled" : ""}`}
       onClick={clickable ? () => onOpen(machine.maquina) : undefined}
       onKeyDown={clickable ? (event) => event.target === event.currentTarget && (event.key === "Enter" || event.key === " ") && onOpen(machine.maquina) : undefined}
       tabIndex={clickable ? 0 : undefined}
@@ -66,6 +77,7 @@ export function MachineCard({ machine, tv, canKit, canAdd, onOpen, onKit, onAdd 
       </header>
 
       <div className="card-body">
+        {disabled && <DisabledBanner disabled={disabled} />}
         {machine.herramientas_esperando?.length > 0 && (
           <div className="tool-wait" role="alert">
             <strong>Waiting for tool</strong>
@@ -121,7 +133,9 @@ export function MachineCard({ machine, tv, canKit, canAdd, onOpen, onKit, onAdd 
 
       {!tv && (
         <footer className="card-foot" onClick={(event) => event.stopPropagation()}>
-          {needsKit && canKit && onKit ? (
+          {disabled ? (
+            <div className="foot-note warn">Disabled: no new kits or demands</div>
+          ) : needsKit && canKit && onKit ? (
             <button className={`btn ${machine.surtir_urgente ? "btn-danger" : "btn-primary"} block`} onClick={() => onKit(machine.maquina, next.numero_parte)}>
               {machine.surtir_urgente ? "⚠ KIT NEXT NOW" : "Kit next"}
             </button>

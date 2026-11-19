@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { Dialog, ErrorNote } from "../components/Dialog";
-import { Chip } from "../components/MachineCard";
+import { Chip, DisabledBanner } from "../components/MachineCard";
 import { ReasonDialog } from "../components/ReasonDialog";
 import { ScanInput } from "../components/ScanInput";
 import { locationCode, type Capture } from "../scan";
@@ -423,10 +423,10 @@ function ReceiveDialog({ request, onClose, onDone }: { request: ServiceRequest; 
 
 export function ManufacturingPage({ route }: { route: Route }) {
   const { session, can } = useAuth();
-  const canRequest = can("service.request");
   const [machines, setMachines] = useState<ManufacturingMachineOption[] | null>(null);
   const [selectedCode, setSelectedCode] = useState(route.query.get("machine") ?? localStorage.getItem(MACHINE_KEY) ?? "");
   const [workspace, setWorkspace] = useState<ManufacturingWorkspace | null>(null);
+  const canRequest = can("service.request") && !workspace?.disabled;
   const [machinesError, setMachinesError] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -611,6 +611,7 @@ export function ManufacturingPage({ route }: { route: Route }) {
       {!machines && !machinesError && <p className="muted">Loading machines…</p>}
       {machines && !activeMachines.length && <p className="note note-info">No active machines are registered.</p>}
       {selectedMachine && !workspace && !workspaceError && <p className="muted">Loading {selectedCode}…</p>}
+      {workspace?.disabled && <DisabledBanner disabled={workspace.disabled} />}
 
       {workspace && (
         <>

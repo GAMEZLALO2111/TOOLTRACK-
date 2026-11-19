@@ -449,6 +449,7 @@ def create_service_request(item: ServiceRequestCreate):
     try:
         code = item.machine.strip().upper()
         workflow_api._location(db, code, {"machine"})
+        workflow_api.require_machine_enabled(db, code)
         setup = tool_tracking_api._active_setup(db, code)
         if not setup:
             raise HTTPException(status_code=409, detail="The machine has no registered setup")
@@ -545,6 +546,7 @@ def create_program_problem(item: ProgramProblemCreate):
     try:
         code = item.machine.strip().upper()
         workflow_api._location(db, code, {"machine"})
+        workflow_api.require_machine_enabled(db, code)
         setup = tool_tracking_api._active_setup(db, code)
         if not setup:
             raise HTTPException(status_code=409, detail="The machine has no registered setup")

@@ -5,7 +5,7 @@ import { fmtDuration, LEVEL_LABEL } from "../labels";
 import type { Demand, Machine } from "../types";
 import { Dialog, ErrorNote } from "./Dialog";
 import { MachineOperatorBar, requestNextPart, useOnMachine } from "./MachineOperatorBar";
-import { MarkChip, Progress, StatusChip } from "./MachineCard";
+import { DisabledBanner, MarkChip, Progress, StatusChip } from "./MachineCard";
 
 interface Props {
   machine: Machine;
@@ -119,7 +119,7 @@ export function QueueDialog({ machine, onClose, onChanged, onKit, onAdd, onEdit 
       wide
       footer={
         <>
-          {can("demand.manage") && (
+          {can("demand.manage") && !machine.deshabilitada && (
             <button className="btn btn-primary" onClick={() => onAdd(machine.maquina)}>
               + Add demand
             </button>
@@ -138,6 +138,7 @@ export function QueueDialog({ machine, onClose, onChanged, onKit, onAdd, onEdit 
         </span>
       </div>
       <ErrorNote message={error} />
+      {machine.deshabilitada && <DisabledBanner disabled={machine.deshabilitada} />}
       <MachineOperatorBar code={machine.maquina} operators={machine.operadores ?? []} onChanged={onChanged} showOpen />
       {machine.demandas.length === 0 && <p className="muted">This machine has no demands yet.</p>}
       <ol className="q-list">{pending.map((d, i) => row(d, i + 1))}</ol>

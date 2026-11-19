@@ -18,7 +18,7 @@ from models.inventory import (
     Surtido,
     Ubicacion,
 )
-from workflow_api import OPEN_KIT_STATES, _machine_kind, _part_from_name, utcnow
+from workflow_api import OPEN_KIT_STATES, _machine_kind, _part_from_name, machine_availability, require_machine_enabled, utcnow
 
 router = APIRouter(prefix="/workflow/demandas", tags=["demandas"])
 
@@ -209,6 +209,7 @@ def demandas_board(edificio: str = "B1"):
             .all()
         )
         codes = [loc.codigo for loc, _ in machines]
+        profiles = {loc.codigo: profile for loc, profile in machines}
 
         running = {}
         for state in db.query(EstadoMaquina).filter(EstadoMaquina.maquina_codigo.in_(codes)).all():
@@ -303,6 +304,7 @@ def demandas_board(edificio: str = "B1"):
             result.append({
                 "maquina": code,
                 "tipo": kinds[code],
+                "deshabilitada": machine_availability(profiles.get(code)),
                 "corriendo": running.get(code),
                 "tie_total": round(sum(hrs), 2),
                 "tie_cubierto": round(sum(cubierto), 2),
@@ -335,6 +337,7 @@ def crear_demanda(item: DemandaCreate):
             raise HTTPException(status_code=404, detail=f"Máquina no encontrada: {code}")
         if not location.activa:
             raise HTTPException(status_code=400, detail=f"La máquina {code} está desactivada")
+        require_machine_enabled(db, code)
         kind = _machine_kind(profile.tipo_maquina)
         if (np.upper(), kind) not in _program_index(db):
             raise HTTPException(
