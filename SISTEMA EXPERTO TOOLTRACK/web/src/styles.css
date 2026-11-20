@@ -879,6 +879,13 @@ textarea:disabled {
 .stroke-input {
   width: 90px;
 }
+.chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 6px 0 10px;
+}
 .chip-btn {
   border: 0;
   cursor: pointer;

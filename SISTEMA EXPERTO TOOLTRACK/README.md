@@ -222,6 +222,16 @@ Una máquina se deshabilita con motivo (mantenimiento, inhabilitada u otro con t
 - El Board la muestra marcada y no deja agregar demandas; Kitting no deja iniciar kits para ella; Manufactura no puede levantar tickets ni pedir el siguiente número de parte desde ella; la propuesta de Planeación no le envía líneas.
 - Lo que ya está corriendo o en cola se conserva tal cual. Es distinto de «Inactive», que retira la ubicación.
 
+## Torreta estándar (Planning → Standard turret)
+
+Es una **propuesta para los programadores**: MIRA no cambia ninguna máquina, setup ni .stp. Dada una máquina y un conjunto de partes (a mano o las que la propuesta de Planeación le asigna a esa máquina), calcula en qué estación va cada TN para que al armar el estándar en Radan se editen lo menos posible los .stp de cada parte.
+
+- **Cálculo (`standard_turret.py`, `standard_api.py`):** cada TN es una herramienta. Los TN de las series 1 a 4 dentro de la tolerancia (±0.003) comparten herramienta y estación (se muestra «also covers» y la diferencia); una parte que usa el mismo TN dos veces (ángulos distintos) ocupa dos estaciones. Una estación admite una herramienta; el tamaño A–E debe coincidir y una A puede ir en una B con adaptador. Un TN sin tamaño en el inventario se acepta en cualquier estación y se avisa. Solo cuentan las estaciones disponibles (no las dañadas); el sufijo `s` de los .stp (`305s`) se empata con la estación `305` y se conserva.
+- **Criterio:** primero cubrir la mayor cantidad de usos de herramienta con las estaciones que hay y después conservar cada TN donde más partes ya lo tienen en su .stp (asignación óptima, no avara).
+- **Si no caben** (por ejemplo más de las ~58 estaciones): lista qué TN quedan fuera y por qué (sin estación libre o sin estación de su tamaño), marca esas posiciones como «off standard: mount it by hand» y sugiere, en orden, qué partes dejar fuera del estándar para que quepa más.
+- **Salida:** pantalla con la tabla estación→TN y, por parte, qué líneas del .stp cambian (estación actual → estación del estándar y el TN sustituto); y descarga Excel con las hojas Standard, Parts, Not placed y Summary. Avisa de partes sin programa, con espesor fuera del rango de la máquina o con estaciones que la máquina no tiene.
+- **Aún no hace:** no genera los .stp corregidos, no usa la posición (DENTRO/CENTRO/AFUERA) ni exige autoindex como regla (solo lo conserva por el .stp actual), y el kitting todavía no se compara contra el estándar.
+
 ## Golpes por herramienta y ticket automático
 
 - **Golpes por ciclo:** en *Part numbers* → ficha del programa, cada estación tiene «Strokes per blank» (golpes por blank/ciclo), editable (permiso `program.uph`); vacío vuelve al valor por defecto (1, marcado «default»). Cuando el .stp traiga la columna, será el valor inicial. Tabla `golpes_programa`.

@@ -257,6 +257,9 @@ ROUTE_RULES = {
     ("GET", "/workflow/strokes/tool/{tool_id}"): "inventory.view",
     ("POST", "/workflow/strokes/tool/{tool_id}/set"): "inventory.adjust",
     ("GET", "/workflow/strokes/alerts"): AUTHENTICATED,
+    ("GET", "/planeacion/estandar"): "planning.view",
+    ("GET", "/planeacion/estandar/propuesta"): "planning.view",
+    ("GET", "/planeacion/estandar/excel"): "planning.view",
 }
 
 

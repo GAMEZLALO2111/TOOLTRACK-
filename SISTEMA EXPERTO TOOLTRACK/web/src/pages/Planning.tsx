@@ -3,8 +3,9 @@ import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { Dialog, ErrorNote } from "../components/Dialog";
 import { go } from "../router";
+import { StandardTab } from "./StandardTurret";
 
-type Tab = "capacity" | "proposal" | "fg" | "forecast" | "settings";
+type Tab = "capacity" | "proposal" | "standard" | "fg" | "forecast" | "settings";
 
 interface WeekSummary {
   capacity_h: number;
@@ -78,6 +79,7 @@ const WEEK_CHOICES = [4, 8, 12, 26];
 const TABS: { value: Tab; label: string }[] = [
   { value: "capacity", label: "Capacity" },
   { value: "proposal", label: "Proposal" },
+  { value: "standard", label: "Standard turret" },
   { value: "fg", label: "FG and BOM" },
   { value: "forecast", label: "Forecast" },
   { value: "settings", label: "Capacity settings" },
@@ -110,6 +112,7 @@ export function PlanningPage({ tab }: { tab: string }) {
       </div>
       {current === "capacity" && <CapacityTab />}
       {current === "proposal" && <ProposalTab />}
+      {current === "standard" && <StandardTab />}
       {current === "fg" && <FgTab />}
       {current === "forecast" && <ForecastTab />}
       {current === "settings" && <SettingsTab />}
