@@ -407,9 +407,14 @@ def actualizar_demanda(demand_id: int, item: DemandaUpdate):
         demand.actualizado_en = now
         if "piezas_producidas" in changes and demand.piezas_producidas != previous_produced:
             delta = demand.piezas_producidas - previous_produced
-            registrar_produccion(
+            record = registrar_produccion(
                 db, demand.numero_parte, delta, user.username, maquina=demand.maquina_codigo, demanda_id=demand.id,
                 nota=None if delta > 0 else "Correction: the total produced was lowered",
+            )
+            db.flush()
+            import strokes_api
+            strokes_api.apply_production(
+                db, demand.numero_parte, delta, demand.maquina_codigo, user.username, production_id=record.id,
             )
         db.commit()
         return {"id": demand.id, "ok": True}
@@ -482,8 +487,10 @@ def registrar_produccion(db, numero_parte, piezas, usuario, maquina=None, demand
                          fuente="manual", id_externo=None, nota=None):
     """Appends a production record (never edited or deleted). A later BAAN/MESPRO import uses the same call."""
     when = fecha or utcnow()
-    db.add(RegistroProduccion(
+    record = RegistroProduccion(
         demanda_id=demanda_id, numero_parte=numero_parte.strip().upper(), maquina_codigo=maquina, piezas=piezas,
         fecha_produccion=when, turno=shifts.shift_for(when), fuente=fuente, id_externo=id_externo,
         capturado_por=usuario, capturado_en=utcnow(), nota=nota,
-    ))
+    )
+    db.add(record)
+    return record

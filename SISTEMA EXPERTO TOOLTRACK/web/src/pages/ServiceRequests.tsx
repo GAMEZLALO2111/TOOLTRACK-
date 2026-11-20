@@ -5,6 +5,7 @@ import { Dialog, ErrorNote } from "../components/Dialog";
 import { ReasonDialog } from "../components/ReasonDialog";
 import { LocationPicker } from "../components/LocationPicker";
 import { MachineLink, ToolLink } from "../components/Links";
+import { StrokeAlertTable, useStrokeAlerts } from "../components/StrokeAlerts";
 import { ScanInput } from "../components/ScanInput";
 import { sameCode, toolCode, type Capture } from "../scan";
 import { ABNORMAL_REBAJE, IncidentFields, IncidentSummary, incidentMissing, isActive, isWaitingForTool, needsServiceResult, PilotNote, positionLabel, problemLabel, REBAJE_CHOICES, RequestChip, waitClass, waitMinutes, waitText, when, type IncidentValues } from "../components/Service";
@@ -492,7 +493,7 @@ export function ServiceRequestsPage() {
   const [choosing, setChoosing] = useState<ServiceRequest | null>(null);
   const [relocating, setRelocating] = useState<ServiceRequest | null>(null);
   const [cancelling, setCancelling] = useState<ServiceRequest | null>(null);
-
+  const warnings = useStrokeAlerts().filter((row) => row.level === "warning" && !row.request);
   const load = useCallback(async () => {
     try {
       setRows(await api<ServiceRequest[]>("GET", `/workflow/service-requests?state=${view}`));
@@ -596,6 +597,12 @@ export function ServiceRequestsPage() {
       </div>
       <ErrorNote message={error} />
       {message && <div className="note note-info">✔ {message}</div>}
+      {view === "active" && warnings.length > 0 && (
+        <div className="note note-warn">
+          <strong>{warnings.length} tool{warnings.length === 1 ? " is" : "s are"} near the stroke limit.</strong> Bring a replacement before the system opens the request.
+          <StrokeAlertTable rows={warnings} />
+        </div>
+      )}
       {rows && rows.length === 0 && !error && <p className="note note-info">{view === "active" ? "No open requests." : "Nothing to show."}</p>}
       {rows && rows.length > 0 && (
         <div className="table-wrap">
@@ -668,6 +675,7 @@ export function ServiceRequestsPage() {
                     <td>
                       <RequestChip request={request} />
                       {request.pilot_change && <span className="chip st-kitting">Pilot change</span>}
+                      {request.automatic && <span className="chip st-missing" title="Opened by the system when the tool reached its stroke limit">Automatic · strokes</span>}
                       <div className="muted small">
                         {waitingForTool && <strong className="wait-text">Waiting {waitText(minutes)}</strong>}
                         {request.state === "attending" && ` · ${request.attended_by_name}`}

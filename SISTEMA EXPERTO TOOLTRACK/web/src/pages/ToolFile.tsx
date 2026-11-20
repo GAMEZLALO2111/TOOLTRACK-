@@ -56,6 +56,57 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function StrokesDialog({ toolId, current, onClose, onDone }: { toolId: string; current: number; onClose: () => void; onDone: () => void }) {
+  const [value, setValue] = useState(String(current));
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    const amount = Number(value);
+    if (value.trim() === "" || !Number.isFinite(amount) || amount < 0) return setError("Enter the strokes since the last service (0 or more).");
+    if (reason.trim().length < 3) return setError("Write the reason for the change.");
+    setBusy(true);
+    setError(null);
+    try {
+      await api("POST", `/workflow/strokes/tool/${encodeURIComponent(toolId)}/set`, { golpes: amount, motivo: reason.trim() });
+      onDone();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The strokes could not be saved.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={`Strokes · ${toolId}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Back
+          </button>
+          <button className="btn btn-primary" onClick={() => void save()} disabled={busy}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        <label>
+          Strokes since the last service (0 starts a new interval)
+          <input inputMode="numeric" value={value} onChange={(event) => setValue(event.target.value)} autoFocus />
+        </label>
+        <label>
+          Reason (required, it stays in the history)
+          <textarea rows={2} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} />
+        </label>
+        <ErrorNote message={error} />
+      </div>
+    </Dialog>
+  );
+}
+
 function MoveDialog({ tool, onClose, onDone }: { tool: ToolRow; onClose: () => void; onDone: () => void }) {
   const [locations, setLocations] = useState<LocationRow[]>([]);
   const [destination, setDestination] = useState(tool.home_rack ?? "");
@@ -113,6 +164,7 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
   const [group, setGroup] = useState("all");
   const [editing, setEditing] = useState<{ options: InvOptions; locations: LocationRow[]; tns: string[] } | null>(null);
   const [moving, setMoving] = useState(false);
+  const [adjusting, setAdjusting] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -281,6 +333,20 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
           }
         />
         {tool.altura_total && <Fact label="Measured height" value={`${tool.altura_total}${tool.stripper ? ` (stripper ${tool.stripper}${tool.stripper_custom ? ", own" : ""})` : ""}`} />}
+        {tool.strokes && (tool.strokes.used > 0 || tool.strokes.limit) && (
+          <Fact
+            label="Strokes since last service"
+            value={
+              <>
+                {tool.strokes.used.toLocaleString()}
+                {tool.strokes.limit ? ` / ${tool.strokes.limit.toLocaleString()}` : ""}{" "}
+                {tool.strokes.level === "due" && <Chip text="Limit reached" className="st-missing" />}
+                {tool.strokes.level === "warning" && <Chip text="Near the limit" className="st-kitting" />}
+              </>
+            }
+          />
+        )}
+        {tool.strokes && tool.strokes.total > 0 && <Fact label="Strokes, lifetime" value={tool.strokes.total.toLocaleString()} />}
         {tool.proveedor && <Fact label="Supplier" value={tool.proveedor} />}
         {tool.so && <Fact label="SO" value={tool.so} />}
         {where.drawing_name && <Fact label="On part number" value={`${where.drawing_name}${where.station ? ` · station ${where.station}` : ""}`} />}
@@ -323,6 +389,13 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
           )}
         </div>
       )}
+      {can("inventory.adjust") && !retired && (
+        <div className="kit-actions">
+          <button className="btn" onClick={() => setAdjusting(true)} title="Correct the stroke counter or start a new interval by hand">
+            Adjust strokes…
+          </button>
+        </div>
+      )}
       <div className="tabs-inline wrap">
         {tabs.map((key) => (
           <button key={key} className={`btn${key === section ? " btn-primary" : ""}`} onClick={() => setSection(key)}>
@@ -363,6 +436,17 @@ export function ToolFilePage({ toolId }: { toolId: string }) {
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
+            void load();
+          }}
+        />
+      )}
+      {adjusting && (
+        <StrokesDialog
+          toolId={tool.id}
+          current={tool.strokes?.used ?? 0}
+          onClose={() => setAdjusting(false)}
+          onDone={() => {
+            setAdjusting(false);
             void load();
           }}
         />

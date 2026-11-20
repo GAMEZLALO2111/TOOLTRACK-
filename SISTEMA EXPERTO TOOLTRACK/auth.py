@@ -250,6 +250,13 @@ ROUTE_RULES = {
     ("GET", "/planeacion/capacidad"): "planning.view",
     ("GET", "/planeacion/propuesta"): "planning.view",
     ("POST", "/planeacion/propuesta/aplicar"): "planning.manage",
+    ("GET", "/workflow/strokes/program/{tipo_maquina}/{numero_parte}"): "program.view",
+    ("PUT", "/workflow/strokes/program/{tipo_maquina}/{numero_parte}"): "program.uph",
+    ("GET", "/workflow/strokes/limits"): "catalog.view",
+    ("PUT", "/workflow/strokes/limits"): "program.uph",
+    ("GET", "/workflow/strokes/tool/{tool_id}"): "inventory.view",
+    ("POST", "/workflow/strokes/tool/{tool_id}/set"): "inventory.adjust",
+    ("GET", "/workflow/strokes/alerts"): AUTHENTICATED,
 }
 
 

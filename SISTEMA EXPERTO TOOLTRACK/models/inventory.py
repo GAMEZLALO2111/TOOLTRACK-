@@ -34,6 +34,8 @@ class Herramienta(Base):
     altura_total = Column(String, nullable=True)  # Punzones: altura medida de la punta; la vida es esa altura menos el stripper
     stripper_override = Column(String, nullable=True)  # Espesor del stripper propio de esta herramienta (si no, el de su tamaño)
     imagen = Column(String, nullable=True)  # Archivo de la imagen de la herramienta
+    golpes_servicio = Column(Float, nullable=False, default=0, server_default="0")  # Golpes desde su último afilado/mantenimiento
+    golpes_total = Column(Float, nullable=False, default=0, server_default="0")  # Golpes de toda su vida
     catalogo = relationship(
         "HerramientaCatalogo",
         back_populates="herramienta",
@@ -295,6 +297,8 @@ class SolicitudServicio(Base):
     motivo_cancelacion = Column(Text, nullable=True)
     cambio_piloto = Column(Boolean, nullable=False, default=False, server_default="0")
     tn_instalado = Column(String, nullable=True)
+    automatico = Column(Boolean, nullable=False, default=False, server_default="0")  # Lo levantó el sistema por golpes
+    golpes_al_crear = Column(Float, nullable=True)
 
 
 class ServicioHerramienta(Base):
@@ -712,3 +716,53 @@ class ParametroPlaneacion(Base):
     valor = Column(String, nullable=False)
     actualizado_por = Column(String, nullable=True)
     actualizado_en = Column(DateTime, nullable=True)
+
+
+class GolpesPrograma(Base):
+    """Strokes a station gives per blank (one cycle) in a part program. No row means the default (1)."""
+    __tablename__ = "golpes_programa"
+    __table_args__ = (UniqueConstraint("numero_parte", "tipo_maquina", "estacion", "tn", name="uq_golpes_programa"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    numero_parte = Column(String, nullable=False)
+    tipo_maquina = Column(String, nullable=False)
+    estacion = Column(String, nullable=False)
+    tn = Column(String, nullable=False)
+    golpes = Column(Float, nullable=False)
+    fuente = Column(String, nullable=False, default="manual", server_default="manual")  # manual o stp
+    editado_por = Column(String, nullable=True)
+    editado_en = Column(DateTime, nullable=True)
+
+
+class LimiteGolpes(Base):
+    """Strokes a tool number can give before its first maintenance and between sharpenings. Empty means no alert."""
+    __tablename__ = "limites_golpes"
+    __table_args__ = (UniqueConstraint("tn", "categoria", name="uq_limite_golpes"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tn = Column(String, nullable=False)
+    categoria = Column(String, nullable=False)
+    primer_mantenimiento = Column(Integer, nullable=True)
+    intervalo_afilado = Column(Integer, nullable=True)
+    editado_por = Column(String, nullable=True)
+    editado_en = Column(DateTime, nullable=True)
+
+
+class GolpeHerramienta(Base):
+    """Append-only stroke ledger of a physical tool. `golpes` changes its lifetime total and
+    `golpes_servicio` the counter since its last service."""
+    __tablename__ = "golpes_herramienta"
+    __table_args__ = (Index("ix_golpes_herramienta_tool", "herramienta_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    herramienta_id = Column(String, ForeignKey("herramientas.id"), nullable=False)
+    origen = Column(String, nullable=False)  # produccion, ajuste o reinicio
+    golpes = Column(Float, nullable=False)
+    golpes_servicio = Column(Float, nullable=False)
+    produccion_id = Column(Integer, ForeignKey("registros_produccion.id"), nullable=True)
+    maquina_codigo = Column(String, nullable=True)
+    numero_parte = Column(String, nullable=True)
+    estacion = Column(String, nullable=True)
+    motivo = Column(Text, nullable=True)
+    usuario = Column(String, nullable=False)
+    fecha = Column(DateTime, nullable=False)

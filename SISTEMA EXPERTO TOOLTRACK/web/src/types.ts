@@ -166,6 +166,8 @@ export interface ServiceRequest {
   service: ToolServiceResult | null;
   replacement_tool_id: string | null;
   pilot_change?: boolean;
+  automatic?: boolean;
+  strokes_at_request?: number | null;
   installed_tn?: string | null;
   tn_difference?: string | null;
   destination: string | null;
@@ -617,6 +619,7 @@ export interface InvRow {
   life_alert?: boolean;
   life_minimum?: string | null;
   proveedor?: string | null;
+  strokes?: { used: number; limit: number | null; pct: number | null; level: "none" | "ok" | "warning" | "due"; stage: "first" | "interval"; total: number };
   has_image?: boolean;
   image?: string | null;
   clearance: string | null;
@@ -671,6 +674,47 @@ export interface Planning {
   uph_motivo?: string | null;
   uph_editado_por?: string | null;
   uph_editado_en?: string | null;
+}
+
+export interface StrokeAlert {
+  tool_id: string;
+  tn: string | null;
+  category: "punzon" | "matriz" | null;
+  machine: string | null;
+  station: string | null;
+  location: string | null;
+  request: string | null;
+  request_state: string | null;
+  used: number;
+  limit: number | null;
+  pct: number | null;
+  level: "none" | "ok" | "warning" | "due";
+  stage: "first" | "interval";
+}
+
+export interface StrokeRow {
+  station: string;
+  tn: string;
+  angle: string | null;
+  strokes: number;
+  source: "default" | "manual" | "stp";
+  edited_by: string | null;
+  edited_at: string | null;
+}
+
+export interface StrokeLimit {
+  tn: string;
+  category: "punzon" | "matriz";
+  first_maintenance: number | null;
+  sharpening_interval: number | null;
+  edited_by: string | null;
+  edited_at: string | null;
+}
+
+export interface ToolStrokes extends Omit<StrokeAlert, "tool_id" | "tn" | "category" | "machine" | "station" | "location" | "request" | "request_state"> {
+  tool_id: string;
+  total: number;
+  history: { id: number; origin: string; strokes: number; service_change: number; machine: string | null; part_number: string | null; station: string | null; reason: string | null; by: string; at: string }[];
 }
 
 export interface Program {

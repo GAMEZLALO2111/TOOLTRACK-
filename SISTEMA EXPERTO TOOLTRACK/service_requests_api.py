@@ -336,6 +336,8 @@ def _read_many(db, rows):
             } if row.id in retirements else None,
             "replacement_tool_id": row.herramienta_nueva_id,
             "pilot_change": bool(row.cambio_piloto),
+            "automatic": bool(row.automatico),
+            "strokes_at_request": row.golpes_al_crear,
             "installed_tn": row.tn_instalado,
             "tn_difference": workflow_api.describe_difference(row.tn, row.tn_instalado) if row.tn_instalado else None,
             "destination": row.destino_codigo,
@@ -1174,6 +1176,9 @@ def finish_tool_service(request_id: int, item: ServiceFinish):
         if note:
             summary += f" - {note}"
         tool.estado = "disponible"
+        if row.tipo in ("sharpening", "damage", "performance"):
+            import strokes_api
+            strokes_api.reset_after_service(db, tool, user.username, f"{_folio(row)}: {row.tipo} finished")
         movement = "service_completed"
         workflow_api._append_movement(
             db, tool, location.codigo, location.codigo, movement, user.username,

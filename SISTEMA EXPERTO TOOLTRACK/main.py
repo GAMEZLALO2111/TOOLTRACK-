@@ -46,6 +46,7 @@ from retirement_api import router as retirement_router
 from machine_operators_api import router as machine_operators_router
 from insights_api import router as insights_router
 from planning_api import router as planning_router
+from strokes_api import router as strokes_router
 from records_api import router as records_router
 from tool_file_api import router as tool_file_router
 from tool_params import router as tool_params_router
@@ -70,6 +71,7 @@ app.include_router(retirement_router)
 app.include_router(machine_operators_router)
 app.include_router(insights_router)
 app.include_router(planning_router)
+app.include_router(strokes_router)
 app.include_router(records_router)
 app.include_router(tool_file_router)
 app.include_router(tool_params_router)
@@ -488,6 +490,28 @@ def ensure_machine_availability(path=None):
 
 
 ensure_machine_availability()
+
+
+def ensure_stroke_columns(path=None):
+    """Contadores de golpes en la herramienta y marca de ticket automático en la solicitud."""
+    conn = sqlite3.connect(path or DB_PATH)
+    try:
+        for table, new_columns in (
+            ("herramientas", {"golpes_servicio": "FLOAT NOT NULL DEFAULT 0", "golpes_total": "FLOAT NOT NULL DEFAULT 0"}),
+            ("solicitudes_servicio", {"automatico": "BOOLEAN NOT NULL DEFAULT 0", "golpes_al_crear": "FLOAT"}),
+        ):
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if not existing:
+                continue
+            for column, kind in new_columns.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+ensure_stroke_columns()
 
 class HerramientaCreate(BaseModel):
     id: str

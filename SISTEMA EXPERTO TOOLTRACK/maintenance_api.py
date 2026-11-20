@@ -421,6 +421,8 @@ def release_ticket(ticket_id: int, item: TicketRelease):
             details=f"{_folio(ticket)}: repaired and released - {work}",
         )
         tool.estado = "disponible"
+        import strokes_api
+        strokes_api.reset_after_service(db, tool, user.username, f"{_folio(ticket)}: maintenance released")
         ticket.estado = "closed"
         ticket.resultado = "released"
         ticket.trabajo = work

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { Dialog, ErrorNote } from "../components/Dialog";
-import type { Program, ProgramLogRow } from "../types";
+import type { Program, ProgramLogRow, StrokeLimit, StrokeRow } from "../types";
 import { fmt, PlanningBox, UploadDialog } from "./ProgramUpload";
 
 export const ACTION_LABEL: Record<string, string> = { alta: "Created", actualizado: "Updated", created: "Created", updated: "Updated", uph: "UPH changed" };
@@ -19,6 +19,7 @@ export function ProgramsTab({ type }: { type: string }) {
   const [message, setMessage] = useState<string | null>(null);
   const [selected, setSelected] = useState<Program | null>(null);
   const [uploading, setUploading] = useState<Program | "new" | null>(null);
+  const [limits, setLimits] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -46,8 +47,13 @@ export function ProgramsTab({ type }: { type: string }) {
       <div className="summary">
         <span className="chip sum lvl-VERDE">{rows?.length ?? 0} part numbers for {type}</span>
         {missingPlanning > 0 && <span className="chip sum lvl-AMARILLO">{missingPlanning} without planning values</span>}
+        {can("program.uph") && (
+          <button className="btn push-right" onClick={() => setLimits(true)} title="Strokes before the first maintenance and between sharpenings, per tool number">
+            Stroke limits
+          </button>
+        )}
         {can("program.manage") && (
-          <button className="btn btn-primary push-right" onClick={() => setUploading("new")}>
+          <button className="btn btn-primary" onClick={() => setUploading("new")}>
             Load a .stp
           </button>
         )}
@@ -122,6 +128,7 @@ export function ProgramsTab({ type }: { type: string }) {
           }}
         />
       )}
+      {limits && <LimitsDialog onClose={() => setLimits(false)} />}
       {uploading && (
         <UploadDialog
           type={type}
@@ -135,6 +142,112 @@ export function ProgramsTab({ type }: { type: string }) {
         />
       )}
     </div>
+  );
+}
+
+function LimitsDialog({ onClose }: { onClose: () => void }) {
+  const [rows, setRows] = useState<StrokeLimit[] | null>(null);
+  const [tn, setTn] = useState("");
+  const [category, setCategory] = useState("punzon");
+  const [first, setFirst] = useState("");
+  const [interval, setInterval_] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setRows(await api<StrokeLimit[]>("GET", "/workflow/strokes/limits"));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Could not load the limits.");
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function save(limit: { tn: string; category: string; first: string; interval: string }) {
+    const number = (text: string) => (text.trim() === "" ? null : Number(text));
+    const values = [number(limit.first), number(limit.interval)];
+    if (values.some((value) => value !== null && (!Number.isInteger(value) || value <= 0))) return setError("Limits are whole numbers of strokes above 0 (leave empty for no alert).");
+    if (!limit.tn.trim()) return setError("Enter the TN.");
+    setBusy(true);
+    setError(null);
+    try {
+      await api("PUT", "/workflow/strokes/limits", { tn: limit.tn.trim(), categoria: limit.category, primer_mantenimiento: values[0], intervalo_afilado: values[1] });
+      setTn("");
+      setFirst("");
+      setInterval_("");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The limit could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog title="Stroke limits per tool number" onClose={onClose} wide>
+      <p className="muted small">
+        A tool is flagged at 90% of its limit and the system opens a sharpening request for Tool Crib at 100%. Before its first service the first-maintenance limit applies; afterwards, the sharpening interval. An empty value means no alert.
+      </p>
+      <div className="form-row">
+        <input value={tn} onChange={(event) => setTn(event.target.value)} placeholder="TN" aria-label="TN" />
+        <select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Category">
+          <option value="punzon">Punch</option>
+          <option value="matriz">Die</option>
+        </select>
+        <input inputMode="numeric" value={first} onChange={(event) => setFirst(event.target.value)} placeholder="First maintenance" aria-label="First maintenance" />
+        <input inputMode="numeric" value={interval} onChange={(event) => setInterval_(event.target.value)} placeholder="Sharpening interval" aria-label="Sharpening interval" />
+        <button className="btn btn-primary" disabled={busy} onClick={() => void save({ tn, category, first, interval })}>
+          Save
+        </button>
+      </div>
+      <ErrorNote message={error} />
+      {rows && rows.length === 0 && <p className="note note-info">No limits yet.</p>}
+      {rows && rows.length > 0 && (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>TN</th>
+                <th>Type</th>
+                <th>First maintenance</th>
+                <th>Sharpening interval</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={`${row.tn}/${row.category}`}>
+                  <td>
+                    <strong>{row.tn}</strong>
+                  </td>
+                  <td>{row.category === "punzon" ? "Punch" : "Die"}</td>
+                  <td>{row.first_maintenance?.toLocaleString() ?? "—"}</td>
+                  <td>{row.sharpening_interval?.toLocaleString() ?? "—"}</td>
+                  <td>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setTn(row.tn);
+                        setCategory(row.category);
+                        setFirst(row.first_maintenance?.toString() ?? "");
+                        setInterval_(row.sharpening_interval?.toString() ?? "");
+                      }}
+                    >
+                      Edit
+                    </button>{" "}
+                    <button className="btn btn-ghost-danger" disabled={busy} onClick={() => void save({ tn: row.tn, category: row.category, first: "", interval: "" })}>
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Dialog>
   );
 }
 
@@ -198,6 +311,41 @@ function ProgramDialog({ program, type, canManage, canUph, onClose, onRevise, on
   const [log, setLog] = useState<ProgramLogRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingUph, setEditingUph] = useState(false);
+  const [strokes, setStrokes] = useState<Record<string, StrokeRow>>({});
+  const [strokeEdits, setStrokeEdits] = useState<Record<string, string>>({});
+  const [savingStrokes, setSavingStrokes] = useState(false);
+
+  const loadStrokes = useCallback(async () => {
+    try {
+      const data = await api<{ rows: StrokeRow[] }>("GET", `/workflow/strokes/program/${type}/${encodeURIComponent(program.numero_parte)}`);
+      setStrokes(Object.fromEntries(data.rows.map((row) => [`${row.station}|${row.tn}`, row])));
+      setStrokeEdits({});
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Could not load the strokes.");
+    }
+  }, [type, program.numero_parte]);
+
+  useEffect(() => {
+    void loadStrokes();
+  }, [loadStrokes]);
+
+  async function saveStrokes() {
+    setError(null);
+    const rows = Object.entries(strokeEdits).map(([key, text]) => {
+      const [station, tn] = key.split("|");
+      return { station, tn, strokes: text.trim() === "" ? null : Number(text) };
+    });
+    if (rows.some((row) => row.strokes !== null && !Number.isFinite(row.strokes))) return setError("Strokes per blank must be a number.");
+    setSavingStrokes(true);
+    try {
+      await api("PUT", `/workflow/strokes/program/${type}/${encodeURIComponent(program.numero_parte)}`, { rows });
+      await loadStrokes();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "The strokes could not be saved.");
+    } finally {
+      setSavingStrokes(false);
+    }
+  }
 
   useEffect(() => {
     api<ProgramLogRow[]>("GET", `/workflow/programs/log?numero_parte=${encodeURIComponent(program.numero_parte)}&tipo_maquina=${encodeURIComponent(type)}`)
@@ -291,6 +439,7 @@ function ProgramDialog({ program, type, canManage, canUph, onClose, onRevise, on
               <th>Station</th>
               <th>TN</th>
               <th>Angle</th>
+              <th title="Strokes this station gives per blank (one cycle). The .stp column will fill it in later">Strokes per blank</th>
             </tr>
           </thead>
           <tbody>
@@ -301,11 +450,32 @@ function ProgramDialog({ program, type, canManage, canUph, onClose, onRevise, on
                   <strong>{r.tn}</strong>
                 </td>
                 <td>{r.angle ?? "—"}</td>
+                <td>
+                  {canUph ? (
+                    <input
+                      className="stroke-input"
+                      inputMode="decimal"
+                      value={strokeEdits[`${r.station}|${r.tn}`] ?? String(strokes[`${r.station}|${r.tn}`]?.strokes ?? "")}
+                      onChange={(event) => setStrokeEdits({ ...strokeEdits, [`${r.station}|${r.tn}`]: event.target.value })}
+                      aria-label={`Strokes per blank, station ${r.station}`}
+                    />
+                  ) : (
+                    strokes[`${r.station}|${r.tn}`]?.strokes ?? "—"
+                  )}
+                  {strokes[`${r.station}|${r.tn}`]?.source === "default" && <span className="muted small"> default</span>}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {canUph && Object.keys(strokeEdits).length > 0 && (
+        <div className="kit-actions">
+          <button className="btn btn-primary" disabled={savingStrokes} onClick={() => void saveStrokes()}>
+            {savingStrokes ? "Saving…" : "Save strokes"}
+          </button>
+        </div>
+      )}
       <h3 className="q-done-title">Change history</h3>
       {!log && !error && <p className="muted">Loading…</p>}
       {log && <LogTable rows={log} showPart={false} />}

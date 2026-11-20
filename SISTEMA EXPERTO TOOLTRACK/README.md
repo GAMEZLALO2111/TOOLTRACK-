@@ -222,6 +222,14 @@ Una máquina se deshabilita con motivo (mantenimiento, inhabilitada u otro con t
 - El Board la muestra marcada y no deja agregar demandas; Kitting no deja iniciar kits para ella; Manufactura no puede levantar tickets ni pedir el siguiente número de parte desde ella; la propuesta de Planeación no le envía líneas.
 - Lo que ya está corriendo o en cola se conserva tal cual. Es distinto de «Inactive», que retira la ubicación.
 
+## Golpes por herramienta y ticket automático
+
+- **Golpes por ciclo:** en *Part numbers* → ficha del programa, cada estación tiene «Strokes per blank» (golpes por blank/ciclo), editable (permiso `program.uph`); vacío vuelve al valor por defecto (1, marcado «default»). Cuando el .stp traiga la columna, será el valor inicial. Tabla `golpes_programa`.
+- **Acumulación (`strokes_api.py`):** cada pieza producida registrada (captura en el Board) suma `golpes de la estación × piezas / piezas por blank` al punzón y a la matriz montados en esa estación (se emparejan por estación, TN y ángulo del setup activo). Una corrección negativa resta. Cada herramienta guarda su acumulado desde el último servicio y el total de su vida; el detalle está en `golpes_herramienta` (solo se agrega).
+- **Límites por TN y tipo** (botón *Stroke limits* en Part numbers): golpes antes del primer mantenimiento y entre afilados; vacío = sin alerta. Antes de su primer servicio aplica el primer mantenimiento; después, el intervalo de afilado.
+- **Alertas:** al 90% la herramienta aparece como «Near the limit» en Requests, Dashboard y su ficha. Al 100% el sistema levanta una solicitud de afilado automática (solicitante `SYSTEM`, marcada «Automatic · strokes», una por herramienta) para que Tool Crib lleve el reemplazo; la herramienta sigue montada hasta entonces y la máquina no cuenta como detenida.
+- **Reinicio:** al terminar un afilado o liberar un mantenimiento el contador vuelve a 0 y empieza el intervalo de afilado. Un supervisor puede ajustarlo a mano con motivo (*Adjust strokes…* en la ficha, permiso `inventory.adjust`).
+
 ## Planeación de capacidad (menú Planning)
 
 Responde «¿cumplimos con el forecast?» por FG, familia y semana, en lugar del Excel de los planners.

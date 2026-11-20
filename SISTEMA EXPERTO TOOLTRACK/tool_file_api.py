@@ -10,6 +10,7 @@ from sqlalchemy import func
 import auth
 import records_api
 import scan_codes
+import strokes_api
 import tool_images
 import tool_params
 import tool_tracking_api
@@ -68,6 +69,7 @@ def get_tool_file(tool_id: str):
             "stripper": f"{stripper:.3f}" if stripper is not None else None,
             "stripper_custom": bool(tool.stripper_override),
             "life_alert": tool_params.life_alert(tool.categoria, tool.life, params),
+            "strokes": {**strokes_api.tool_level(db, tool), "total": round(float(tool.golpes_total or 0))},
             "life_minimum": f"{params['punch_min_life' if tool.categoria == 'punzon' else 'die_min_height']:.3f}"
             if tool.categoria in ("punzon", "matriz") else None,
             "clearance": tool.clearance,

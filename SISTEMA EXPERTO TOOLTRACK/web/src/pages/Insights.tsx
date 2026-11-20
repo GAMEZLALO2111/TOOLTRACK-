@@ -3,6 +3,7 @@ import { api, ApiError } from "../api";
 import { Donut, HBarChart, Panel, ParetoChart, Progress, TrendChart, type Datum } from "../components/Charts";
 import { ErrorNote } from "../components/Dialog";
 import { ToolLink } from "../components/Links";
+import { StrokeAlertTable, useStrokeAlerts } from "../components/StrokeAlerts";
 import { usePoll } from "../usePoll";
 
 interface Kpi {
@@ -88,6 +89,7 @@ function Fact({ label, value }: { label: string; value: string | number | null }
 }
 
 export function InsightsPage() {
+  const strokeAlerts = useStrokeAlerts();
   const [days, setDays] = useState(30);
   const [data, setData] = useState<Overview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -321,6 +323,9 @@ export function InsightsPage() {
                   </table>
                 </div>
               )}
+            </Panel>
+            <Panel title="Stroke limits" subtitle="Tools at 90% of their stroke limit or beyond. At 100% the system opens a sharpening request for Tool Crib" wide>
+              {strokeAlerts.length === 0 ? <p className="muted chart-empty">No tool is near its stroke limit.</p> : <StrokeAlertTable rows={strokeAlerts} />}
             </Panel>
           </div>
 

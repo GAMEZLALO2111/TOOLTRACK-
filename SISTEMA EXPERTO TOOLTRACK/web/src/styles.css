@@ -866,6 +866,19 @@ textarea:disabled {
 .push-right {
   margin-left: auto;
 }
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+.form-row input,
+.form-row select {
+  min-width: 120px;
+}
+.stroke-input {
+  width: 90px;
+}
 .chip-btn {
   border: 0;
   cursor: pointer;

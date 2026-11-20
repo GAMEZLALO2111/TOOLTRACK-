@@ -138,7 +138,9 @@ export function isActive(request: Pick<ServiceRequest, "state">): boolean {
 }
 
 /** True while the machine position is still without a tool: that is the time worth watching. */
-export function isWaitingForTool(request: Pick<ServiceRequest, "state"> & Partial<Pick<ServiceRequest, "type">>): boolean {
+export function isWaitingForTool(request: Pick<ServiceRequest, "state"> & Partial<Pick<ServiceRequest, "type" | "automatic">>): boolean {
+  // An automatic stroke-limit request leaves the tool on the machine until Tool Crib takes it.
+  if (request.automatic && request.state !== "collected") return false;
   return request.type !== "part_request" && (request.state === "open" || request.state === "attending" || request.state === "collected");
 }
 
