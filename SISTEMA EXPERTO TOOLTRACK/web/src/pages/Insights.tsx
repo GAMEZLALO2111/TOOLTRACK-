@@ -5,6 +5,7 @@ import { ErrorNote } from "../components/Dialog";
 import { ToolLink } from "../components/Links";
 import { StrokeAlertTable, useStrokeAlerts } from "../components/StrokeAlerts";
 import { usePoll } from "../usePoll";
+import { OperationsSection } from "./InsightsOps";
 
 interface Kpi {
   key: string;
@@ -169,6 +170,9 @@ export function InsightsPage() {
             </div>
           )}
 
+          <OperationsSection days={days} />
+
+          <h2 className="insight-section">Tool Crib and tools</h2>
           <div className="kpi-grid">
             {data.kpis.map((kpi) => (
               <KpiCard key={kpi.key} kpi={kpi} />

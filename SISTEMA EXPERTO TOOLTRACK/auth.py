@@ -181,6 +181,7 @@ ROUTE_RULES = {
     ("POST", "/workflow/retirements/{retirement_id}/reject"): "retirements.approve",
     ("GET", "/records"): "records.view",
     ("GET", "/insights/overview"): "insights.view",
+    ("GET", "/insights/operations"): "insights.view",
     ("GET", "/records/workbook"): "records.view",
     ("GET", "/records/{kind_key}"): "records.view",
     ("GET", "/records/{kind_key}/download"): "records.view",

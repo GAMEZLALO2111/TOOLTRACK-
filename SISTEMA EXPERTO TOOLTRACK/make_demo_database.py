@@ -75,6 +75,12 @@ def ensure_users(session, rng):
             full_name="Demo Manager", shift="Turno 1", area="Demo",
         ))
         session.commit()
+    if not session.query(Usuario).filter(Usuario.username == "demo_admin").first():
+        session.add(Usuario(
+            username="demo_admin", password=hash_password("demo1234"), role="SYSTEM_ADMIN", activo=True,
+            full_name="Demo Admin", shift="Turno 1", area="Demo",
+        ))
+        session.commit()
     return (names("PUNCHING_OPERATOR", "PUNCHING_TECHNICIAN"), names("TOOLCRIB_OPERATOR", "TOOLCRIB_SUPERVISOR"),
             names("MAINTENANCE_TECHNICIAN"), names("TOOLCRIB_SUPERVISOR", "SYSTEM_ADMIN"))
 
@@ -83,7 +89,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", required=True, help="database to copy (it is only read)")
     parser.add_argument("--target", required=True, help="demo database to create")
-    parser.add_argument("--days", type=int, default=180)
+    parser.add_argument("--days", type=int, default=60, help="history to simulate; the dashboard compares the last 30 with the 30 before")
+    parser.add_argument("--scale", type=float, default=2.0, help="activity volume: 1 is a quiet plant, 2 a busy one")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--force", action="store_true", help="overwrite the target if it exists")
     args = parser.parse_args()
@@ -104,6 +111,9 @@ def main():
     engine = create_engine(f"sqlite:///{target}")
     session = sessionmaker(bind=engine)()
     operators, toolcrib, technicians, supervisors = ensure_users(session, rng)
+    import demo_history
+
+    start_state = demo_history.baseline(session)
 
     tools = session.query(Herramienta).all()
     by_tn = {}
@@ -132,7 +142,7 @@ def main():
         factor = 0.2 if day.weekday() == 6 else 0.45 if day.weekday() == 5 else 1.0
         progress = 1 - offset / max(args.days, 1)
         base_wait = 16 - 9 * progress  # Tool Crib gets faster over the period
-        for _ in range(max(0, round(rng.gauss(4.2, 1.6) * factor))):
+        for _ in range(max(0, round(rng.gauss(4.2 * args.scale, 1.6 * args.scale) * factor))):
             shift, start, end, _w = rng.choices(SHIFT_HOURS, weights=[item[3] for item in SHIFT_HOURS])[0]
             moment = day + timedelta(hours=rng.uniform(start, end - 0.2), minutes=0)
             requested = to_utc(moment.replace(tzinfo=None).astimezone())
@@ -220,7 +230,7 @@ def main():
                 ))
                 counts["services"] += 1
 
-        for _ in range(max(0, round(rng.gauss(1.8, 0.8) * factor))):
+        for _ in range(max(0, round(rng.gauss(1.8 * args.scale, 0.8 * args.scale) * factor))):
             code = rng.choices(machines, weights=[weight[m] for m in machines])[0]
             setups = session.query(Setup).filter(Setup.maquina_codigo == code).all()
             if len(setups) < 2 or not carts:
@@ -245,9 +255,12 @@ def main():
         demand.piezas_producidas = int(demand.cantidad * rng.choice((0, 0, 0.2, 0.45, 0.7, 0.9)))
         demand.orden_trabajo = demand.orden_trabajo or f"WO-{rng.randint(100000, 999999)}"
     session.commit()
+    history = demo_history.generate(session, rng, args.days, (operators, toolcrib, technicians, supervisors), start_state)
     session.close()
     print(f"Demo database created: {target}")
     for name, value in counts.items():
+        print(f"  {name}: {value}")
+    for name, value in history.items():
         print(f"  {name}: {value}")
     print("Start the backend on another port with TOOLTRACK_DB_PATH pointing to it. Demo users use password demo1234.")
 
