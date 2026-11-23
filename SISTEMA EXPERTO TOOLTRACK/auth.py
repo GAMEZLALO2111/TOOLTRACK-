@@ -260,6 +260,8 @@ ROUTE_RULES = {
     ("GET", "/planeacion/estandar"): "planning.view",
     ("GET", "/planeacion/estandar/propuesta"): "planning.view",
     ("GET", "/planeacion/estandar/excel"): "planning.view",
+    ("GET", "/planeacion/ctb"): "planning.view",
+    ("GET", "/planeacion/ctb/excel"): "planning.view",
 }
 
 

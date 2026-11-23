@@ -4,8 +4,9 @@ import { useAuth } from "../auth";
 import { Dialog, ErrorNote } from "../components/Dialog";
 import { go } from "../router";
 import { StandardTab } from "./StandardTurret";
+import { CtbTab } from "./Clear";
 
-type Tab = "capacity" | "proposal" | "standard" | "fg" | "forecast" | "settings";
+type Tab = "capacity" | "ctb" | "proposal" | "standard" | "fg" | "forecast" | "settings";
 
 interface WeekSummary {
   capacity_h: number;
@@ -78,6 +79,7 @@ const STATUS_LABEL: Record<string, string> = {
 const WEEK_CHOICES = [4, 8, 12, 26];
 const TABS: { value: Tab; label: string }[] = [
   { value: "capacity", label: "Capacity" },
+  { value: "ctb", label: "Clear to build" },
   { value: "proposal", label: "Proposal" },
   { value: "standard", label: "Standard turret" },
   { value: "fg", label: "FG and BOM" },
@@ -111,6 +113,7 @@ export function PlanningPage({ tab }: { tab: string }) {
         ))}
       </div>
       {current === "capacity" && <CapacityTab />}
+      {current === "ctb" && <CtbTab />}
       {current === "proposal" && <ProposalTab />}
       {current === "standard" && <StandardTab />}
       {current === "fg" && <FgTab />}

@@ -222,6 +222,17 @@ Una máquina se deshabilita con motivo (mantenimiento, inhabilitada u otro con t
 - El Board la muestra marcada y no deja agregar demandas; Kitting no deja iniciar kits para ella; Manufactura no puede levantar tickets ni pedir el siguiente número de parte desde ella; la propuesta de Planeación no le envía líneas.
 - Lo que ya está corriendo o en cola se conserva tal cual. Es distinto de «Inactive», que retira la ubicación.
 
+## Clear to build (Planning → Clear to build)
+
+Responde «¿podemos construir N de este FG por semana con los programas, máquinas y herramientas que tenemos?» y, si no, dice exactamente qué falta.
+
+- **Entrada:** FG, FG por semana, turnos/horas/días/eficiencia (precargados de los parámetros de Planeación) y cuántas máquinas de cada tipo (4 Index, 2 Index, 45 Sta). MIRA toma las habilitadas con menos horas ya comprometidas en el Board (opción para no contarlas).
+- **Programas:** cada make del BOM debe tener programa con UPH en algún tipo de máquina elegido; avisa de UPH atípicos.
+- **Máquinas (`ctb_api.py`):** reparte las piezas por semana entre las máquinas compatibles (tipo y espesor, más rápida primero), con setup por parte y máquina. Muestra carga por máquina, el mínimo de máquinas necesarias por tipo, cuántas faltan en el escenario y cuántos FG/semana aguanta.
+- **Herramientas:** cada máquina corre una parte a la vez y reutiliza sus herramientas entre partes, así que el pico de un TN es la suma, por máquina, de lo máximo que usa alguna de sus partes (cada estación = 1 punzón + 1 matriz). Solo cuenta el TN exacto (sin tolerancia, porque alimenta compras). Se descuentan las herramientas no disponibles; las de afilado se muestran como «vuelven de servicio», las montadas en otras máquinas aparte, y las de vida mínima como riesgo.
+- **Resultado:** semáforo general (*Clear to build*, *con riesgos*, *Not clear to build*), tres tarjetas (Programs, Machines, Tools), lista «What is missing» con TN, cantidades y partes afectadas, aviso del efecto de usar menos máquinas (menos juegos de herramienta) y descarga en Excel (Summary, Tools to buy, Make items, Machines).
+- **Límites:** un FG a la vez y una semana tipo (no recorre el forecast); la capacidad usa los turnos/horas del escenario para todas las máquinas; el mínimo de máquinas es una estimación.
+
 ## Torreta estándar (Planning → Standard turret)
 
 Es una **propuesta para los programadores**: MIRA no cambia ninguna máquina, setup ni .stp. Dada una máquina y un conjunto de partes (a mano o las que la propuesta de Planeación le asigna a esa máquina), calcula en qué estación va cada TN para que al armar el estándar en Radan se editen lo menos posible los .stp de cada parte.

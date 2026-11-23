@@ -48,6 +48,7 @@ from insights_api import router as insights_router
 from planning_api import router as planning_router
 from strokes_api import router as strokes_router
 from standard_api import router as standard_router
+from ctb_api import router as ctb_router
 from records_api import router as records_router
 from tool_file_api import router as tool_file_router
 from tool_params import router as tool_params_router
@@ -74,6 +75,7 @@ app.include_router(insights_router)
 app.include_router(planning_router)
 app.include_router(strokes_router)
 app.include_router(standard_router)
+app.include_router(ctb_router)
 app.include_router(records_router)
 app.include_router(tool_file_router)
 app.include_router(tool_params_router)
